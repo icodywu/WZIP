@@ -58,9 +58,9 @@ def table(caption, lab, groups, S=S, C=C, names=('Silesia', 'Canterbury+Calgary'
     out = ['\\begin{table}[%s]' % place, '\\begin{center}', '\\caption{\\label{%s}%s}' % (lab, caption), '{\\footnotesize',
            '\\setlength{\\tabcolsep}{4.5pt}',
            '\\begin{tabular}{lrrrrrrr}', '\\toprule',
-           ' & \\multicolumn{3}{c}{%s} & \\multicolumn{3}{c}{%s} & Enc. \\\\' % names,
+           ' & \\multicolumn{3}{c}{%s} & \\multicolumn{3}{c}{%s} & Memory \\\\' % names,
            '\\cmidrule(lr){2-4}\\cmidrule(lr){5-7}',
-           'Codec, level & Ratio & Comp. & Dec. & Ratio & Comp. & Dec. & mem. \\\\', '\\midrule']
+           'Codec, level & Ratio & Comp. & Dec. & Ratio & Comp. & Dec. & (MB) \\\\', '\\midrule']
     for gi, g in enumerate(groups):
         if gi: out.append('\\midrule')
         for c, l in g:
@@ -69,19 +69,22 @@ def table(caption, lab, groups, S=S, C=C, names=('Silesia', 'Canterbury+Calgary'
     out += ['\\bottomrule', '\\end{tabular}}', '\\end{center}', '\\end{table}']
     return '\n'.join(out) + '\n'
 
-cap = 'ratio, compression and decompression speed (MB/s), and encoder memory on Silesia (MB).'
-open(os.path.join(outdir, 'tab_lz4class.tex'), 'w').write(table('The LZ4 class: ' + cap, 'tab:lz4class',
+def cap(first, second, memOn):
+    return ('ratio, and compression and decompression speed (MB/s), on %s and on %s; encoder memory (MB) on %s.'
+            % (first, second, memOn))
+open(os.path.join(outdir, 'tab_lz4class.tex'), 'w').write(table(
+    'The LZ4 class: ' + cap('Silesia', 'Canterbury+Calgary', 'Silesia'), 'tab:lz4class',
     [[('lz4', 1), ('lz4hc', 4), ('lz4hc', 9), ('lz4hc', 12)],
      [('wlz4f', 1), ('wlz4l', 0), ('wlz4hc', 2), ('wlz4hc', 4), ('wlz4hc', 6), ('wlz4hc', 8), ('wlz4hc', 10), ('wlz4hc', 12)]]))
-open(os.path.join(outdir, 'tab_zstdclass.tex'), 'w').write(table('The Zstandard class: ' + cap, 'tab:zstdclass',
+open(os.path.join(outdir, 'tab_zstdclass.tex'), 'w').write(table(
+    'The Zstandard class: ' + cap('Silesia', 'Canterbury+Calgary', 'Silesia'), 'tab:zstdclass',
     [[('zstd', l) for l in (1, 3, 9, 12, 16, 19, 22)],
      [('wzip', l) for l in (0, 1, 3, 5, 7, 9, 11, 12, 13)],
      [('brotli', l) for l in (1, 5, 9, 11)] + [('xz', l) for l in (1, 6, 109)]]))
 if E8 and E9:
     memSecond = True
     open(os.path.join(outdir, 'tab_enwik.tex'), 'w').write(table(
-        'Large inputs: ratio, compression and decompression speed (MB/s) on enwik8 (100\\,MB) and enwik9 (1\\,GB), '
-        'and encoder memory on enwik9 (MB).', 'tab:enwik',
+        'Large inputs: ' + cap('enwik8 (100\\,MB)', 'enwik9 (1\\,GB)', 'enwik9'), 'tab:enwik',
         [[('lz4', 1), ('lz4hc', 9), ('lz4hc', 12)],
          [('wlz4f', 1), ('wlz4hc', 2), ('wlz4hc', 6), ('wlz4hc', 10), ('wlz4hc', 12)],
          [('zstd', l) for l in (1, 3, 19, 22)],
