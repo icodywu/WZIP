@@ -393,18 +393,6 @@ ForceInlineTemplate Uint32 Huffman_DecodeStreamX0(Bit_Stream bitStream, Uint8* d
 	return (Uint32)(destEnd - dest);
 }
 
-ForceInlineTemplate Uint32 Huffman_DecompressX0_Kernel_Body(void* source, void* dest, Uint32 destSize, Uint32 maxLitHufCodeBits, Uint8* litHufCodeBits, Uint8* litHufCodeDemap)
-{
-	Bit_Stream bitStream;
-	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(source);
-	bitStream.streamPtr = (Uint8*)source;
-
-	const Uint8* const destEnd = (Uint8*)dest + destSize;
-
-	return Huffman_DecodeStreamX0(bitStream, dest, destEnd, maxLitHufCodeBits, litHufCodeBits, litHufCodeDemap);
-}
-
 ForceInlineTemplate Uint32 Huffman_Decompress4X0_Kernel_Body(void* source, void* dest, Uint32 destSize, const Uint32 maxLitHufCodeBits, Uint8* litHufCodeBits, Uint8* litHufDemap)
 {
 	Bit_Stream bitStream0, bitStream1, bitStream2, bitStream3;
