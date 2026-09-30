@@ -77,8 +77,9 @@ make test     # round trip of every codec and level on synthetic inputs, with gu
 make check FILES="file1 file2"
 ```
 
-The sources (`src/`) are C99 and build with gcc or clang; this release was tested with GCC 14.2 (MinGW-w64 on
-Windows). On x86 the decoders pick BMI2 code paths at run time.
+The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 (MinGW-w64, Windows), and GCC 11.4
+and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer.
+On x86 the decoders pick BMI2 code paths at run time.
 
 ## Usage
 
