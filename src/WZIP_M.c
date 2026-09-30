@@ -644,7 +644,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 					int offset = srcIdx - match0Idx;   // note curr0Idx == srcIdx
 					hash0Table[hashV] = curr0Idx++;
 					if (match0Idx >= -dictSize && offset > 0 && offset < OffWindowTable[MaxHashLen]) {
-						Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
+						const Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
 						reg_t diff = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
 						matchStr.len = diff? N_ZeroBytes(diff) : REG_SIZE;
 						matchStr.off = offset;
@@ -1718,7 +1718,7 @@ int WZIP_Decompress_M(
 	int i;
 	Uint32 nLzLits, zipLitSize;
 	Uint8* srcPtr = (Uint8*)source;
-	Uint8* const dictEnd = (Uint8 *)dict + dictSize;
+	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
 	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
 		nLzLits = MemReadLE4(srcPtr);

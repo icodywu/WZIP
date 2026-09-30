@@ -106,7 +106,7 @@ MemStatic void MEM_Check(void) { MemStatic_Assert((sizeof(size_t)==4) || (sizeof
 #  define FORCE_O2_INLINE_GCC_PPC64LE __attribute__((optimize("O2"))) ForceInlineTemplate
 #else
 #  define FORCE_O2_GCC_PPC64LE
-#  define FORCE_O2_INLINE_GCC_PPC64LE static
+#  define FORCE_O2_INLINE_GCC_PPC64LE MemStatic
 #endif
 #if (defined(__GNUC__) && (__GNUC__ >= 3)) || (defined(__INTEL_COMPILER) && (__INTEL_COMPILER >= 800)) || defined(__clang__)
 #  define expect(expr,value)    (__builtin_expect ((expr),(value)) )

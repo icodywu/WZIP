@@ -495,7 +495,6 @@ static int HUF_Cpu_Bmi2(void)
                     (source, dest, destSize, maxLitHufCodeBits, litHufCodeBits, litHufDemap))
 
 
-HUFFMAN_DECODERX0_GEN(Huffman_DecompressX0_Kernel)
 HUFFMAN_DECODERX0_GEN(Huffman_Decompress4X0_Kernel)
 
 
@@ -790,19 +789,6 @@ ForceInlineTemplate Uint32 Huffman_DecodeStreamX2(Bit_Stream* bitStr, Uint8* des
 	}
 
 	return (Uint32)(destEnd - dest);
-}
-
-/* this function is currently unused */
-ForceInlineTemplate int Huffman_DecompressX2_Kernel_Body(void* source, void* dest, Uint32 destSize, Uint32 hufDemapBitsX2, Huffman_DemapX2* litHufDemapX2)
-{
-	Bit_Stream bitStream;
-	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(source);
-	bitStream.streamPtr = (Uint8*)source;
-
-	const Uint8* const destEnd = (Uint8*)dest + destSize;
-
-	return Huffman_DecodeStreamX2(&bitStream, dest, destEnd, hufDemapBitsX2, litHufDemapX2);
 }
 
 ForceInlineTemplate Uint32 Huffman_Decompress4X2_Kernel_Body(void* source, void* dest, Uint32 destSize, const Uint32 hufDemapBitsX2, Huffman_DemapX2* litHufDemapX2)

@@ -115,10 +115,6 @@
 #endif
 
 
-static const reg_t decRepreca[8] = { 0, 0x101010101010101, 0x1000100010001, 0x1000001000001, 0x100000001, 0x10000000001, 0x1000000000001, 0x100000000000001 };
-static const reg_t decReprecaB[8] = { 0, 0x101010101010101, 0x1000100010001, 0x10000010000, 0x100000001, 0x1000000, 0x10000, 0x100 };
-static const int decShiftB[8] = { 0, 64, 64, 48, 64, 40, 48, 56 };
-static const int decOffset[8] = { 0, 0, 0, 2, 0, 3, 2, 1 };
 
 /* WLZ_FAST_DEC_LOOP: LZ4-derived copy helpers, unused by the decoder below, which need symbols Memry.h no longer
    provides; off unless asked for */
@@ -540,7 +536,7 @@ ForceInlineTemplate Uint32 WLZ_Compress_Kernel(
 			hash1Table[ hashV1 ] = srcIdx + i;
 			hash2Table[ hashV2 ] = srcIdx + i;
 
-			for (++i; i < matchLen-1; i+=2) {
+			for (++i; i < matchLen-1 && srcPtr + i + 1 <= srcLastMatch; i+=2) {   /* 8-byte hash reads stay inside the input */
 				hashV1 = WLZ_Hash1(srcPtr + i, WLZ_HASH1BITS);
 				hashV2 = WLZ_Hash2(srcPtr + i, WLZ_HASH2BITS);
 				hash1Table[hashV1] = srcIdx + i;
@@ -665,11 +661,6 @@ unsigned WLZ_Compress_wDictStr(WLZ_State_Str dictStr, const char* source, char* 
 #ifndef _MSC_VER  /* for some reason, Visual fails the aligment test on 32-bit x86 :
                      it reports an aligment of 8-bytes,
                      while actually aligning WLZ_State_Str on 4 bytes. */
-static int WLZ_State_Str_alignment(void)
-{
-    struct { char c; WLZ_State_Str t; } t_a;
-    return sizeof(t_a) - sizeof(t_a.t);
-}
 #endif
 
 WLZ_State_Str *WLZ_New_State()
@@ -816,7 +807,7 @@ ForceInlineTemplate void WLZhc_Insert(WLZhc_State_Str* const wlzStr, const Uint8
 ForceInlineTemplate void WLZhc_Search_Hash1Table(WLZhc_State_Str* const wlzStr, const Uint8 *source, int currIdx, WLZ_Match *matchStr)
 {
 	int *hash1Table = wlzStr->hash1Table;
-	Uint8 *matchPtr, *srcPtr;
+	const Uint8 *matchPtr, *srcPtr;
 	Uint32 hashV0, matchDist;
 	int matchIdx;
 	reg_t diffPattern;
@@ -845,7 +836,7 @@ ForceInlineTemplate void WLZhc_Search_Hash1Table(WLZhc_State_Str* const wlzStr, 
 ForceInlineTemplate void WLZhc_Search_HashChain(WLZhc_State_Str* const wlzStr, const Uint8 *source, int currIdx, const Uint8 *srcLastMatch, const Uint8 *dictLastMatch, WLZ_Match *matchStr, int chainSearchCnt)
 {
 	Uint16 *chain2Table = wlzStr->chain2Table;
-	Uint8 *matchPtr, *srcPtr;
+	const Uint8 *matchPtr, *srcPtr;
 	Uint32 matchDist;
 	int matchLen, matchIdx;
 	const Uint32 dictSize = wlzStr->dictSize;
@@ -894,7 +885,7 @@ ForceInlineTemplate void WLZhc_Search_HashChain(WLZhc_State_Str* const wlzStr, c
 ForceInlineTemplate int WLZhc_Search_HashChain_2D(WLZhc_State_Str* const wlzStr, const Uint8 *source, int currIdx, int maxBack, int nextMatchLen, const Uint8 *srcLastMatch, const Uint8 *dictLastMatch, WLZ_Match *matchStr, int chainSearchCnt)
 {
 	Uint16 *chain2Table = wlzStr->chain2Table;
-	Uint8 *matchPtr, *srcPtr;
+	const Uint8 *matchPtr, *srcPtr;
 	Uint32 matchDist;
 	int matchLen, matchIdx;
 	int back, score, optBack = maxBack;
@@ -1013,11 +1004,11 @@ ForceInlineTemplate Uint32 WLZhc_Compress_Kernel(
 			}
 			else {
 				matchStr.len = 0; matchStr.off = 0;
-				WLZhc_Search_HashChain(wlzStr, source, srcIdx, srcLastMatch, dictLastMatch, &matchStr, validSearchLimit);
+				WLZhc_Search_HashChain(wlzStr, (const Uint8*)source, srcIdx, srcLastMatch, dictLastMatch, &matchStr, validSearchLimit);
 			}
 			if (matchStr.len >= ((Uint32)matchStr.off < WLZ_SHORT_WINDOW ? MAX_HASH_LEN : WLZ_KERNEL_FARLEN)) break;   /* three offset bytes need a longer match */
 
-			WLZhc_Search_Hash1Table(wlzStr, source, srcIdx, &matchStr);
+			WLZhc_Search_Hash1Table(wlzStr, (const Uint8*)source, srcIdx, &matchStr);
 			if (matchStr.len >= MIN_MATCH_LEN) break;
 
 			srcPtr ++;
@@ -1031,9 +1022,9 @@ ForceInlineTemplate Uint32 WLZhc_Compress_Kernel(
 			}
 
 			nextMatchStr.len = 2; nextMatchStr.off = 0;
-			WLZhc_Search_HashChain(wlzStr, source, srcIdx + matchStr.len, srcLastMatch, dictLastMatch, &nextMatchStr, validSearchLimit);
+			WLZhc_Search_HashChain(wlzStr, (const Uint8*)source, srcIdx + matchStr.len, srcLastMatch, dictLastMatch, &nextMatchStr, validSearchLimit);
 
-			lazyForward = WLZhc_Search_HashChain_2D(wlzStr, source, srcIdx + 3, 3, nextMatchStr.len, srcLastMatch, dictLastMatch, &matchStr, 1+validSearchLimit/2 );
+			lazyForward = WLZhc_Search_HashChain_2D(wlzStr, (const Uint8*)source, srcIdx + 3, 3, nextMatchStr.len, srcLastMatch, dictLastMatch, &matchStr, 1+validSearchLimit/2 );
 			
 			
 			nextMatchDone = (0==lazyForward);

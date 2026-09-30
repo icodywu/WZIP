@@ -777,7 +777,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 
 		if (matchOffset == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchLen);
 		else {
-		matchOffset = Offset_Cashe(lastOffset, matchOffset);
+		matchOffset = Offset_Cashe((Uint32*)lastOffset, matchOffset);
 #ifdef WZIP_DEBUG
 		fprintf(fptr, "-->  matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
@@ -948,8 +948,6 @@ static Uint32 WLZ2_Compress_Fast1(
 	const Uint8* anchor = (const Uint8*)source;
 	const Uint8* const srcEnd = (const Uint8*)source + srcSize;
 	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
-	const int dictSize = wzipStr->dictSize;
-	const Uint8*  dictEnd = wzipStr->dictEnd;
 	Uint32 nLzLits;
 
 	Huffman_Str litHuf[N_HufLits];
@@ -960,24 +958,11 @@ static Uint32 WLZ2_Compress_Fast1(
 	Uint8* lzLitBuffer = (Uint8*)malloc(HUF_BlockSize + 32);   /* slack for 16-byte literal copies */    
 	Uint8* lzLitPtr = lzLitBuffer;
 	const Uint8* lzLitEnd = lzLitBuffer + HUF_BlockSize;
-	Uint32 hashV1, hashV2;
-	int  match1Idx, match2Idx;
-	int  lazyMatchLen, lazyMatchOffset, lazyMatchFail;
-	int matchLen, matchOffset;
-	int matchLen2, matchOffset2;
 	int lastOffset[OffCasheSize];
 	int litRun;
 	int* hash1Table = (int *)wzipStr->hash1Table;
-	int* hash2Table = (int *)wzipStr->hash2Table;
-	const Uint32 offWindow = WINDOW(OffWidth[8]);
-	int litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
-	const int hash1Len = wzipStr->hash1Len;
-	const int hash2Len = wzipStr->hash2Len;
+	int litRunMsb, litRunHufIdx;
 
-	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
-	reg_t currPattern, diffPattern;
-
-	const Uint8* matchPtr;
 	WLZ_Huffman_Set huffmanSet;
 	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
 
@@ -999,7 +984,6 @@ static Uint32 WLZ2_Compress_Fast1(
 
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
 	nLzLits = 0;
-	Uint32 srcIdx = 0;
 	for (i = 0; i < OffCasheSize; i++ )
 		lastOffset[i] = 1<<OffWidth[8];
 
@@ -1101,7 +1085,6 @@ static Uint32 WLZ2_Compress_Fast1(
 #undef L0_EMIT_LITERALS
 #undef L0_STORE_SEQUENCE
 
-_last_literals:
 	/* Encode Last Literals */
 	litRun = (int)(srcEnd - anchor);
 
@@ -1407,7 +1390,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 	int litRun, litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
 	const int hash2Len = wzipStr->hash2Len;
 	
-	WLZ_Match matchStr, nextMatchStr = { 0, 0 };
+	WLZ_Match matchStr = { 0, 0 }, nextMatchStr = { 0, 0 };
 
 	WLZ_Huffman_Set huffmanSet;
 	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
@@ -1477,7 +1460,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 					int offset = srcIdx - match0Idx;   // note curr0Idx=srcIdx
 					hash0Table[hashV] = curr0Idx++; 
 					if ( match0Idx >= -dictSize && offset > 0 && offset < WINDOW(OffWidth[hash2Len]) ) {
-						Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
+						const Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
 						reg_t diffPattern = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
 						matchStr.len = diffPattern? N_ZeroBytes(diffPattern) : REG_SIZE;
 						matchStr.off = offset;
