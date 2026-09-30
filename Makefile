@@ -8,7 +8,7 @@ ifeq ($(origin CC),default)
 CC := gcc
 endif
 CFLAGS ?= -O2
-CFLAGS += -Wall -Isrc
+override CFLAGS += -Wall -Isrc
 AR     ?= ar
 EXE    := $(if $(filter Windows_NT,$(OS)),.exe,)
 
