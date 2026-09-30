@@ -15,6 +15,8 @@ Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
 
 Single thread, Intel Core i7-8850H, GCC 14.2 `-O2`; each file compressed whole. Ratio is total input over total
 output; speeds in MB/s. Full tables, the harness and the raw outputs are in [`bench/`](bench) and [`results/`](results).
+These are the paper's measurements, taken before the decoders gained bounds checks; in a direct comparison on Silesia,
+the checks make WLZ4 decode 6-10% slower and WZIP at most 8%.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
