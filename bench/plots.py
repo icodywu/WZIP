@@ -29,21 +29,21 @@ families = [
     (['brotli'], 'Brotli 1.1.0', 'v', 'tab:green', ':'),
     (['xz'], 'xz 5.6.2', 'D', 'tab:purple', ':'),
 ]
-plt.rcParams.update({'font.size': 8})
-fig, axes = plt.subplots(1, 2, figsize=(6.4, 2.75))
+plt.rcParams.update({'font.size': 9})
+fig, axes = plt.subplots(1, 2, figsize=(6.0, 2.6))
 handles = []
 for ax, col, xlabel in ((axes[0], 1, 'Compression speed (MB/s)'), (axes[1], 2, 'Decompression speed (MB/s)')):
     for names, label, mk, color, ls in families:
         pts = sorted([(order(c, l), v) for (c, l), v in d.items() if c in names])
         if not pts: continue
         h, = ax.plot([v[col] for _, v in pts], [v[0] for _, v in pts], marker=mk, color=color, linestyle=ls,
-                     label=label, markersize=3.5, linewidth=1)
+                     label=label, markersize=4, linewidth=1.1)
         if col == 1: handles.append(h)
     ax.set_xscale('log')
     ax.set_xlabel(xlabel)
     ax.grid(True, which='both', alpha=0.25)
 axes[0].set_ylabel('Compression ratio')
-fig.legend(handles=handles, loc='lower center', ncol=6, fontsize=7, frameon=False, bbox_to_anchor=(0.5, -0.01))
-plt.tight_layout(rect=(0, 0.07, 1, 1))
+fig.legend(handles=handles, loc='lower center', ncol=6, fontsize=8.5, columnspacing=1.0, handletextpad=0.4, frameon=False, bbox_to_anchor=(0.5, -0.01))
+plt.tight_layout(rect=(0, 0.09, 1, 1))
 plt.savefig(out)
 print('wrote', out)
