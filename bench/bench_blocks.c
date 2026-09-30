@@ -20,6 +20,7 @@ static double now(void) { LARGE_INTEGER f, t; QueryPerformanceFrequency(&f); Que
 
 static const char* codec;
 static int level;
+static int checked;         /* WZIP_M and WLZ4 decode in their trusted mode (each slot has the slack); CHECKED=1: checked */
 static ZSTD_CCtx* zc; static ZSTD_DCtx* zd;
 static WZIPS_CCtx* sc;
 static WLZ_State_Str* ws; static WLZhc_State_Str* hs;
@@ -45,10 +46,11 @@ static int decompress1(const unsigned char* src, int cs, unsigned char* dst, int
 {
 	switch (kind) {
 	case WZIPS:  return WZIPS_decompress(src, cs, dst, n);
-	case WZIPM:  { int c = n; return wzip_decompress(src, cs, dst, &c); }
+	case WZIPM:  { int c = n; return checked ? wzip_decompress(src, cs, dst, &c) : wzip_decompress_trusted(src, cs, dst, &c); }
 	case LZ4F: case LZ4HC: return LZ4_decompress_safe((const char*)src, (char*)dst, cs, n);
 	case ZSTD:   { size_t r = ZSTD_decompressDCtx(zd, dst, n, src, cs); return ZSTD_isError(r) ? -1 : (int)r; }
-	default:     return (int)WLZ_Decompress((const char*)src, (char*)dst, cs, cap);
+	default:     return (int)(checked ? WLZ_Decompress((const char*)src, (char*)dst, cs, cap)
+	                                  : WLZ_Decompress_Trusted((const char*)src, (char*)dst, cs, cap));
 	}
 }
 
@@ -56,6 +58,7 @@ int main(int argc, char** argv)
 {
 	if (argc < 6) { fprintf(stderr, "usage: bench_blocks <codec> <level> <block size> <rounds> file...\n"); return 1; }
 	codec = argv[1]; level = atoi(argv[2]);
+	checked = getenv("CHECKED") != NULL;
 	static const char* const names[] = { "wzips", "wzipm", "lz4", "lz4hc", "zstd", "wlz4f", "wlz4hc" };
 	for (kind = 0; kind < 7 && strcmp(codec, names[kind]); kind++) ;
 	if (kind == 7) { fprintf(stderr, "unknown codec %s\n", codec); return 1; }

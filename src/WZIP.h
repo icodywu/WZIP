@@ -55,6 +55,9 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 int WZIP_Compress_M(WZIP_State_Str* wzipStr, const void* const source, int srcSize, void* const wzipStream, int wzipCapSize);
 int WZIP_Decompress_L(const void* const source, int const srcSize, void* const dest, int const destSize, void* const dict, int const dictSize);
 int WZIP_Decompress_M(const void* const source, int const srcSize, void* const dest, int const destSize, void* const dict, int const dictSize);
+/* trusted mode (see wzip_decompress_trusted): no checks */
+int WZIP_Decompress_L_Trusted(const void* const source, int const srcSize, void* const dest, int const destSize, void* const dict, int const dictSize);
+int WZIP_Decompress_M_Trusted(const void* const source, int const srcSize, void* const dest, int const destSize, void* const dict, int const dictSize);
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ One-call interface: WZIP_L for 32 KB and more, WZIP_M below ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 
@@ -68,6 +71,13 @@ int wzip_compress(const void* const source, int srcSize, void* const wzipStream,
    or the stream is corrupt or truncated: the input is validated, and no read leaves source[0, srcSize). Not
    thread-safe (WZIP_L and WZIP_M keep their window schedule in global state). */
 int wzip_decompress(const void* const source, int srcSize, void* decmp, int *decCapSize);
+
+/* Trusted mode, opt-in: the same decoding without any check, for input known to come unmodified from wzip_compress
+   (e.g. data this program compressed, or verified by a cryptographic MAC). The stored size still sizes the output;
+   the input must stay readable WZIP_TRUSTED_SRC_PAD bytes past srcSize. A damaged stream can make it read or write out
+   of bounds. On Silesia it decodes up to about 8% faster than wzip_decompress; the paper's figures are this mode's. */
+#define WZIP_TRUSTED_SRC_PAD      32
+int wzip_decompress_trusted(const void* const source, int srcSize, void* decmp, int *decCapSize);
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ WZIP_S : short fixed-size blocks (e.g. 4K/8K storage pages) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 

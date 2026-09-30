@@ -4,11 +4,15 @@
 on one thread pinned to one core at high priority, after a one-second warm-up. Ratio is total input over total
 output; speeds are total input over total time, best of 3 compressions for fast codecs (1 otherwise) and best of 10
 decompressions; every file is verified. Encoder memory is the growth of the peak working set during compression.
+WZIP and WLZ4 decode in their opt-in trusted mode, as in the paper; LZ4 decodes with `LZ4_decompress_safe`.
 
 ```
 bench_all <codec> <level> <compression rounds> <decompression rounds> file...
   codecs: wzip (0-13), zstd (1-22), brotli (0-11, window 2^24), xz (0-9, add 100 for -e), lz4 (acceleration),
           lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy), wlz4hc (0-12)
+  env:    CHECKED=1        WZIP and WLZ4 decode with their default, bounds-checked decoders
+          STREAMS=dir      decompression only, from streams saved in dir (a missing one is compressed and saved
+                           first); STREAMS_ONLY=1 only prepares them, unpinned, so several can run in parallel
 ```
 
 It uses Windows APIs (thread affinity, peak working set) and was built with MSYS2 MinGW-w64 and GCC 14.2:

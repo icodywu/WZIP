@@ -15,8 +15,8 @@ Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
 
 Single thread, Intel Core i7-8850H, GCC 14.2 `-O2`; each file compressed whole. Ratio is total input over total
 output; speeds in MB/s. Full tables, the harness and the raw outputs are in [`bench/`](bench) and [`results/`](results).
-These are the paper's measurements, taken before the decoders gained bounds checks; in a direct comparison on Silesia,
-the checks make WLZ4 decode 6-10% slower and WZIP at most 8%.
+WZIP and WLZ4 decode in their trusted mode here, as in the paper (see Usage); their default, bounds-checked decoders
+are 6-10% (WLZ4) and at most 8% (WZIP) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
@@ -84,11 +84,11 @@ The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 
 and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer.
 On x86 the decoders pick BMI2 code paths at run time.
 
-All decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing outside
-the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated stream
-returns 0. `make fuzz` decodes flipped, overwritten, truncated, spliced and extended streams of every codec from
+The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing
+outside the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated
+stream returns 0. `make fuzz` decodes flipped, overwritten, truncated, spliced and extended streams of every codec from
 buffers of exactly their size, so that the sanitizers catch any stray access; it also decodes each undamaged stream
-from such a buffer.
+from such a buffer, and in trusted mode from a buffer with exactly the documented slack.
 
 ## Usage
 
@@ -112,6 +112,22 @@ WLZhc_Free_State(hc);
 ```
 
 WZIP_S, for 4 KB and 8 KB blocks, has its own interface (below).
+
+### Trusted mode (opt-in)
+
+The default decoders check every stream (below). For data known to come unmodified from these encoders, such as
+data your own program compressed or data verified by a cryptographic MAC, an opt-in trusted mode decodes without any
+check. Because every stream begins with its decoded size, it needs nothing from the caller: the output is sized from
+the stream, as in the default mode. The compressed buffer must stay readable `WZIP_TRUSTED_SRC_PAD` or
+`WLZ_TRUSTED_SRC_PAD` (32) bytes past the stream.
+
+```c
+int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                         /* WZIP */
+unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
+```
+
+On Silesia the trusted mode decodes 6-10% faster for WLZ4 and up to 8% faster for WZIP. Never use it on data that
+may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
 ## Limitations
 
@@ -155,7 +171,7 @@ All three store the decoded size first, so a decoder allocates its output exactl
 | Literals | Huffman, four streams | Huffman, four streams | Huffman, four streams from 8 KB |
 | Dictionary | indexed on each call | indexed on each call | prepared once and shared read-only; matches may cross into the input |
 | Worst-case output | input + 2 bytes (stored) | input + 2 bytes (stored) | input + 3 bytes |
-| Decoder | bounds-checked | bounds-checked | bounds-checked |
+| Decoder | bounds-checked; trusted mode opt-in | bounds-checked; trusted mode opt-in | bounds-checked |
 
 ## Dictionary compression
 

@@ -1812,3 +1812,220 @@ _end:
 	if (destSize == decSize) return decSize;
 	else return 0;
 }
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* The decoder the paper measured, unchanged: no checks, for input known to come unmodified from WZIP's encoder;
+   the input must stay readable WZIP_TRUSTED_SRC_PAD bytes past its end. A damaged stream can make it read or write
+   out of bounds. */
+
+ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd)
+{
+	register Uint32 i, n, lsValue, mchLenHufIdx;
+	register Uint32 litRun, matchLen, matchOffset;
+	Uint32 offsetLast[OffCasheSize];
+	Uint8* destPtr = (Uint8*)dest;
+
+
+	register Bit_Stream bitStream, bitStreamB;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(wzipSeqStart);
+	bitStream.streamPtr = wzipSeqStart;
+	bitStreamB.nUsedBits = 0;
+	bitStreamB.streamPtr = (Uint8*)seqEnd - 8;
+	bitStreamB.container = MemReadLE8(bitStreamB.streamPtr);
+	Uint8* lzLitBufPtr = lzLitBuffer;
+
+	Huffman_DemapX1 litRunHufDemapX1[1 << CapHufLitRunBits];
+	const Uint32 remMaxLitRunHufWt = Build_Safe_DecTableX1(N_HufLitRun, hufWtSet->maxLitRunHufWt, hufWtSet->litRunHufWt, litRunHufDemapX1);
+
+	Huffman_DemapX1 mchLenHufDemapX1[1 << CapHufMchLenBits];
+	const Uint32 remMaxMchLenHufWt = Build_Safe_DecTableX1(N_HufMchLen, hufWtSet->maxMchLenHufWt, hufWtSet->mchLenHufWt, mchLenHufDemapX1);
+
+	Huffman_DemapX1 mchOffHufDemapX1[MchOffGroup][(1 << CapHufMchOffBits)];
+	Uint32 remMaxMchOffHufWt[MchOffGroup];
+
+	for (i = 0; i < MchOffGroup; i++) {
+		remMaxMchOffHufWt[i] = Build_Safe_DecTableX1(N_HufMchOff[i], hufWtSet->maxMchOffHufWt[i], hufWtSet->mchOffHufWt[i], mchOffHufDemapX1[i]);
+	}
+
+#ifdef WZIP_DEBUG
+	FILE* fptr;
+	fopen_s(&fptr, "WZIP_Seq_Decompress.txt", "w");
+#endif
+	memset(offsetLast, 0xFF, OffCasheSize * sizeof(int));
+	/* two sequences per round, A from the forward stream and B from the backward one: their symbol reads are independent
+	   chains of table lookups, which the processor overlaps; the offset cache and the copies still go in order */
+	while (1) {
+		Uint32 litRunB, mchLenHufIdxB, nB, rawA = 0, rawB = 0, matchLenB;
+
+		BITStream_Read_ExtHufX1(bitStream, remMaxLitRunHufWt, litRunHufDemapX1, litRun);
+		BITStream_Read_ExtHufX1(bitStreamB, remMaxLitRunHufWt, litRunHufDemapX1, litRunB);
+		if (unlikely(ValueBits[litRun])) {               /* range symbol: base plus raw low bits */
+			BITStream_Read(bitStream, ValueBits[litRun], lsValue);
+			litRun = ValueBase[litRun] + lsValue;
+			BITStream_Read_Flush(bitStream);
+		}
+		if (unlikely(ValueBits[litRunB])) {
+			BITStream_Read(bitStreamB, ValueBits[litRunB], lsValue);
+			litRunB = ValueBase[litRunB] + lsValue;
+			BITStream_Read_FlushBack(bitStreamB);
+		}
+
+		if (unlikely(destPtr + litRun >= destEnd)) {     /* A is the terminal record */
+			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
+			destPtr += litRun;
+			break;
+		}
+
+		/* B's symbols are read even when B turns out to be the terminal record: they are then unused */
+		BITStream_Read_ExtHufX1(bitStream, remMaxMchLenHufWt, mchLenHufDemapX1, mchLenHufIdx);
+		BITStream_Read_ExtHufX1(bitStreamB, remMaxMchLenHufWt, mchLenHufDemapX1, mchLenHufIdxB);
+		const Uint32 offGroup = min(MchOffGroup - 1, mchLenHufIdx), offGroupB = min(MchOffGroup - 1, mchLenHufIdxB);
+		BITStream_Read_ExtHufX1(bitStream, remMaxMchOffHufWt[offGroup], mchOffHufDemapX1[offGroup], n);
+		BITStream_Read_ExtHufX1(bitStreamB, remMaxMchOffHufWt[offGroupB], mchOffHufDemapX1[offGroupB], nB);
+		if (likely(n >= OffCasheSize)) {
+			i = (n >> 1) - 1;
+			BITStream_Read(bitStream, i, lsValue);
+			rawA = ((2 ^ (n & 1)) << i ^ lsValue) - (OffCasheSize - 1);
+		}
+		if (likely(nB >= OffCasheSize)) {
+			i = (nB >> 1) - 1;
+			BITStream_Read(bitStreamB, i, lsValue);
+			rawB = ((2 ^ (nB & 1)) << i ^ lsValue) - (OffCasheSize - 1);
+		}
+		matchLen = mchLenHufIdx + MinMatchLen;
+		if (unlikely(ValueBits[matchLen])) {
+			BITStream_Read(bitStream, ValueBits[matchLen], lsValue);
+			matchLen = ValueBase[matchLen] + lsValue;
+		}
+		matchLenB = mchLenHufIdxB + MinMatchLen;
+		if (unlikely(ValueBits[matchLenB])) {
+			BITStream_Read(bitStreamB, ValueBits[matchLenB], lsValue);
+			matchLenB = ValueBase[matchLenB] + lsValue;
+		}
+		BITStream_Read_Flush(bitStream);
+		BITStream_Read_FlushBack(bitStreamB);
+
+		/* A */
+		if (likely(n >= OffCasheSize)) {
+			matchOffset = rawA;
+			offsetLast[3] = offsetLast[2];                       /* explicit shifts: a memmove() here becomes a library call */
+			offsetLast[2] = offsetLast[1];
+			offsetLast[1] = offsetLast[0];
+			offsetLast[0] = matchOffset;
+		}
+		else {                                           /* a hit moves to the front of the cache */
+			matchOffset = offsetLast[n];
+			if (n) {
+				offsetLast[3] = n >= 3 ? offsetLast[2] : offsetLast[3];
+				offsetLast[2] = n >= 2 ? offsetLast[1] : offsetLast[2];
+				offsetLast[1] = offsetLast[0];
+				offsetLast[0] = matchOffset;
+			}
+		}
+		destPtr = WLZ_Execute(destPtr, lzLitBufPtr, litRun, matchLen, matchOffset, dest, destEnd, dictEnd, dictSize);
+		lzLitBufPtr += litRun;
+
+		/* B */
+		if (unlikely(destPtr + litRunB >= destEnd)) {    /* B is the terminal record */
+			memcpy(destPtr, lzLitBufPtr, litRunB);
+			destPtr += litRunB;
+			break;
+		}
+		if (likely(nB >= OffCasheSize)) {
+			matchOffset = rawB;
+			offsetLast[3] = offsetLast[2];
+			offsetLast[2] = offsetLast[1];
+			offsetLast[1] = offsetLast[0];
+			offsetLast[0] = matchOffset;
+		}
+		else {                                           /* a hit moves to the front of the cache */
+			matchOffset = offsetLast[nB];
+			if (nB) {
+				offsetLast[3] = nB >= 3 ? offsetLast[2] : offsetLast[3];
+				offsetLast[2] = nB >= 2 ? offsetLast[1] : offsetLast[2];
+				offsetLast[1] = offsetLast[0];
+				offsetLast[0] = matchOffset;
+			}
+		}
+		destPtr = WLZ_Execute(destPtr, lzLitBufPtr, litRunB, matchLenB, matchOffset, dest, destEnd, dictEnd, dictSize);
+		lzLitBufPtr += litRunB;
+	}
+
+#ifdef WZIP_DEBUG
+	fclose(fptr);
+#endif
+
+	return (Uint32)(destPtr - (Uint8*)dest);
+}
+
+
+#define SEQ_TRUSTED_PARAMS  Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, \
+    WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd
+static int Decompress_WLZ_Sequence_Trusted(SEQ_TRUSTED_PARAMS)
+{
+	return Decompress_WLZ_Sequence_Trusted_Body(wzipSeqStart, lzLitBuffer, dest, destEnd, dictEnd, dictSize, hufWtSet, seqEnd);
+}
+#if WZIP_DYNAMIC_BMI2
+static __attribute__((target("bmi,bmi2,lzcnt")))
+int Decompress_WLZ_Sequence_Trusted_Bmi2(SEQ_TRUSTED_PARAMS)
+{
+	return Decompress_WLZ_Sequence_Trusted_Body(wzipSeqStart, lzLitBuffer, dest, destEnd, dictEnd, dictSize, hufWtSet, seqEnd);
+}
+#endif
+
+/* srcSize must be exact: the second sequence stream is read backward from the end of the block */
+int WZIP_Decompress_M_Trusted(
+	const void* const source, int const srcSize,
+	void* const dest, int const destSize,
+	void* const dict, int const dictSize)
+{
+	int i;
+	Uint32 nLzLits, zipLitSize;
+	Uint8* srcPtr = (Uint8*)source;
+	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
+
+	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
+		nLzLits = MemReadLE4(srcPtr);
+		srcPtr += 4;
+	}
+	else {
+		nLzLits = MemReadLE2(srcPtr);
+		srcPtr += 2;
+	}
+	Uint8* lzLitBuffer = (Uint8*)malloc(nLzLits + 256);                 /* leave margin to allow for overwrite by MemWildCopy */
+	zipLitSize = Huffman_Decompress_Trusted(srcPtr, lzLitBuffer, nLzLits, N_HufLits);
+	srcPtr += zipLitSize;
+
+	Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(srcPtr);
+	bitStream.streamPtr = srcPtr;
+
+	Uint8 wtHufWt[MAX_HufWeight + 3];                /* Second-level Huffman Weight table on the Huffman weights */
+	Uint32 maxWtHufWt;
+	Huffman_DemapX1 wtHufDemapX1[1 << MAX_HufHufWt];     /* Second-level Huffman demapper for Huffman weights */
+	WLZ_HufWt_Set hufWtSet;
+
+	maxWtHufWt = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, wtHufWt);
+	Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxWtHufWt, wtHufWt, wtHufDemapX1);
+	hufWtSet.maxLitRunHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufLitRun, hufWtSet.litRunHufWt);
+	hufWtSet.maxMchLenHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchLen, hufWtSet.mchLenHufWt);
+	for (i = 0; i < MchOffGroup; i++)
+		hufWtSet.maxMchOffHufWt[i] = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], hufWtSet.mchOffHufWt[i]);
+	BITStream_Read_FlushEnd(bitStream);
+
+	Uint8* const destEnd = (Uint8*)dest + destSize;
+	int decSize;
+#if WZIP_DYNAMIC_BMI2
+	if (CPU_Has_Bmi2())
+		decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, dictSize, &hufWtSet, (const Uint8*)source + srcSize);
+	else
+#endif
+	decSize = Decompress_WLZ_Sequence_Trusted(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, dictSize, &hufWtSet, (const Uint8*)source + srcSize);
+
+	free(lzLitBuffer);
+
+	if (destSize == decSize) return decSize;
+	else return 0;
+}

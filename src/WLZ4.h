@@ -265,6 +265,15 @@ WLZLIB_API unsigned WLZ_Compress_wDictStr(WLZ_State_Str dictStr, const char* sou
 
 WLZLIB_API unsigned WLZ_Decompress_wDict(const char* src, char* destiny, unsigned srcSize, unsigned dstCapSize, const char* dictionary, unsigned dictSize);
 
+/*! Trusted mode, opt-in: the same decoding without any check, for input known to come unmodified from a WLZ4 encoder
+	(e.g. data this program compressed, or verified by a cryptographic MAC). The stored size still sizes the output
+	(dstCapacity >= decoded size + WLZ_MEM_OVERHEAD); the input must stay readable WLZ_TRUSTED_SRC_PAD bytes past
+	compressedSize. A damaged stream can make it read or write out of bounds. On Silesia it decodes 6-10% faster than WLZ_Decompress; the paper's figures are this
+	mode's. */
+#define WLZ_TRUSTED_SRC_PAD       32
+WLZLIB_API unsigned WLZ_Decompress_Trusted(const char* src, char* dst, unsigned compressedSize, unsigned dstCapSize);
+WLZLIB_API unsigned WLZ_Decompress_wDict_Trusted(const char* src, char* destiny, unsigned srcSize, unsigned dstCapSize, const char* dictionary, unsigned dictSize);
+
 
 /*^*************************************
  * !!!!!!   STATIC LINKING ONLY   !!!!!!

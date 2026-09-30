@@ -1061,3 +1061,54 @@ int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32
 	}
 	return (int)(srcPtr - (const Uint8*)source);
 }
+
+/*~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in): the unchecked literal decoder, for WZIP_Decompress_[LM]_Trusted ~~~~~~~~~~~~~~~~~~~*/
+
+static Uint32 Huffman_Decompress_Block_Trusted(const void *source, void* dest, Uint32 destSize, int nLits)
+{
+	Uint8* srcPtr = (Uint8*)source;
+	Uint8* destPtr = (Uint8*)dest;
+	if (0 == *srcPtr++) {  /* uncompressed */
+		MemWildCopy(destPtr, srcPtr, destPtr + destSize);
+		return destSize+1;
+	}
+
+	Uint32 comprSize = MemReadLE2(srcPtr);
+	srcPtr += 2;
+	Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(srcPtr);
+	bitStream.streamPtr = srcPtr;
+	Uint8 hufHufCodeBits[MAX_HufWeight + 3], litHufCodeBits[MAX_HufSize];
+	Huffman_DemapX1 hufHufCodeDemapX1[1 << MAX_HufHufWt];
+	Uint32 maxHufHufCodeBits = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCodeBits);
+
+	Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxHufHufCodeBits, hufHufCodeBits, hufHufCodeDemapX1);
+	const Uint32 maxHufCodeBits = Read_Huffman_Header_byHuffman(&bitStream, maxHufHufCodeBits, hufHufCodeDemapX1, nLits, litHufCodeBits);
+
+	BITStream_Read_FlushEnd(bitStream);
+	srcPtr = bitStream.streamPtr;
+
+	Huffman_Decompress_Block_Body(litHufCodeBits, nLits, maxHufCodeBits, -1, srcPtr, comprSize, destPtr, destSize);
+	return (Uint32)(srcPtr + comprSize - (Uint8*)source);
+}
+
+/* It returns compressed byte-size for the original destSize bytes of literals */
+Uint32 Huffman_Decompress_Trusted(const void* source, void* dest, Uint32 destSize, int nLits)
+{
+	Uint32 srcBlkSize;
+	Uint8* srcPtr = (Uint8*)source;
+	Uint8* destPtr = (Uint8*)dest;
+	while (destSize >= HUF_BlockSize) {
+		destSize -= HUF_BlockSize;
+		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, HUF_BlockSize, nLits);
+		srcPtr += srcBlkSize;
+		destPtr += HUF_BlockSize;
+	}
+	if (destSize > 0) {
+		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, destSize, nLits);
+		srcPtr += srcBlkSize;
+	}
+
+	return (Uint32)(srcPtr - (Uint8*)source);
+}

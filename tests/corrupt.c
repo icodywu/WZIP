@@ -73,13 +73,16 @@ static void report(const char* codec, int level, const char* name, int it)
 	failures++;
 }
 
-/* the undamaged stream, in a buffer of exactly its size: the decoder must reproduce the input without reading past it */
-static unsigned char* exact_copy(const unsigned char* cmp, int c)
+/* the undamaged stream, in a buffer of exactly its size plus pad bytes: the decoder must reproduce the input without
+   reading further (pad 0 for the checked decoders, the documented slack for the trusted ones) */
+static unsigned char* exact_copy_pad(const unsigned char* cmp, int c, int pad)
 {
-	unsigned char* d = (unsigned char*)malloc(c);
+	unsigned char* d = (unsigned char*)malloc((size_t)c + pad + 1);
 	memcpy(d, cmp, c);
+	memset(d + c, 0, pad);
 	return d;
 }
+static unsigned char* exact_copy(const unsigned char* cmp, int c) { return exact_copy_pad(cmp, c, 0); }
 static void check_clean(int ok, const char* codec, int level, const char* name)
 {
 	decodes++;
@@ -100,6 +103,10 @@ static void fuzz_wzip(const unsigned char* src, int n, const char* name, int ite
 			unsigned char* e = exact_copy(cmp, c);
 			int dcap = n;
 			check_clean(wzip_decompress(e, c, dec, &dcap) == n && !memcmp(dec, src, n), "wzip", levels[l], name);
+			free(e);
+			e = exact_copy_pad(cmp, c, WZIP_TRUSTED_SRC_PAD);      /* trusted mode: undamaged streams only */
+			dcap = n;
+			check_clean(wzip_decompress_trusted(e, c, dec, &dcap) == n && !memcmp(dec, src, n) && guard_ok(dec, n), "wzip-t", levels[l], name);
 			free(e);
 		}
 		for (int it = 0; it < iters; it++) {
@@ -168,6 +175,10 @@ static void fuzz_wlz4(const unsigned char* src, int n, const char* name, int ite
 		{
 			unsigned char* e = exact_copy(cmp, (int)c);
 			check_clean(WLZ_Decompress((const char*)e, (char*)dec, c, (unsigned)cap) == (unsigned)n && !memcmp(dec, src, n), "wlz4", mode, name);
+			free(e);
+			e = exact_copy_pad(cmp, (int)c, WLZ_TRUSTED_SRC_PAD);  /* trusted mode: undamaged streams only */
+			check_clean(WLZ_Decompress_Trusted((const char*)e, (char*)dec, c, (unsigned)cap) == (unsigned)n && !memcmp(dec, src, n)
+				&& guard_ok(dec, cap), "wlz4-t", mode, name);
 			free(e);
 		}
 		for (int it = 0; it < iters; it++) {

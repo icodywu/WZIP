@@ -53,6 +53,16 @@ static void test_wzip(const unsigned char* src, int n, const char* name)
 		const int d = wzip_decompress(cmp, c, dec, &dcap);
 		if (d != n || memcmp(src, dec, n)) fail("wzip", name, level, "decoded data differs");
 		if (!guard_ok(dec, n > 0 ? n : 1)) fail("wzip", name, level, "decoder wrote past the decoded size");
+		{   /* trusted mode, from a buffer holding the stream and WZIP_TRUSTED_SRC_PAD bytes */
+			unsigned char* t = (unsigned char*)malloc((size_t)c + WZIP_TRUSTED_SRC_PAD);
+			memcpy(t, cmp, c);
+			memset(t + c, 0, WZIP_TRUSTED_SRC_PAD);
+			memset(dec, 0, n > 0 ? n : 1);
+			dcap = n;
+			if (wzip_decompress_trusted(t, c, dec, &dcap) != n || memcmp(src, dec, n)) fail("wzip", name, level, "trusted mode differs");
+			if (!guard_ok(dec, n > 0 ? n : 1)) fail("wzip", name, level, "trusted mode wrote past the decoded size");
+			free(t);
+		}
 		if (n > 0) {                                      /* one byte too little room must fail cleanly */
 			dcap = n - 1;
 			if (wzip_decompress(cmp, c, dec, &dcap) != 0) fail("wzip", name, level, "accepted a too-small output buffer");
@@ -120,6 +130,16 @@ static void test_wlz4(const unsigned char* src, int n, const char* name)
 		const unsigned d = WLZ_Decompress((const char*)cmp, (char*)dec, c, (unsigned)n + WLZ_MEM_OVERHEAD);
 		if (d != (unsigned)n || memcmp(src, dec, n)) fail("wlz4", name, mode, "decoded data differs");
 		if (!guard_ok(dec, (size_t)n + WLZ_MEM_OVERHEAD)) fail("wlz4", name, mode, "decoder wrote past its capacity");
+		{   /* trusted mode, from a buffer holding the stream and WLZ_TRUSTED_SRC_PAD bytes */
+			unsigned char* t = (unsigned char*)malloc((size_t)c + WLZ_TRUSTED_SRC_PAD);
+			memcpy(t, cmp, c);
+			memset(t + c, 0, WLZ_TRUSTED_SRC_PAD);
+			memset(dec, 0, (size_t)n + WLZ_MEM_OVERHEAD);
+			const unsigned dt = WLZ_Decompress_Trusted((const char*)t, (char*)dec, c, (unsigned)n + WLZ_MEM_OVERHEAD);
+			if (dt != (unsigned)n || memcmp(src, dec, n)) fail("wlz4", name, mode, "trusted mode differs");
+			if (!guard_ok(dec, (size_t)n + WLZ_MEM_OVERHEAD)) fail("wlz4", name, mode, "trusted mode wrote past its capacity");
+			free(t);
+		}
 	}
 	WLZ_Free_State(ws);
 	WLZhc_Free_State(hs);

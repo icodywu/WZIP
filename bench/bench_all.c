@@ -5,6 +5,8 @@
    Usage: bench_all <codec> <level> <crounds> <drounds> file...
    codecs: wzip (0-13), zstd (1-22), brotli (0-11, window 2^24), xz (0-9, add 100 for extreme), lz4 (acceleration),
            lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy; level ignored), wlz4hc (0-12)
+   WZIP and WLZ4 decode in their trusted mode, as in the paper (the compressed buffers have the required slack); env
+   CHECKED=1 selects their default, bounds-checked decoders. LZ4 decodes with LZ4_decompress_safe.
    Env PERFILE=1 prints each file's compressed size.
    Env STREAMS=<dir>: decompression only, from compressed streams saved in <dir> (<file>.<codec><level>); a missing
    stream is compressed (untimed) and saved first. The compression speed and memory then print as 0; with
@@ -33,6 +35,7 @@ static double wsMB(int peak)
 
 static const char* codec;
 static int level;
+static int checked;                                      /* CHECKED=1: the bounds-checked WZIP and WLZ4 decoders */
 static ZSTD_CCtx* zc; static ZSTD_DCtx* zd;
 static WLZ_State_Str* ws; static WLZhc_State_Str* hs;
 
@@ -56,7 +59,7 @@ static size_t compress1(const unsigned char* src, size_t n, unsigned char* dst, 
 
 static size_t decompress1(const unsigned char* src, size_t cs, unsigned char* dst, size_t cap)
 {
-    if (!strcmp(codec, "wzip")) { int c = (int)cap; return (size_t)wzip_decompress(src, (int)cs, dst, &c); }
+    if (!strcmp(codec, "wzip")) { int c = (int)cap; return (size_t)(checked ? wzip_decompress(src, (int)cs, dst, &c) : wzip_decompress_trusted(src, (int)cs, dst, &c)); }
     if (!strcmp(codec, "zstd")) return ZSTD_decompressDCtx(zd, dst, cap, src, cs);
     if (!strcmp(codec, "brotli")) { size_t out = cap; return BrotliDecoderDecompress(cs, src, &out, dst) == BROTLI_DECODER_RESULT_SUCCESS ? out : 0; }
     if (!strcmp(codec, "xz")) {
@@ -64,7 +67,8 @@ static size_t decompress1(const unsigned char* src, size_t cs, unsigned char* ds
         return lzma_stream_buffer_decode(&memlimit, 0, NULL, src, &inpos, cs, dst, &outpos, cap) == LZMA_OK ? outpos : 0;
     }
     if (!strncmp(codec, "lz4", 3)) return (size_t)LZ4_decompress_safe((const char*)src, (char*)dst, (int)cs, (int)cap);
-    return WLZ_Decompress((const char*)src, (char*)dst, (unsigned)cs, (unsigned)cap);
+    return checked ? WLZ_Decompress((const char*)src, (char*)dst, (unsigned)cs, (unsigned)cap)
+                   : WLZ_Decompress_Trusted((const char*)src, (char*)dst, (unsigned)cs, (unsigned)cap);
 }
 
 static const char* base_name(const char* p)
@@ -83,6 +87,7 @@ int main(int argc, char** argv)
         SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
     }
     codec = argv[1]; level = atoi(argv[2]);
+    checked = getenv("CHECKED") != NULL;
     const int crounds = atoi(argv[3]), drounds = atoi(argv[4]), nf = argc - 5;
     const int perFile = getenv("PERFILE") != NULL;
     unsigned char** src = malloc(nf * sizeof(*src)), **cmp = malloc(nf * sizeof(*cmp));

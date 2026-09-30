@@ -227,6 +227,7 @@ void Build_ExtHuffman_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHufCo
 
 int Huffman_Select_Decompressor(Uint32 cmprSize, Uint32 srcSize, Uint32 maxHufBits, Uint32* decTabBitsX2);
 int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32 destSize, int nLits);
+Uint32 Huffman_Decompress_Trusted(const void* source, void* dest, Uint32 destSize, int nLits);   /* no checks: trusted mode */
 void Huffman_Decompress_Block_Body(Uint8* litHufCodeBits, int nLits, Uint32 maxLitHufBits, int algId, Uint8* cmprBuffer, Uint32 cmprSize, Uint8* decBuffer, const Uint32 decSize);
 
 void Huffman_Tester(); 

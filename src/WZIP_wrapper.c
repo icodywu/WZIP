@@ -265,6 +265,26 @@ int wzip_decompress(const void* source, int srcSize, void* decmp, int *decCapSiz
 		return WZIP_Decompress_M(srcPtr, srcSize, decmp, decSize, NULL, 0);
 }
 
+/* Trusted mode (WZIP.h): the same routing, to the unchecked decoders */
+int wzip_decompress_trusted(const void* source, int srcSize, void* decmp, int *decCapSize)
+{
+	if (NULL == source || NULL == decmp || NULL == decCapSize || srcSize < 2) return 0;
+	const int totalSize = srcSize;
+	const int decSize = WZIP_Read_DecSize(source, &srcSize);
+	const Uint8* const srcPtr = (const Uint8*)source + (totalSize - srcSize);     /* past the size header */
+	if (0 == decSize) {                                 /* stored uncompressed */
+		if (*decCapSize < srcSize) return 0;
+		memcpy(decmp, srcPtr, srcSize);
+		return srcSize;
+	}
+	if (*decCapSize < decSize) return 0;
+
+	if (decSize >> 15)
+		return WZIP_Decompress_L_Trusted(srcPtr, srcSize, decmp, decSize, NULL, 0);
+	else
+		return WZIP_Decompress_M_Trusted(srcPtr, srcSize, decmp, decSize, NULL, 0);
+}
+
 #endif
 
 #if defined (__cplusplus)

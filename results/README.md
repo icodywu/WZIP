@@ -1,7 +1,9 @@
 # Raw results of the paper
 
 Output of `bench/bench_all` (one line per codec and level: ratio, compression and decompression speed in MB/s,
-encoder memory in MB, verification failures). The paper's tables are `gen_tables.py` applied to these files:
+encoder memory in MB, verification failures). WZIP and WLZ4 were measured with the decoders that are now their opt-in
+trusted mode (`wzip_decompress_trusted`, `WLZ_Decompress_Trusted`), the same code. The paper's tables are
+`gen_tables.py` applied to these files:
 
 ```sh
 cd bench

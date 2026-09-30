@@ -2952,3 +2952,322 @@ int WZIP_Decompress_L(
 	else return 0;
 }
 
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* The decoder the paper measured, unchanged: no checks, for input known to come unmodified from WZIP's encoder;
+   the input must stay readable WZIP_TRUSTED_SRC_PAD bytes past its end. A damaged stream can make it read or write
+   out of bounds. */
+
+ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
+	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
+{
+	register Uint32 i, n, lsValue, mchLenHufIdx;
+	register Uint32 litRun, matchLen, matchOffset;
+	Uint8* destPtr = (Uint8*)dest+decPos;
+	Uint8* matchPtr, *destPtrEnd;
+
+	static const ExtHuffman_Lit extHuf[] = {
+	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
+	{8, 3},  {9, 3},  {10, 3},  {11, 3},    {12, 3},  {13, 3}, {14, 3}, {15, 3},             /* 48-55:  64 - 127 */
+	{4, 5},  {5, 5}, {6, 5}, {7, 5},                                                         /* 56-59:  128 - 255 */
+	{4, 6},  {5, 6}, {6, 6}, {7, 6},                                                         /* 60-63:  256 - 511 */
+	{2, 8},  {3, 8},                                                                         /* 64-65:  512 - 1023 */
+	{2, 9},  {3, 9}, 																		 /* 66-67:  1024 - 2047 */
+	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
+	{0, 24},                                                                                 /* 70:     2048 - 16M  */
+	};
+
+	static const unsigned inc4table[8] = { 0, 0, 0,  1,  0,  4, 4, 4 };     /* 4 % matchOffset */
+	static const unsigned inc8table[8] = { 0, 0, 0,  2,  0,  3, 2, 1 };     /* 8 % matchOffset */
+
+	register ExtHuffman_Lit extHufRes;
+	register Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(*wzipSeqStart);
+	bitStream.streamPtr = *wzipSeqStart;
+	Uint8* lzLitBufPtr = *lzLitBufRef;
+#ifdef WZIP_DEBUG
+	FILE* fptr;
+	char filename[100];
+	snprintf(filename, sizeof(filename),
+		"WZIP_Seq_Decompress_%d.txt", decPos);
+
+	fptr = fopen(filename, "w");
+
+#endif
+
+	Huffman_DemapX1 litRunHufDemapX1[1 << CapHufLitRunBits];
+	const Uint32 remMaxLitRunHufWt = sizeof(bitStream.container) * 8 - hufWtSet->maxLitRunHufWt;
+	Build_Huffman_DecTableX1(N_HufLitRun, hufWtSet->maxLitRunHufWt, hufWtSet->litRunHufWt, litRunHufDemapX1);
+
+	Joint_DemapX1 jointDemapX1[1 << CapHufMchLenBits];          /* slot-joint blocks */
+	Huffman_DemapX1 mchLenHufDemapX1[1 << CapHufMchLenBits];    /* classic blocks */
+	const Uint32 remMaxMchLenHufWt = sizeof(bitStream.container) * 8 - hufWtSet->maxMchLenHufWt;
+	if (slotJoint) Build_Joint_DecTable(hufWtSet->maxMchLenHufWt, hufWtSet->mchLenHufWt, jointDemapX1);
+	else Build_Huffman_DecTableX1(N_HufJointClassic, hufWtSet->maxMchLenHufWt, hufWtSet->mchLenHufWt, mchLenHufDemapX1);
+
+	/* the offset table of each length group, built at the full CapHufMchOffBits width, at a fixed stride: a table is
+	   selected by arithmetic on the group, and all share one shift (an empty group, never read, is left unbuilt) */
+	Huffman_DemapX1* mchOff_HufDemapX1 = (Huffman_DemapX1*)malloc(MchOffGroup * (1 << CapHufMchOffBits)*sizeof(Huffman_DemapX1));
+	for (i = 0; i < MchOffGroup; i++)
+		Build_Huffman_DecTableX1(N_HufMchOff[i], hufWtSet->maxMchOffHufWt[i] ? CapHufMchOffBits : 0, hufWtSet->mchOffHufWt[i],
+			mchOff_HufDemapX1 + (i << CapHufMchOffBits));
+	const Uint32 lastOffGroup = MchOffGroup - 1;
+
+	for(int seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+
+		Uint32 litClass, slotSel;
+		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
+			const Joint_DemapX1 js = jointDemapX1[(Uint32)((bitStream.container << bitStream.nUsedBits) >> remMaxMchLenHufWt)];
+			bitStream.nUsedBits += js.nbits;
+			mchLenHufIdx = js.mlSym;
+			litClass = js.litClass;
+			slotSel = js.slotSel;
+		}
+		else {                                           /* joint symbol: literal-run class and length */
+			BITStream_Read_ExtHufX1(bitStream, remMaxMchLenHufWt, mchLenHufDemapX1, mchLenHufIdx);
+			litClass = mchLenHufIdx >= 2 * N_HufMchLen ? 2 : mchLenHufIdx >= N_HufMchLen;
+			mchLenHufIdx -= litClass * N_HufMchLen;
+			slotSel = OffCasheSize;
+		}
+		{   /* the literal-run symbol is looked up for every sequence but consumed for class 2 only: no branch */
+			const Huffman_DemapX1 lr = litRunHufDemapX1[(Uint32)((bitStream.container << bitStream.nUsedBits) >> remMaxLitRunHufWt)];
+			const Uint32 isRun = litClass >> 1;
+			bitStream.nUsedBits += lr.nbits & (0u - isRun);
+			litRun = isRun ? lr.lit : litClass;
+		}
+		if (unlikely(litRun >= LitRunDirect)) { /* Read extra number of bytes */
+			extHufRes = extHuf[litRun - LitRunDirect];
+			BITStream_Read(bitStream, extHufRes.lsBits, lsValue);
+			litRun = extHufRes.msValue << extHufRes.lsBits ^ lsValue;
+			BITStream_Read_Flush(bitStream);
+		}
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "DecPos=%d, litRun=%d,  ", (Uint32)(destPtr - dest), litRun);
+#endif
+
+		destPtrEnd = destPtr + litRun;
+		if ( unlikely(destPtrEnd >= destEnd) ) {        /* note the ending is checked right after literal run */
+			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
+			destPtr = destPtrEnd;
+			break;
+		}
+
+		if (!slotJoint || slotSel == OffCasheSize) {     /* the offset symbol: a new offset, a run count, or (classic) a cache slot */
+			const Uint32 offGroup = fineGroups ? min(5u, mchLenHufIdx) + (mchLenHufIdx >= 7) + (mchLenHufIdx >= 13) : min(lastOffGroup, mchLenHufIdx);
+			const Huffman_DemapX1* const offTable = mchOff_HufDemapX1 + (offGroup << CapHufMchOffBits);
+			BITStream_Read_ExtHufX1(bitStream, (sizeof(bitStream.container) * 8 - CapHufMchOffBits), offTable, n);
+			if (slotJoint) n = n < OffCasheSize ? OffCasheSize : n;    /* only new offsets here: corrupt input harmless */
+		}
+		else n = slotSel;
+		if (likely(n >= OffCasheSize)) {
+			i = (n >> 1) - 1;
+			//lsBits = ExtHufMchOff[n].lsBits;
+			BITStream_Read(bitStream, i, lsValue);
+			//matchOffset = (ExtHufMchOff[n].msValue << lsBits ^ lsValue) - (OffCasheSize - 1);
+			matchOffset = ((2 ^ (n & 1)) << i ^ lsValue) - (OffCasheSize - 1);
+			if (unlikely(mchLenHufIdx == RunSym)) {         /* a run: its count came in the offset field */
+				matchLen = matchOffset;
+				matchOffset = 1;
+				BITStream_Read_Flush(bitStream);
+				if (matchLen > (Uint32)(destEnd - destPtrEnd)) break;     /* corrupt: the size check fails */
+				if (unlikely(destPtrEnd + matchLen > destEnd - 16 || destPtrEnd == (Uint8*)dest)) goto _execute;
+				MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
+				lzLitBufPtr += litRun;
+				if (matchLen <= 16) {                                /* a short run: two wild 8-byte stores */
+					const Uint64 fill = destPtrEnd[-1] * 0x0101010101010101ull;
+					memcpy(destPtrEnd, &fill, 8);
+					memcpy(destPtrEnd + 8, &fill, 8);
+				}
+				else memset(destPtrEnd, destPtrEnd[-1], matchLen);
+				destPtr = destPtrEnd += matchLen;
+				continue;
+			}
+			offsetLast[3] = offsetLast[2];                       /* explicit shifts: a memmove() here becomes a library call */
+			offsetLast[2] = offsetLast[1];
+			offsetLast[1] = offsetLast[0];
+			offsetLast[0] = matchOffset;
+		}
+		else {                                           /* a hit moves to the front of the cache */
+			matchOffset = offsetLast[n];
+			if (n) {
+				offsetLast[3] = n >= 3 ? offsetLast[2] : offsetLast[3];
+				offsetLast[2] = n >= 2 ? offsetLast[1] : offsetLast[2];
+				offsetLast[1] = offsetLast[0];
+				offsetLast[0] = matchOffset;
+			}
+		}
+
+		matchLen = mchLenHufIdx + MinMatchLen;
+		if (unlikely(matchLen >= LitRunDirect)) {
+			extHufRes = extHuf[matchLen - LitRunDirect];
+			BITStream_Read_Flush(bitStream);
+			BITStream_Read(bitStream, extHufRes.lsBits, lsValue);
+			matchLen = extHufRes.msValue << extHufRes.lsBits ^ lsValue;
+		}
+		BITStream_Read_Flush(bitStream);
+
+	_execute:
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (unlikely(destPtrEnd + matchLen > destEnd - 16)) {  /* near the end: wild copies would write past it */
+			memcpy(destPtr, lzLitBufPtr, litRun);
+			destPtr = destPtrEnd;
+			lzLitBufPtr += litRun;
+			destPtrEnd += matchLen;
+			if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset)
+				memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
+			else
+				for (Uint8* q = destPtr; q < destPtrEnd; q++) *q = *(q - matchOffset);
+			destPtr = destPtrEnd;
+			continue;
+		}
+		MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
+		destPtr = destPtrEnd;
+		lzLitBufPtr += litRun;
+
+		destPtrEnd += matchLen;
+		if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset) {
+			/* the match lies in the dictionary, which the compressor never lets it run past:
+			   copy exactly, as the dictionary may end at the end of its buffer */
+			memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
+		}
+		else if (likely(matchOffset >= 16)) {
+			matchPtr = destPtr - matchOffset;
+			MemWildCopy(destPtr, matchPtr, destPtrEnd);
+		}
+		else {
+			matchPtr = destPtr - matchOffset;
+			if (likely(matchOffset < 8)) {
+				destPtr[0] = matchPtr[0];
+				destPtr[1] = matchPtr[1];
+				destPtr[2] = matchPtr[2];
+				destPtr[3] = matchPtr[3];
+				memcpy(destPtr + 4, matchPtr + inc4table[matchOffset], 4);   /* inc4table equivalent to 4 % matchOffset */
+				matchPtr += inc8table[matchOffset];                         /* equivalent to 8 % matchOffset */
+			}
+			else {
+				memcpy(destPtr, matchPtr, 8);
+				matchPtr += 8;
+			}
+			MemWildCopy_Overlap(destPtr + 8, matchPtr, destPtrEnd);
+		}
+		destPtr = destPtrEnd;
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
+		fflush(fptr);
+#endif
+
+	}
+#ifdef WZIP_DEBUG
+	fclose(fptr);
+#endif
+
+	*lzLitBufRef = lzLitBufPtr;
+	BITStream_Read_FlushEnd(bitStream);
+	*wzipSeqStart = bitStream.streamPtr;
+	free(mchOff_HufDemapX1);
+	return (Uint32)(destPtr - dest);
+}
+
+
+#define SEQ_TRUSTED_CALL(body, fine)   (hufWtSet->slotJoint                                                                                            \
+    ? body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 1)                                     \
+    : body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 0))
+#define SEQ_TRUSTED_PARAMS  Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, \
+    const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize]
+
+static int Decompress_WLZ_Sequence_Trusted(SEQ_TRUSTED_PARAMS)
+{
+	return OffGroupsFine ? SEQ_TRUSTED_CALL(Decompress_WLZ_Sequence_Trusted_Body, 1) : SEQ_TRUSTED_CALL(Decompress_WLZ_Sequence_Trusted_Body, 0);
+}
+#if WZIP_DYNAMIC_BMI2
+static __attribute__((target("bmi,bmi2,lzcnt")))
+int Decompress_WLZ_Sequence_Trusted_Bmi2(SEQ_TRUSTED_PARAMS)
+{
+	return OffGroupsFine ? SEQ_TRUSTED_CALL(Decompress_WLZ_Sequence_Trusted_Body, 1) : SEQ_TRUSTED_CALL(Decompress_WLZ_Sequence_Trusted_Body, 0);
+}
+#endif
+
+int WZIP_Decompress_L_Trusted(
+	const void* const source, int const srcSize,
+	void* const dest, int const destSize,
+	void* const dict, int const dictSize)
+{
+	int i;
+	Uint32 nLzLits, zipLitSize;
+	Uint8* srcPtr = (Uint8*)source;
+	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
+
+	WZIP_Set_OffWidth(destSize, OffWidth);
+	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
+		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 1) return 0;
+		OffGroupsFine = srcPtr[2] >> 4;
+		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
+		for (i = 3; i <= 7; i++) OffWidth[i] = OffWidth[8] - gap[i - 3];
+		if (OffWidth[3] < 4) return 0;
+		for (i = 4; i <= 8; i++)
+			if (OffWidth[i] < OffWidth[i - 1]) return 0;
+		srcPtr += WIN_HeaderSize;
+	}
+	i = 8;
+	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
+		i--;
+
+	Set_Offset_Groups(i - MinMatchLen + 1, OffGroupsFine);
+
+	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
+		nLzLits = MemReadLE4(srcPtr);
+		srcPtr += 4;
+	}
+	else {
+		nLzLits = MemReadLE2(srcPtr);
+		srcPtr += 2;
+	}
+	Uint8* lzLitBuffer, *lzLitBufPtr;
+	if (nLzLits > (Uint32)destSize) return 0;                                   /* corrupt */
+	if (NULL == (lzLitBuffer = (Uint8*)malloc(nLzLits + 256))) return 0;       /* margin for MemWildCopy */
+	
+	zipLitSize = Huffman_Decompress_Trusted(srcPtr, lzLitBuffer, nLzLits, N_HufLits);
+	srcPtr += zipLitSize;
+
+	Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(srcPtr);
+	bitStream.streamPtr = srcPtr;
+
+	Uint8 wtHufWt[MAX_HufWeight + 3];                /* Second-level Huffman Weight table on the Huffman weights */
+	Uint32 maxWtHufWt;
+	Huffman_DemapX1 wtHufDemapX1[1 << MAX_HufHufWt];     /* Second-level Huffman demapper for Huffman weights */
+	WLZ_HufWt_Set hufWtSet;
+
+	Uint32 offsetLast[OffCasheSize];
+	memset(offsetLast, 0x7F, OffCasheSize * sizeof(int));
+	int decSize = 0;
+	lzLitBufPtr = lzLitBuffer;
+	Uint8* const destEnd = (Uint8*)dest + destSize;
+	while (decSize < destSize) {
+		BITStream_Read(bitStream, 1, hufWtSet.slotJoint);           /* the block's coding: slot-joint or classic */
+		maxWtHufWt = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, wtHufWt);
+		Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxWtHufWt, wtHufWt, wtHufDemapX1);
+		hufWtSet.maxLitRunHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufLitRun, hufWtSet.litRunHufWt);
+		hufWtSet.maxMchLenHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, hufWtSet.slotJoint ? N_HufJoint : N_HufJointClassic, hufWtSet.mchLenHufWt);
+		for (i = 0; i < MchOffGroup; i++)
+			hufWtSet.maxMchOffHufWt[i] = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], hufWtSet.mchOffHufWt[i]);
+		BITStream_Read_FlushEnd(bitStream);
+		
+#if WZIP_DYNAMIC_BMI2
+		if (CPU_Has_Bmi2())
+			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		else
+#endif
+		decSize = Decompress_WLZ_Sequence_Trusted(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		bitStream.container = MemReadBE8(bitStream.streamPtr);
+		bitStream.nUsedBits = 0;
+	}
+
+	free(lzLitBuffer);
+	if (destSize == decSize) return decSize;
+	else return 0;
+}
+
