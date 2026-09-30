@@ -1,0 +1,2917 @@
+/*
+ * WZIP_L - WZIP for inputs of 32 KB and more
+ * Copyright (c) 2018-present, Yingquan (Cody) Wu.
+ * SPDX-License-Identifier: BSD-2-Clause (see LICENSE)
+ */
+
+/*This code assumes the source data size is at least 1<<15, up to 1<<31.
+  It deploys elastic sliding windows whose sizes are dynamically set upon the source size. 
+  It assumes the source size is included in the compressed stream so that the decoder can pre-determine the elastic sliding windows.
+  Huffman coding is applied over every unit size of HUF_BlockSize literals, as well as every unit size of SEQ_BlockSize WLZ triples.
+*/
+#include "Memry.h"
+#include "BitStream_Huffman.h"
+#include "WZIP.h"
+/* extension of a dictionary candidate stops at the dictionary end; input candidates are unlimited */
+#define DICT_LIMIT(p) ((dictSize && (const Uint8*)(p) >= (const Uint8*)dictEnd - dictSize && (const Uint8*)(p) < (const Uint8*)dictEnd) ? dictLastMatch : NULL)
+#include <stdio.h>
+#include <math.h>
+#define min(a, b) (((a) < (b)) ? (a) : (b))
+
+//#define WZIP_DEBUG
+
+/* CapHufLitBits may not exceed 14, so that 4 branches can be read in parallel before flushing */
+#define   CapHufLitBits        MAX_HufWeight     
+#define   CapHufLitRunBits     11
+#define   CapHufMchLenBits     11
+#define   CapHufMchOffBits     10
+
+#define   MinMatchLen          3
+#define   MaxMatchLen          4095
+#define   MaxLitRunMsb         11
+
+
+#define   WLZ_Hash0(stream)    Hash_3B(stream)     /* corresponding to MinMatchLen = 3 */
+#define	  WLZ_Hash1(stream)     ( hash1Len == 4 ? Hash_4B(stream) : hash1Len == 5 ? Hash_5B(stream) : Hash_6B(stream) )
+#define   WLZ_Hash2(stream)     ( hash2Len == 5 ? Hash_5B(stream) : hash2Len == 6 ? Hash_6B(stream) : hash2Len == 7 ? Hash_7B(stream) : Hash_8B(stream) )
+
+/* The number of Huffman elements may not exceed 256, so that each entry is conveniently expressed by a byte */
+#define   N_HufLits            256    
+#define   N_HufLitRun          71
+#define   N_HufMchLen          68                    /* lengths 3..MaxMatchLen (symbols 0-66), and the run symbol */
+#define   RunSym               (N_HufMchLen - 1)     /* a run of copies of the preceding byte, its count in the offset field */
+/* the match-length table codes a joint symbol: literal-run class (0: no literals, 1: one literal, 2: two or more,
+   followed by a literal-run symbol) times the match-length symbol */
+#define   N_LitClass           3
+#define   N_SlotSel            5                     /* cache slot 0-3, or 4: a new offset (or a run count) from the offset table */
+#define   N_HufJoint           (N_SlotSel * N_LitClass * N_HufMchLen)
+#define   JointIdx(slotSel, litClass, mlSym)   (((slotSel) * N_LitClass + (litClass)) * N_HufMchLen + (mlSym))
+#define   N_HufJointClassic    (N_LitClass * N_HufMchLen)   /* the joint symbol of a classic block: no cache slot */
+#define   LitClass(litRunSym)  ((litRunSym) < 2 ? (litRunSym) : 2)
+#define   LitRunDirect         32
+#define   n_hufMachOff(offwidth) (2*offWidth)
+#define   N_HufMchOffMax       (27*2)                              /* offsets of up to 27 bits */
+#define   SEQ_BlockBound       (SEQ_BlockSize * 12 + 8192)         /* a block of sequences writes at most this: 93 bits a sequence, tables */
+/* grows the sequence stream so that the next block fits; leaves through the overflow exit if memory runs out */
+#define   SEQ_ENSURE_ROOM()    { if ((size_t)(wlzStrEnd - wlzStrPtr) < SEQ_BlockBound) {                                  \
+		const size_t used_ = (size_t)(wlzStrPtr - wlzStream), size_ = 2 * (size_t)(wlzStrEnd - wlzStream) + SEQ_BlockBound; \
+		Uint8* const p_ = (Uint8*)realloc(wlzStream, size_);                                                            \
+		if (NULL == p_) goto _lit_overflow;                                                                             \
+		wlzStream = p_; wlzStrPtr = p_ + used_; wlzStrEnd = p_ + size_; } }
+#define   LIT_BlockSlack       512                                 /* a literal block writes at most its size plus this */
+#define   OFF_SymBits          6                                   /* a sequence packs its offset symbol in 6 bits, raw bits above */
+#define   MaxMchOffGroup       8
+#define   SEQ_BlockSize        (1<<14)                   /*unit size of WLZ sequence to be Huffman coded */
+
+#define   OffCasheSize          4                                   /* cashe size for the latest matching offsets */
+#define   WINDOW(w)            ( (1<<w) -OffCasheSize +1 )
+
+/* chain insertion runs L_InsertAhead positions ahead of the search, prefetching each inserted position's first
+   candidate; hash slots are prefetched L_HashAhead positions ahead of insertion. A position's chain link is fixed
+   when it is inserted, so inserting ahead changes no match. Search positions lie before srcEnd - 16, so hashing
+   L_InsertAhead (<= 8) positions ahead stays inside the input. */
+#define   L_InsertAhead        8
+#define   L_HashAhead          24
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#  include <mmintrin.h>
+#  define PREFETCH_L1(p)       _mm_prefetch((const char*)(p), _MM_HINT_T0)
+#elif defined(__GNUC__) || defined(__clang__)
+#  define PREFETCH_L1(p)       __builtin_prefetch((p), 0, 3)
+#else
+#  define PREFETCH_L1(p)       ((void)(p))
+#endif
+/* level 0 (fast mode): one hash table of 2^L0F_HashLog entries on L0F_MinMatch bytes, a window of 2^L0F_WindowLog,
+   and a probe step that grows by one every 2^L0F_SkipLog literals */
+#define   L0F_HashLog          15
+#define   L0F_MinMatch         6
+#define   L0F_SkipLog          6
+#define   L0F_WindowLog        20
+/* level 1: hash tables of at most 2^L0_HashLog entries; in a literal run, the probe step grows by one every
+   2^L0_SkipLog literals */
+#define   L0_HashLog           18
+#define   L0_SkipLog           8
+
+/* a candidate is only taken if it matches at least `need` bytes: test byte need-1 before counting, when both
+   reads are in bounds. It rejects only candidates that the full count would reject. */
+#define   CANNOT_REACH(need)   ((need) > 4 && srcPtr + (need) <= srcLastMatch && \
+                                (!(dictSize && matchIdx < 0) || matchPtr + (need) <= dictLastMatch) && \
+                                srcPtr[(need) - 1] != matchPtr[(need) - 1])
+
+
+static int	OffWidth[9];
+static int	N_HufMchOff[MaxMchOffGroup];
+static int	MchOffGroup;
+static int	OffGroupsFine;                         /* 1: the eight-group layout (lengths 3, 4, 5, 6, 7, 8-9, 10-15, 16+) */
+static Uint8 OffGroupOf[N_HufMchLen];                  /* length symbol -> offset group */
+
+/* Offset groups, contiguous ranges of length symbols: by default one per length below the widest window (natural) and
+   one for the rest; the fine layout splits the long lengths further. Each group's offset alphabet covers the widest
+   window among its lengths. The decoder computes the group as min(m, cap) + (m >= 7) + (m >= 13), the last two for
+   the fine layout only. */
+static void Set_Offset_Groups(int natural, int fine)
+{
+	static const int fineStart[8] = { 0, 1, 2, 3, 4, 5, 7, 13 };
+	int start[MaxMchOffGroup], k = 0;
+	if (fine)
+		for (k = 0; k < 8; k++) start[k] = fineStart[k];
+	else
+		for (k = 0; k < natural && k < MaxMchOffGroup; k++) start[k] = k;
+	MchOffGroup = k;
+	for (int g = 0; g < k; g++) {
+		const int end = g + 1 < k ? start[g + 1] : N_HufMchLen;
+		for (int m = start[g]; m < end; m++) OffGroupOf[m] = (Uint8)g;
+		const int lastLen = end - 1 + MinMatchLen < LitRunDirect ? end - 1 + MinMatchLen : 8;
+		N_HufMchOff[g] = 2 * OffWidth[min(8, lastLen)];
+	}
+}
+
+/* We combine 8-bit Huffman index and up-to 24 appended bits into Uint32, Therefore, expanding to more than 24 appended bits will break the code.
+*/
+static ExtHuffman_Lit const ExtHufLitRun[] = {
+	{0, 0},   {1, 0},  {2, 0},  {3, 0},     {4, 0},  {5, 0},  {6, 0},  {7, 0},      {8, 0},  {9, 0},  {10, 0}, {11, 0},      {12, 0}, {13, 0}, {14, 0}, {15, 0},
+	{16, 0},  {17, 0}, {18, 0}, {19, 0},    {20, 0}, {21, 0}, {22, 0}, {23, 0},     {24, 0}, {25, 0}, {26, 0}, {27, 0},      {28, 0}, {29, 0}, {30, 0}, {31, 0},  
+	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
+	{8, 3},  {9, 3},  {10, 3},  {11, 3},    {12, 3},  {13, 3}, {14, 3}, {15, 3},             /* 48-55:  64 - 127 */
+	{4, 5},  {5, 5}, {6, 5}, {7, 5},                                                         /* 56-59:  128 - 255 */
+	{4, 6},  {5, 6}, {6, 6}, {7, 6},                                                         /* 60-63:  256 - 511 */
+	{2, 8},  {3, 8},                                                                         /* 64-65:  512 - 1023 */
+	{2, 9},  {3, 9}, 																		 /* 66-67:  1024 - 2047 */
+	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
+	{0, 24},                                                                                 /* 70:     2048 - 16M  */
+};
+
+static const ExtHuffman_Idx LitRunHufMap[] = {
+	{1, 0},  {2, 0},  {4, 0},  {8, 0},       {16, 0}, {32, 1},  {48, 3},  {56, 5},     {60, 6}, {64, 8}, {66, 9},  {68, 10},  {70, 24},
+};
+
+static ExtHuffman_Lit const ExtHufMchLen[] = {
+	                             {3, 0},      {4, 0}, {5, 0},  {6, 0}, {7, 0},      {8, 0}, {9, 0}, {10, 0}, {11, 0},       {12, 0}, {13, 0}, {14, 0}, {15, 0},
+	{16, 0},  {17, 0}, {18, 0}, {19, 0},    {20, 0}, {21, 0}, {22, 0}, {23, 0},     {24, 0}, {25, 0}, {26, 0}, {27, 0},     {28, 0}, {29, 0}, {30, 0}, {31, 0},
+	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
+	{8, 3},  {9, 3},  {10, 3},  {11, 3},    {12, 3},  {13, 3}, {14, 3}, {15, 3},             /* 48-55:  64 - 127 */
+	{4, 5},  {5, 5}, {6, 5}, {7, 5},                                                         /* 56-59:  128 - 255 */
+	{4, 6},  {5, 6}, {6, 6}, {7, 6},                                                         /* 60-63:  256 - 511 */
+	{2, 8},  {3, 8},                                                                         /* 64-65:  512 - 1023 */
+	{2, 9},  {3, 9}, 																		 /* 66-67:  1024 - 2047 */
+	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
+};
+
+static ExtHuffman_Lit const ExtHufMchOff[] = {
+	{0, 0},  {1, 0},  {2, 0},  {3, 0},          {2, 1}, {3, 1},  {2, 2},  {3, 2},    
+	{2, 3},  {3, 3},  {2, 4},  {3, 4},          {2, 5}, {3, 5},  {2, 6},  {3, 6},
+	{2, 7},  {3, 7},  {2, 8},  {3, 8},          {2, 9}, {3, 9},  {2, 10}, {3, 10},
+	{2, 11},  {3, 11}, {2, 12}, {3, 12},        {2, 13}, {3, 13}, {2, 14}, {3, 14},
+	{2, 15},  {3, 15}, {2, 16}, {3, 16},        {2, 17}, {3, 17}, {2, 18}, {3, 18},
+	{2, 19},  {3, 19}, {2, 20}, {3, 20},        {2, 21}, {3, 21}, {2, 22}, {3, 22},
+	{2, 23},  {3, 23}, {2, 24}, {3, 24},        {2, 25}, {3, 25},
+};
+
+typedef struct {
+	Huffman_Str litRunHuf[N_HufLitRun];
+	Huffman_Str mchLenHuf[N_HufJoint];                /* joint literal-run class and match length */
+	Huffman_Str mchOffHuf[MaxMchOffGroup][N_HufMchOffMax];
+} WLZ_Huffman_Set;
+
+typedef struct {
+	HufCode_Str litRun[N_HufLitRun];
+	HufCode_Str mchLen[N_HufJoint];
+	HufCode_Str mchOff[MaxMchOffGroup][N_HufMchOffMax];
+} WLZ_HufCode_Set;
+
+typedef struct {
+	Uint32 maxLitRunHufWt;
+	Uint32 maxMchLenHufWt;
+	Uint32 slotJoint;                                  /* the block's joint symbol carries the cache slot */
+	Uint32 maxMchOffHufWt[MaxMchOffGroup];
+	Uint8 litRunHufWt[N_HufLitRun];
+	Uint8 mchLenHufWt[N_HufJoint];
+	Uint8 mchOffHufWt[MaxMchOffGroup][N_HufMchOffMax];
+} WLZ_HufWt_Set;
+
+
+typedef struct {
+	Uint32 litRun;
+	Uint32 mchLen;
+	Uint32 mchOff;
+} WLZ_Set;
+
+ForceInlineTemplate Uint32 WLZ_Match_Count(const Uint8* srcPtr, const Uint8* matchPtr, const Uint8* const srcLimit, const Uint8* const matchLimit)
+{
+	Uint32 matchLen = 0;
+	reg_t matchDiff;
+
+	matchDiff = MemReadARCH(matchPtr) ^ MemReadARCH(srcPtr);
+	while ( 0 == matchDiff && srcPtr < srcLimit && (matchLimit == NULL || matchPtr < matchLimit) ) {
+		srcPtr += REG_SIZE;
+		matchPtr += REG_SIZE;
+		matchLen += REG_SIZE;
+		matchDiff = MemReadARCH(matchPtr) ^ MemReadARCH(srcPtr);
+	}
+
+	matchLen += matchDiff == 0 ? REG_SIZE : N_ZeroBytes(matchDiff);
+
+	return matchLen;
+}
+
+ForceInlineTemplate int Offset_Huffman_Index(int offset, int offMsb)
+{
+	if (offMsb < 2) return offset;
+	return 2 * (offMsb - 1) + (offset >> (offMsb - 1));
+}
+
+/* OffCasheSize may not exceed 4, otherwise, program will crash.
+   The cache is kept most recent first: a hit moves its offset to the front, a new offset pushes out the oldest */
+ForceInlineTemplate Uint32 Offset_Cashe(Uint32* lastOffset, Uint32 matchOffset)
+{
+	const Uint32 casheIdx = (matchOffset == lastOffset[0]) + (matchOffset == lastOffset[1]) * 2 + (matchOffset == lastOffset[2]) * 3 + (matchOffset == lastOffset[3]) * 4;
+
+	if (casheIdx) {
+		const Uint32 k = casheIdx - 1;
+		if (k >= 3) lastOffset[3] = lastOffset[2];
+		if (k >= 2) lastOffset[2] = lastOffset[1];
+		if (k >= 1) lastOffset[1] = lastOffset[0];
+		lastOffset[0] = matchOffset;
+		return k;
+	}
+	else {
+		lastOffset[3] = lastOffset[2];
+		lastOffset[2] = lastOffset[1];
+		lastOffset[1] = lastOffset[0];
+		lastOffset[0] = matchOffset;
+		return matchOffset + OffCasheSize -	1;
+	}
+}
+
+/* A run of `count` copies of the preceding byte (a distance-1 match not bound by the match-length cap): the run symbol,
+   with count + OffCasheSize - 1 coded as an offset of the widest window. Runs leave the offset cache alone; a run
+   straight after another (no literals between them) extends it. Returns the next free sequence. */
+ForceInlineTemplate WLZ_Set* Store_Run(WLZ_Set* seq, const WLZ_Set* const seqStart, WLZ_Huffman_Set* const hs, Uint32 litRun, Uint32 count)
+{
+	const int group = OffGroupOf[RunSym];
+	if (litRun == 0 && seq > seqStart && (seq - 1)->mchLen == RunSym) {
+		seq--;
+		const Uint32 idx = seq->mchOff & BitMask[OFF_SymBits], nb = ExtHufMchOff[idx].lsBits;
+		count += (((Uint32)ExtHufMchOff[idx].msValue << nb) | (seq->mchOff >> OFF_SymBits)) - (OffCasheSize - 1);
+		hs->mchOffHuf[group][idx].freq--;
+	}
+	else if (litRun < LitRunDirect)                      /* a new run: its literal run as the other sequences code it */
+		seq->litRun = litRun;
+	else {
+		const int msb = High_Bit32(litRun);
+		const int lr = msb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
+		seq->litRun = lr ^ (litRun & BitMask[ExtHufLitRun[lr].lsBits]) << 8;
+	}
+	const Uint32 v = count + OffCasheSize - 1;
+	const int idx = Offset_Huffman_Index((int)v, High_Bit32(v));
+	seq->mchLen = RunSym;
+	seq->mchOff = idx ^ (v & BitMask[ExtHufMchOff[idx].lsBits]) << OFF_SymBits;
+	hs->mchOffHuf[group][idx].freq++;
+	return seq + 1;
+}
+
+ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+{
+	Uint32 litRunHufIdx, mchLenHufIdx, offHufIdx, offGroup;
+	register Bit_Stream bitStream = { 0, 0, zipBuffer };
+
+
+#ifdef WZIP_DEBUG 
+	FILE* fptr;
+	fopen_s(&fptr, "Huffman_Compress_Index.txt", "w");
+#endif
+
+	for (WLZ_Set* wlzSeqPtr = wlzSeq; wlzSeqPtr < wlzSeqEnd; wlzSeqPtr++) {
+		litRunHufIdx = wlzSeqPtr->litRun &255;
+		const int isLast = wlzSeqPtr->mchLen == 255;          /* protocal for ending: the last literal run only */
+		mchLenHufIdx = isLast ? 0 : wlzSeqPtr->mchLen & 255;
+		offHufIdx = wlzSeqPtr->mchOff & BitMask[OFF_SymBits];
+		const Uint32 slotSel = !slotJoint || isLast || mchLenHufIdx == RunSym || offHufIdx >= OffCasheSize ? OffCasheSize : offHufIdx;
+		const Uint32 jointIdx = slotJoint ? JointIdx(slotSel, LitClass(litRunHufIdx), mchLenHufIdx) : LitClass(litRunHufIdx) * N_HufMchLen + mchLenHufIdx;
+		BITStream_Write(bitStream, hufCodeSet->mchLen[jointIdx].code, hufCodeSet->mchLen[jointIdx].nbits);
+		if (litRunHufIdx >= 2) {
+			BITStream_Write_Flush(bitStream);
+			BITStream_Write(bitStream, hufCodeSet->litRun[litRunHufIdx].code, hufCodeSet->litRun[litRunHufIdx].nbits);
+			if (litRunHufIdx >= LitRunDirect)
+				BITStream_Write(bitStream, wlzSeqPtr->litRun >> 8, ExtHufLitRun[litRunHufIdx].lsBits);
+			BITStream_Write_Flush(bitStream);
+		}
+
+#ifdef WZIP_DEBUG 
+		if (litRunHufIdx >= LitRunDirect)
+			fprintf(fptr, "lsBits=%d,  lsValue=%d;    ", ExtHufLitRun[litRunHufIdx].lsBits, lsValue);
+#endif
+
+		if (isLast)
+			break;
+
+#ifdef WZIP_DEBUG 
+		fprintf(fptr, "matchLenIdx=%d,  ", mchLenHufIdx);
+		if (mchLenHufIdx >= LitRunDirect - MinMatchLen)
+			fprintf(fptr, "lsBits=%d,  lsValue=%d;      ", ExtHufMchLen[mchLenHufIdx].lsBits, mchLenLsValue);
+#endif
+
+		if (slotSel == OffCasheSize) {             /* the offset symbol, unless a slot-joint block has the slot in the joint */
+			offGroup = OffGroupOf[mchLenHufIdx];
+			BITStream_Write(bitStream, hufCodeSet->mchOff[offGroup][offHufIdx].code, hufCodeSet->mchOff[offGroup][offHufIdx].nbits);
+			if (offHufIdx >= OffCasheSize)         /* append tail bits */
+				BITStream_Write(bitStream, wlzSeqPtr->mchOff >> OFF_SymBits, ExtHufMchOff[offHufIdx].lsBits);
+		}
+		BITStream_Write_Flush(bitStream);
+
+		if (mchLenHufIdx >= LitRunDirect - MinMatchLen && mchLenHufIdx != RunSym) {
+			BITStream_Write(bitStream, wlzSeqPtr->mchLen >> 8, ExtHufMchLen[mchLenHufIdx].lsBits);
+		}
+
+
+#ifdef WZIP_DEBUG 
+		fprintf(fptr, "OffGrp=%d,   matchOffHufIdx=%d,  ", offGroup, offHufIdx);
+		if (offHufIdx >= 4)
+			fprintf(fptr, "lsBits=%d,  lsValue=%d\n", ExtHufMchOff[offHufIdx].lsBits, lsValue);
+		else fprintf(fptr, "\n");
+
+		fflush(fptr);
+#endif
+
+	}
+	BITStream_Write_FlushEnd(bitStream);
+
+#ifdef WZIP_DEBUG 
+	fclose(fptr);
+#endif
+	return (Uint32)(bitStream.streamPtr - zipBuffer);
+}
+
+
+static Uint32 Huffman_Compress_Seq_Kernel(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+{
+	return slotJoint ? Huffman_Compress_Seq_Body(wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 1)
+	                 : Huffman_Compress_Seq_Body(wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 0);
+}
+
+/* coded size of a table's symbols in bits, with about 4 bits of table header per used symbol */
+static Uint64 Table_Bits(const Huffman_Str* h, const Uint32 n, const Uint32 cap)
+{
+	HufCode_Str code[N_HufJoint];
+	Build_Huffman_Table((Huffman_Str*)h, n, cap, code);
+	Uint64 bits = 0;
+	for (Uint32 k = 0; k < n; k++)
+		if (h[k].freq) bits += (Uint64)h[k].freq * code[k].nbits + 4;
+	return bits;
+}
+
+/* Second Pass:  Apply Huffman encoding on top of WLZ compression */
+ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd,
+	Uint8* wzipBuffer, Uint32 wzipBufSize,
+	WLZ_Huffman_Set* huffmanSet)
+{
+	int i;
+	Uint8* wzipBufPtr;
+	Bit_Stream bitStream = { 0, 0, wzipBuffer };
+
+	WLZ_HufCode_Set hufCodeSet;
+	Huffman_Str hufWtHuf[MAX_HufWeight + 3] = { 0 };
+	HufCode_Str hufWtHufCode[MAX_HufWeight + 3];
+	Uint8 hufWtSet[MAX_HufSize * 2 + N_HufLitRun + N_HufJoint + N_HufMchOffMax * MaxMchOffGroup];
+	int hufWtSetSize = 0;
+	/* joint (literal-run class, match length) and literal-run (runs of two or more) frequencies of this block */
+	memset(huffmanSet->litRunHuf, 0, sizeof(huffmanSet->litRunHuf));
+	memset(huffmanSet->mchLenHuf, 0, sizeof(huffmanSet->mchLenHuf));
+	memset(huffmanSet->mchOffHuf, 0, sizeof(huffmanSet->mchOffHuf));
+	/* counts of both codings: slot-joint, and classic (joint = class x length, cache slots in the offset tables) */
+	Huffman_Str jointClassic[N_HufJointClassic] = { 0 };
+	Uint32 slotCnt[MaxMchOffGroup][OffCasheSize] = { 0 };
+	for (WLZ_Set* q = wlzSeq; q < wlzSeqEnd; q++) {
+		const Uint32 l = q->litRun & 255, last = q->mchLen == 255, m = last ? 0 : q->mchLen & 255, o = q->mchOff & BitMask[OFF_SymBits];
+		const Uint32 slotSel = last || m == RunSym || o >= OffCasheSize ? OffCasheSize : o;
+		huffmanSet->mchLenHuf[JointIdx(slotSel, LitClass(l), m)].freq++;
+		jointClassic[LitClass(l) * N_HufMchLen + m].freq++;
+		if (!last && slotSel == OffCasheSize) huffmanSet->mchOffHuf[OffGroupOf[m]][o].freq++;
+		if (!last && slotSel < OffCasheSize) slotCnt[OffGroupOf[m]][slotSel]++;
+		if (l >= 2) huffmanSet->litRunHuf[l].freq++;
+	}
+	for (i = 0; i < 2; i++) {                                /* two used symbols at least, for well-formed tables */
+		if (!huffmanSet->litRunHuf[2 + i].freq) huffmanSet->litRunHuf[2 + i].freq = 1;
+		if (!huffmanSet->mchLenHuf[i].freq) huffmanSet->mchLenHuf[i].freq = 1;
+		if (!jointClassic[i].freq) jointClassic[i].freq = 1;
+	}
+	/* slot-joint only when it is smaller by more than 1/64: on blocks where it gains little, the classic decoder is
+	   faster (a smaller joint table to read and build per block) */
+	Uint64 sjBits = Table_Bits(huffmanSet->mchLenHuf, N_HufJoint, CapHufMchLenBits);
+	Uint64 clBits = Table_Bits(jointClassic, N_HufJointClassic, CapHufMchLenBits);
+	for (i = 0; i < MchOffGroup; i++) {
+		sjBits += Table_Bits(huffmanSet->mchOffHuf[i], N_HufMchOff[i], CapHufMchOffBits);
+		for (int k = 0; k < OffCasheSize; k++) huffmanSet->mchOffHuf[i][k].freq += slotCnt[i][k];
+		clBits += Table_Bits(huffmanSet->mchOffHuf[i], N_HufMchOff[i], CapHufMchOffBits);
+	}
+	const int slotJoint = sjBits + (clBits >> 6) < clBits;
+	if (slotJoint) {
+		for (i = 0; i < MchOffGroup; i++)
+			for (int k = 0; k < OffCasheSize; k++) huffmanSet->mchOffHuf[i][k].freq -= slotCnt[i][k];
+	}
+	else memcpy(huffmanSet->mchLenHuf, jointClassic, sizeof(jointClassic));
+	const Uint32 nJoint = slotJoint ? N_HufJoint : N_HufJointClassic;
+	int totHufSeqLen = Build_Huffman_Table(huffmanSet->litRunHuf, N_HufLitRun, CapHufLitRunBits, hufCodeSet.litRun);
+	totHufSeqLen += Build_Huffman_Table(huffmanSet->mchLenHuf, nJoint, CapHufMchLenBits, hufCodeSet.mchLen);
+	for (i = 0; i < MchOffGroup; i++) {
+		totHufSeqLen += Build_Huffman_Table(huffmanSet->mchOffHuf[i], N_HufMchOff[i], CapHufMchOffBits, hufCodeSet.mchOff[i]);
+	}
+
+#ifdef WZIP_DEBUG 
+	FILE* fptr = NULL;
+	fopen_s(&fptr, "WZIP_Huffman_Trees.txt", "w");
+	fprintf(fptr, "\nLiteral Run Huffman Tree\n");
+	for (i = 0; i < N_HufLitRun; i++) {
+		fprintf(fptr, "(%4d,  %2d),  ", huffmanSet->litRunHuf[i].freq, huffmanSet->litRunHuf[i].freq > 0 ? hufCodeSet.litRun[i].nbits : 0);
+		if (0 == ((i + 1) & 7)) fprintf(fptr, "\n");
+	}
+	fprintf(fptr, "\n\nMatch Length Huffman Tree\n");
+	for (i = 0; i < N_HufMchLen; i++) {
+		fprintf(fptr, "(%4d,  %2d),  ", huffmanSet->mchLenHuf[i].freq, huffmanSet->mchLenHuf[i].freq > 0 ? hufCodeSet.mchLen[i].nbits : 0);
+		if (0 == ((i + 1) & 7)) fprintf(fptr, "\n");
+	}
+	fprintf(fptr, "\n\nMatch Offset Huffman Trees\n");
+	for (int n = 0; n < MchOffGroup; n++) {
+		for (i = 0; i < (int)N_HufMchOff[n]; i++) {
+			fprintf(fptr, "(%4d,  %4d),  ", huffmanSet->mchOffHuf[n][i].freq, huffmanSet->mchOffHuf[n][i].freq > 0 ? hufCodeSet.mchOff[n][i].nbits : 0);
+			if (0 == ((i + 1) & 7)) fprintf(fptr, "\n");
+		}
+		fprintf(fptr, "\n\n");
+	}
+
+	fclose(fptr);
+#endif
+
+	hufWtSetSize = Count_Huffman_Weight_Frequency(hufCodeSet.litRun, N_HufLitRun, hufWtHuf, hufWtSet + hufWtSetSize);
+	hufWtSetSize += Count_Huffman_Weight_Frequency(hufCodeSet.mchLen, nJoint, hufWtHuf, hufWtSet + hufWtSetSize);
+	for (i = 0; i < MchOffGroup; i++)
+		hufWtSetSize += Count_Huffman_Weight_Frequency(hufCodeSet.mchOff[i], N_HufMchOff[i], hufWtHuf, hufWtSet + hufWtSetSize);
+
+	Build_Huffman_Table(hufWtHuf, MAX_HufWeight + 3, MAX_HufHufWt, hufWtHufCode);
+	BITStream_Write(bitStream, (Uint32)slotJoint, 1);          /* the block's coding */
+	Write_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufWtHufCode);
+	Write_Huffman_Header_byHuffman(&bitStream, hufWtHufCode, hufWtSet, hufWtSetSize);
+
+	BITStream_Write_FlushEnd(bitStream);
+	wzipBufPtr = bitStream.streamPtr;
+	totHufSeqLen += (int)(wzipBufPtr - wzipBuffer);
+	assert(totHufSeqLen <= wzipBufSize);          /* the callers make room for a whole block (SEQ_ENSURE_ROOM) */
+
+	wzipBufPtr += Huffman_Compress_Seq_Kernel(wlzSeq, wlzSeqEnd, wzipBufPtr, &hufCodeSet, slotJoint);
+
+	return (Uint32)(wzipBufPtr - wzipBuffer);
+}
+
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Fast compression without using hash-chain  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+
+typedef struct wlz_match {
+	Uint32 len;                                        // LZ match length
+	Uint32 off;                                        // LZ match offset/distance
+} WLZ_Match;
+
+/* Parsing by gain = G_Byte * length - offset cost. The offset cost is log2(offset) bits, or 0 for an offset in the
+   repeat cache, which is coded by its cache slot. Starting a match 1, 2 or 3 bytes later costs G_Delay[] for the
+   literals in between. */
+#define   G_Byte               4
+static const int G_Delay[4] = { 0, 6, 12, 18 };
+
+ForceInlineTemplate int Offset_Cost(Uint32 offset, const Uint32* const lastOffset)
+{
+	if (offset == lastOffset[0] || offset == lastOffset[1] || offset == lastOffset[2] || offset == lastOffset[3]) return 0;
+	return (int)High_Bit32(offset);
+}
+
+ForceInlineTemplate int Match_Gain(const WLZ_Match* const m, const Uint32* const lastOffset)
+{
+	return G_Byte * (int)m->len - Offset_Cost(m->off, lastOffset);
+}
+
+/* chain candidates come in increasing distance: a longer one is taken only if its extra length pays for its extra
+   offset bits */
+ForceInlineTemplate int Pays_Off(int matchLen, Uint32 matchDist, const WLZ_Match* const best, const Uint32* const lastOffset)
+{
+	return (int)best->len < MinMatchLen ||
+		G_Byte * (matchLen - (int)best->len) > Offset_Cost(matchDist, lastOffset) - Offset_Cost(best->off, lastOffset);
+}
+
+/* Length of the match at distance `offset` from srcIdx, 0 when out of history. Dictionary positions after -16 are not
+   used, so that 8-byte reads and match extension stay inside the dictionary. */
+ForceInlineTemplate int Repeat_Match_Len(const Uint8* const source, Uint32 srcIdx, Uint32 offset, const int dictSize, const Uint8* const dictEnd,
+	const Uint8* const srcLastMatch, const Uint8* const dictLastMatch)
+{
+	if (offset == 0 || offset > srcIdx + (Uint32)dictSize) return 0;
+	const int histIdx = (int)srcIdx - (int)offset;
+	if (histIdx < 0 && histIdx > -16) return 0;
+	const Uint8* const srcPtr = source + srcIdx;
+	const Uint8* const matchPtr = histIdx < 0 ? dictEnd + histIdx : srcPtr - offset;
+	const reg_t diff = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
+	if (diff) return (int)N_ZeroBytes(diff);
+	return REG_SIZE + (int)WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+}
+
+ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
+	WZIP_State_Str* const wzipStr,
+	const Uint8* const source,
+	const Uint32 srcSize,
+	Uint8* wzipStream,
+	int wzipCapSize)
+{
+	Uint32 i;
+	const Uint8* srcPtr = (const Uint8*)source;
+	const Uint8* anchor = (const Uint8*)source;
+	const Uint8* const srcEnd = (const Uint8*)source + srcSize;
+	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
+	const int dictSize = wzipStr->dictSize;
+	const Uint8*  dictEnd = wzipStr->dictEnd;
+	Uint32 nLzLits;
+
+	Huffman_Str litHuf[N_HufLits];
+	Uint8* wzipLitPtr = wzipStream;
+	const Uint8* const wzipLitEnd = wzipLitPtr + wzipCapSize;
+	wzipLitPtr += (srcSize >> 16) ? 4 : 2;                 /* Reserved to record the number of literals */
+	Uint32  zipLitBlkSize;
+	Uint8* lzLitBuffer = (Uint8*)malloc(HUF_BlockSize);    
+	Uint8* lzLitPtr = lzLitBuffer;
+	const Uint8* lzLitEnd = lzLitBuffer + HUF_BlockSize;
+	Uint32 hashV1, hashV2;
+	int  match1Idx, match2Idx;
+	int  lazyMatchLen, lazyMatchOffset, lazyMatchFail;
+	int matchLen, matchOffset;
+	int matchLen2, matchOffset2;
+	int lastOffset[OffCasheSize];
+	int litRun;
+	int* hash1Table = (int *)wzipStr->hash1Table;
+	int* hash2Table = (int *)wzipStr->hash2Table;
+	const Uint32 offWindow = WINDOW(OffWidth[8]);
+	int litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
+	const int hash1Len = wzipStr->hash1Len;
+	const int hash2Len = wzipStr->hash2Len;
+
+	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
+	reg_t currPattern, diffPattern;
+
+	const Uint8* matchPtr;
+	WLZ_Huffman_Set huffmanSet;
+	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+
+	WLZ_Set* const wlzSeq = (WLZ_Set*)malloc(SEQ_BlockSize*sizeof(WLZ_Set));
+	WLZ_Set* wlzSeqPtr = wlzSeq;
+	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
+
+	Uint32 wlzStrSize = srcSize;
+	Uint8* wlzStream = (Uint8*)malloc(wlzStrSize);     /* compressed wlz sequence */
+	if (NULL == lzLitBuffer || NULL == wlzSeq || NULL == wlzStream) goto _lit_overflow;
+	Uint8* wlzStrPtr = wlzStream;
+	Uint8* wlzStrEnd = wlzStream + wlzStrSize;
+
+#ifdef WZIP_DEBUG 
+	FILE* fptr;
+	fopen_s(&fptr, "WLZ2_Compress_Index.txt", "w");
+	fprintf(fptr, "WLZ2_Compress_Fast: srcSize=%i\n", srcSize);
+#endif
+
+	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+	nLzLits = 0;
+	Uint32 srcIdx = 0;
+	for (i = 0; i < OffCasheSize; i++ )
+		lastOffset[i] = 1<<OffWidth[8];
+
+	while (1) {
+
+		while (1) {
+			if (unlikely(srcPtr >= srcLastMatch)) goto _last_literals;
+
+			hashV1 = WLZ_Hash1(srcPtr) & wzipStr->hash1Mask;
+			hashV2 = WLZ_Hash2(srcPtr) & wzipStr->hash2Mask;
+
+			match1Idx = hash1Table[hashV1];
+			hash1Table[hashV1] = srcIdx;
+
+			match2Idx = hash2Table[hashV2];
+			hash2Table[hashV2] = srcIdx;
+
+			matchLen = matchLen2 = matchOffset2 = 0;
+			currPattern = MemReadARCH(srcPtr);
+			matchOffset = srcIdx - match2Idx;
+			if ( match2Idx >= -dictSize && matchOffset>0 && matchOffset < offWindow ) {
+				matchPtr = (dictSize && match2Idx < 0) ? dictEnd + match2Idx : srcPtr - matchOffset;
+				
+				diffPattern = currPattern ^ MemReadARCH(matchPtr);
+				if (0 == diffPattern) {
+					matchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+					break;
+				}
+
+				matchLen = N_ZeroBytes(diffPattern);
+				if ( matchLen <= hash2Len && matchOffset>= WINDOW(OffWidth[matchLen]) )
+					matchLen = 0;
+				matchLen2 = matchLen;
+				matchOffset2 = matchOffset;
+			}
+
+			matchOffset = srcIdx - match1Idx;
+			if ( match1Idx>=-dictSize && matchOffset > 0 && matchOffset < offWindow ) {
+				matchPtr = (dictSize && match1Idx < 0) ? dictEnd + match1Idx : srcPtr - matchOffset;
+				diffPattern = currPattern ^ MemReadARCH(matchPtr);
+				if (0 == diffPattern) {
+					matchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+					break;
+				}
+				matchLen = N_ZeroBytes(diffPattern);
+				if ( matchLen <= hash2Len && matchOffset >= WINDOW(OffWidth[matchLen]) )
+					matchLen = 0;
+				if (matchLen > matchLen2) {
+					matchLen2 = matchLen;
+					matchOffset2 = matchOffset;
+				}
+			}
+
+			matchLen = matchLen2;
+			matchOffset = matchOffset2;
+			{   /* the most recent offset: no offset bits, and not bound by the length windows */
+				const int repLen = Repeat_Match_Len(source, srcIdx, (Uint32)lastOffset[0], dictSize, dictEnd, srcLastMatch, dictLastMatch);
+				if (repLen >= MinMatchLen && (matchLen < MinMatchLen || G_Byte * repLen > G_Byte * matchLen - Offset_Cost((Uint32)matchOffset, (const Uint32*)lastOffset))) {
+					matchLen = repLen;
+					matchOffset = lastOffset[0];
+				}
+			}
+			if (matchLen >= MinMatchLen)
+				break;
+
+			/* no match: emit literals up to the next probe, which moves further apart in long literal runs */
+			const Uint8* const nextProbe = srcPtr + 1 + ((srcPtr - anchor) >> L0_SkipLog);
+			do {
+				*lzLitPtr++ = *srcPtr;
+				litHuf[*srcPtr].freq++;
+				srcPtr++;
+				srcIdx++;
+				if (lzLitPtr == lzLitEnd) {
+					if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+					zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+					wzipLitPtr += zipLitBlkSize;
+					lzLitPtr = lzLitBuffer;
+					memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+					nLzLits += HUF_BlockSize;
+				}
+			} while (srcPtr < nextProbe && srcPtr < srcLastMatch);
+		}
+
+		lazyMatchFail = 1;
+		srcPtr++;
+		srcIdx++;
+		currPattern = MemReadARCH(srcPtr);
+
+		hashV1 = WLZ_Hash1(srcPtr) & wzipStr->hash1Mask;
+		hashV2 = WLZ_Hash2(srcPtr) & wzipStr->hash2Mask;
+		match1Idx = hash1Table[hashV1];
+		hash1Table[hashV1] = srcIdx;
+		match2Idx = hash2Table[hashV2];
+		hash2Table[hashV2] = srcIdx;
+		
+		lazyMatchOffset = srcIdx - match2Idx;
+		if ( match2Idx>=-dictSize && lazyMatchOffset>0 && lazyMatchOffset < offWindow ) {
+			matchPtr = (dictSize && match2Idx < 0) ? dictEnd + match2Idx : srcPtr - lazyMatchOffset;
+			diffPattern = currPattern ^ MemReadARCH(matchPtr);
+
+			if (0 == diffPattern) {
+				lazyMatchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+			}
+			else {
+				lazyMatchLen = N_ZeroBytes(diffPattern);
+				if (lazyMatchOffset >= WINDOW(OffWidth[lazyMatchLen]) ) lazyMatchLen = 0;
+			}
+
+			if (lazyMatchLen > matchLen) {
+				matchLen = lazyMatchLen;
+				matchOffset = lazyMatchOffset;
+				lazyMatchFail = 0;
+			}
+		}
+		if (lazyMatchFail) {
+			lazyMatchOffset = srcIdx - match1Idx;
+			if (match1Idx >= -dictSize && lazyMatchOffset > 0 && lazyMatchOffset < offWindow) {
+				matchPtr = (dictSize && match1Idx < 0) ? dictEnd + match1Idx : srcPtr - lazyMatchOffset;
+				diffPattern = currPattern ^ MemReadARCH(matchPtr);
+
+				if (0 == diffPattern) {
+					lazyMatchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+				}
+				else {
+					lazyMatchLen = N_ZeroBytes(diffPattern);
+					if (lazyMatchOffset >= WINDOW(OffWidth[lazyMatchLen]) ) lazyMatchLen = 0;
+				}
+
+				if (lazyMatchLen > matchLen) {
+					matchLen = lazyMatchLen;
+					matchOffset = lazyMatchOffset;
+					lazyMatchFail = 0;
+				}
+			}
+		}
+
+		if (lazyMatchFail) {
+			srcPtr--;
+			srcIdx--;
+		}
+		else {
+			*lzLitPtr++ = *(srcPtr - 1);
+			litHuf[*(srcPtr-1)].freq++;
+			if (lzLitPtr == lzLitEnd) {
+				if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+				zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+				wzipLitPtr += zipLitBlkSize;
+				lzLitPtr = lzLitBuffer;
+				memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+				nLzLits += HUF_BlockSize;
+			}
+		}
+
+		matchLen = min(matchLen, MaxMatchLen);
+		
+		/* index the start and the last two positions of the match */
+		for (i = 2; i < matchLen; i = (i + 3 < matchLen) ? matchLen - 2 : i + 1) {
+			hashV1 = WLZ_Hash1(srcPtr + i) & wzipStr->hash1Mask;
+			hashV2 = WLZ_Hash2(srcPtr + i) & wzipStr->hash2Mask;
+			hash1Table[hashV1] = srcIdx + i;
+			hash2Table[hashV2] = srcIdx + i;
+		}
+
+		litRun = (Uint32)(srcPtr - anchor);
+
+		/* special backward match to mitigate spurious hashing match. The match source (a negative history
+		   position lies in the dictionary) extends backward within its own segment only: the decoder copies
+		   a match from either the dictionary or the output, never across the two */
+		while (litRun > 0 && lzLitPtr > lzLitBuffer && matchLen < MaxMatchLen &&
+			((int)srcIdx - (int)matchOffset > 0 || ((int)srcIdx - (int)matchOffset < 0 && (int)srcIdx - (int)matchOffset > -dictSize))) {
+			const int histIdx = (int)srcIdx - (int)matchOffset - 1;
+			if (*(srcPtr - 1) != (histIdx >= 0 ? source[histIdx] : dictEnd[histIdx])) break;
+			srcIdx--;
+			srcPtr--;
+			lzLitPtr--;
+			matchLen++;
+			litRun--;
+			litHuf[*srcPtr].freq--;
+		}
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "srcIdx=%d, litRun=%d,  matchLen=%d, matchOffset=%d,   ",
+			(int)(anchor - (const Uint8*)source), litRun, matchLen, matchOffset);
+#endif
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Encode Literal Run ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (litRun < LitRunDirect) {
+			wlzSeqPtr->litRun = litRun;
+			huffmanSet.litRunHuf[litRun].freq++;
+		}
+		else {
+			litRunMsb = High_Bit32(litRun);
+			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
+			huffmanSet.litRunHuf[litRunHufIdx].freq++;
+		}
+
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Fast Encode Match Pair  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (matchOffset == 1)                    /* a run is not bound by the match-length cap */
+			while (srcPtr + matchLen < srcLastMatch && srcPtr[matchLen] == srcPtr[matchLen - 1]) matchLen++;
+		srcIdx += matchLen;
+		srcPtr += matchLen;
+
+		if (matchOffset == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchLen);
+		else {
+		matchOffset = Offset_Cashe(lastOffset, matchOffset);
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "-->  matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
+		fflush(fptr);
+#endif
+		if (matchLen < LitRunDirect ) {
+			mchLenHufIdx = matchLen - MinMatchLen;
+			wlzSeqPtr->mchLen = mchLenHufIdx;
+			huffmanSet.mchLenHuf[mchLenHufIdx].freq++;
+		}
+		else {
+			matchLenMsb = High_Bit32(matchLen);
+			mchLenHufIdx = LitRunHufMap[matchLenMsb].hufIdx + ((matchLen ^ 1 << matchLenMsb) >> LitRunHufMap[matchLenMsb].lsBits) - MinMatchLen;
+			wlzSeqPtr->mchLen = mchLenHufIdx ^ (matchLen & BitMask[LitRunHufMap[matchLenMsb].lsBits])<<8;
+			huffmanSet.mchLenHuf[mchLenHufIdx].freq++;
+		}
+		
+		if (matchOffset < 4) {
+			wlzSeqPtr->mchOff = matchOffset;
+			huffmanSet.mchOffHuf[OffGroupOf[mchLenHufIdx]][matchOffset].freq++;
+		}
+		else {
+			offsetMsb = High_Bit32(matchOffset);
+			offsetHufIdx = Offset_Huffman_Index(matchOffset, offsetMsb);
+			wlzSeqPtr->mchOff = offsetHufIdx ^ (matchOffset & BitMask[ExtHufMchOff[offsetHufIdx].lsBits]) << OFF_SymBits;
+			//huffmanSet.mchOffHuf[OffsetGroupTable[min(15, mchLenHufIdx)]][offsetHufIdx].freq++;
+			huffmanSet.mchOffHuf[OffGroupOf[mchLenHufIdx]][offsetHufIdx].freq++;
+		}
+
+		wlzSeqPtr++;
+		}
+		anchor = srcPtr;
+		matchLen = 0;
+
+		if (wlzSeqPtr == wlzSeqEnd) {
+			SEQ_ENSURE_ROOM();
+			wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+			wlzSeqPtr = wlzSeq;
+		}
+	}
+
+_last_literals:
+	/* Encode Last Literals */
+	litRun = (int)(srcEnd - anchor);
+
+	int lastLits = (int)(srcEnd - srcPtr);
+	if (lzLitPtr + lastLits > lzLitEnd) {
+		while (lzLitPtr < lzLitEnd) {
+			litHuf[*srcPtr].freq++;
+			*lzLitPtr++ = *srcPtr++;
+		}
+		if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+		zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+		wzipLitPtr += zipLitBlkSize;
+		lzLitPtr = lzLitBuffer;
+		memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+		nLzLits += HUF_BlockSize;
+	}
+	while (srcPtr < srcEnd) {
+		litHuf[*srcPtr].freq++;
+		*lzLitPtr++ = *srcPtr++;
+	}
+	Uint32 lastBufLits = (Uint32)(lzLitPtr - lzLitBuffer);     /* remaining number literals in the buffer to be flushed */
+	if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(lastBufLits) + LIT_BlockSlack) goto _lit_overflow;
+	zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, lastBufLits, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+	wzipLitPtr += zipLitBlkSize;
+	nLzLits += lastBufLits;
+	if (srcSize >> 16) MemWriteLE4(wzipStream, nLzLits);       /* record the number of LZ literals at the beginning of zip stream */
+	else               MemWriteLE2(wzipStream, (Uint16)nLzLits);
+
+#ifdef WZIP_DEBUG
+	fprintf(fptr, "srcIdx=%d, litRun=%d\n", (int)(anchor - (const Uint8*)source), litRun);
+	fclose(fptr);
+#endif
+
+	if (litRun < LitRunDirect) {
+		wlzSeqPtr->litRun = litRun;
+		huffmanSet.litRunHuf[litRun].freq++;
+	}
+	else {
+		litRunMsb = High_Bit32(litRun);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
+		huffmanSet.litRunHuf[litRunHufIdx].freq++;
+	}
+	wlzSeqPtr->mchLen = 255;   /* protocal for ending */
+	wlzSeqPtr++;
+
+	SEQ_ENSURE_ROOM();
+	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
+		goto _lit_overflow;
+	}
+
+	memcpy(wzipLitPtr, wlzStream, wlzStrPtr - wlzStream);
+	int cmprSize = (wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream);
+
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return cmprSize;
+_lit_overflow:                 /* the output buffer is full: the caller stores the input raw */
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return 0;
+}
+
+/* Literal frequencies of a block, counted in four tables so that repeated bytes do not wait on each other */
+static void Literal_Histogram(const Uint8* buf, Uint32 n, Huffman_Str* litHuf)
+{
+	Uint32 c[4][256] = { { 0 } };
+	Uint32 k = 0;
+	for (; k + 4 <= n; k += 4) {
+		c[0][buf[k]]++; c[1][buf[k + 1]]++; c[2][buf[k + 2]]++; c[3][buf[k + 3]]++;
+	}
+	for (; k < n; k++) c[0][buf[k]]++;
+	for (k = 0; k < 256; k++) litHuf[k].freq = c[0][k] + c[1][k] + c[2][k] + c[3][k];
+}
+
+/* A sequence of level 0: literal-run, match-length and offset symbols with their raw low bits, and their counts */
+ForceInlineTemplate void L0_Store_Sequence(WLZ_Set* const seq, WLZ_Huffman_Set* const hs, const Uint32 litRun, const Uint32 matchLen, const Uint32 matchOffset)
+{
+	if (litRun < LitRunDirect) {
+		seq->litRun = litRun;
+	}
+	else {
+		const int litRunMsb = High_Bit32(litRun);
+		const int litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		seq->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits]) << 8;
+	}
+	int mchLenHufIdx;
+	if (matchLen < LitRunDirect) {
+		mchLenHufIdx = matchLen - MinMatchLen;
+		seq->mchLen = mchLenHufIdx;
+	}
+	else {
+		const int matchLenMsb = High_Bit32(matchLen);
+		mchLenHufIdx = LitRunHufMap[matchLenMsb].hufIdx + ((matchLen ^ 1 << matchLenMsb) >> LitRunHufMap[matchLenMsb].lsBits) - MinMatchLen;
+		seq->mchLen = mchLenHufIdx ^ (matchLen & BitMask[LitRunHufMap[matchLenMsb].lsBits]) << 8;
+	}
+	const int offGroup = OffGroupOf[mchLenHufIdx];
+	if (matchOffset < OffCasheSize) {
+		seq->mchOff = matchOffset;
+		hs->mchOffHuf[offGroup][matchOffset].freq++;
+	}
+	else {
+		const int offsetMsb = High_Bit32(matchOffset);
+		const int offsetHufIdx = Offset_Huffman_Index(matchOffset, offsetMsb);
+		seq->mchOff = offsetHufIdx ^ (matchOffset & BitMask[ExtHufMchOff[offsetHufIdx].lsBits]) << OFF_SymBits;
+		hs->mchOffHuf[offGroup][offsetHufIdx].freq++;
+	}
+}
+
+/* Level 0, the fast mode, in the manner of zstd's fast strategy: each probed position looks up one small hash table
+   on L0F_MinMatch bytes; the most recent offset is tried one byte ahead first. In a literal run the probe step grows
+   by one every 2^L0F_SkipLog literals. Literals are copied when their match is emitted and counted per Huffman block.
+   After a match, two positions in it are indexed, and the second most recent offset is tried right at its end. */
+static Uint32 WLZ2_Compress_Fast1(
+	WZIP_State_Str* const wzipStr,
+	const Uint8* const source,
+	const Uint32 srcSize,
+	Uint8* wzipStream,
+	int wzipCapSize)
+{
+	Uint32 i;
+	const Uint8* srcPtr = (const Uint8*)source;
+	const Uint8* anchor = (const Uint8*)source;
+	const Uint8* const srcEnd = (const Uint8*)source + srcSize;
+	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
+	const int dictSize = wzipStr->dictSize;
+	const Uint8*  dictEnd = wzipStr->dictEnd;
+	Uint32 nLzLits;
+
+	Huffman_Str litHuf[N_HufLits];
+	Uint8* wzipLitPtr = wzipStream;
+	const Uint8* const wzipLitEnd = wzipLitPtr + wzipCapSize;
+	wzipLitPtr += (srcSize >> 16) ? 4 : 2;                 /* Reserved to record the number of literals */
+	Uint32  zipLitBlkSize;
+	Uint8* lzLitBuffer = (Uint8*)malloc(HUF_BlockSize + 32);   /* slack for 16-byte literal copies */    
+	Uint8* lzLitPtr = lzLitBuffer;
+	const Uint8* lzLitEnd = lzLitBuffer + HUF_BlockSize;
+	Uint32 hashV1, hashV2;
+	int  match1Idx, match2Idx;
+	int  lazyMatchLen, lazyMatchOffset, lazyMatchFail;
+	int matchLen, matchOffset;
+	int matchLen2, matchOffset2;
+	int lastOffset[OffCasheSize];
+	int litRun;
+	int* hash1Table = (int *)wzipStr->hash1Table;
+	int* hash2Table = (int *)wzipStr->hash2Table;
+	const Uint32 offWindow = WINDOW(OffWidth[8]);
+	int litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
+	const int hash1Len = wzipStr->hash1Len;
+	const int hash2Len = wzipStr->hash2Len;
+
+	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
+	reg_t currPattern, diffPattern;
+
+	const Uint8* matchPtr;
+	WLZ_Huffman_Set huffmanSet;
+	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+
+	WLZ_Set* const wlzSeq = (WLZ_Set*)malloc(SEQ_BlockSize*sizeof(WLZ_Set));
+	WLZ_Set* wlzSeqPtr = wlzSeq;
+	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
+
+	Uint32 wlzStrSize = srcSize;
+	Uint8* wlzStream = (Uint8*)malloc(wlzStrSize);     /* compressed wlz sequence */
+	if (NULL == lzLitBuffer || NULL == wlzSeq || NULL == wlzStream) goto _lit_overflow;
+	Uint8* wlzStrPtr = wlzStream;
+	Uint8* wlzStrEnd = wlzStream + wlzStrSize;
+
+#ifdef WZIP_DEBUG 
+	FILE* fptr;
+	fopen_s(&fptr, "WLZ2_Compress_Index.txt", "w");
+	fprintf(fptr, "WLZ2_Compress_Fast: srcSize=%i\n", srcSize);
+#endif
+
+	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+	nLzLits = 0;
+	Uint32 srcIdx = 0;
+	for (i = 0; i < OffCasheSize; i++ )
+		lastOffset[i] = 1<<OffWidth[8];
+
+#define L0_EMIT_LITERALS(from, to)   {                                                                    \
+		const Uint8* p_ = (from);                                                                        \
+		while (p_ < (to)) {                                                                              \
+			const Uint32 n_ = (Uint32)min((to) - p_, lzLitEnd - lzLitPtr);                               \
+			if (n_ <= 16 && p_ + 16 <= srcEnd) memcpy(lzLitPtr, p_, 16);   /* short runs: one fixed copy */ \
+			else if (p_ + n_ + 16 <= srcEnd) MemWildCopy(lzLitPtr, p_, lzLitPtr + n_);                       \
+			else memcpy(lzLitPtr, p_, n_);                                                               \
+			lzLitPtr += n_; p_ += n_;                                                                    \
+			if (lzLitPtr == lzLitEnd) {                                                                  \
+				Literal_Histogram(lzLitBuffer, HUF_BlockSize, litHuf);                                  \
+				if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;          \
+				zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits); \
+				wzipLitPtr += zipLitBlkSize;                                                             \
+				lzLitPtr = lzLitBuffer;                                                                  \
+				memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));                                      \
+				nLzLits += HUF_BlockSize;                                                                \
+			}                                                                                            \
+		}                                                                                                \
+	}
+#define L0_STORE_SEQUENCE(litLen, mLen_, offset)   {                                                          \
+		if ((offset) == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, (litLen), (mLen_));      \
+		else L0_Store_Sequence(wlzSeqPtr++, &huffmanSet, (litLen), (mLen_), Offset_Cashe((Uint32*)lastOffset, (offset))); \
+		if (wlzSeqPtr == wlzSeqEnd) {                                                                    \
+			SEQ_ENSURE_ROOM(); wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet); \
+			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));                                             \
+			wlzSeqPtr = wlzSeq;                                                                          \
+		}                                                                                                \
+	}
+
+	int fHashLog = L0F_HashLog;
+	const int fMls = L0F_MinMatch, fStep = L0F_SkipLog, fWinLog = L0F_WindowLog;
+	fHashLog = min(fHashLog, (int)High_Bit32(wzipStr->hash1Mask + 1));           /* within the allocated table */
+	const Uint32 fWindow = min(WINDOW(fWinLog), WINDOW(OffWidth[fMls]));        /* every match of fMls bytes or more is in its window */
+	const int fShift = 64 - 8 * fMls, fHashShift = 64 - fHashLog;
+	int* const fTable = hash1Table;
+	memset(fTable, 0xFF, ((size_t)1 << fHashLog) * sizeof(int));
+#define F_HASH(p)   ((Uint32)(((MemRead8(p) << fShift) * 0xCF1BBCDCB7A56463ULL) >> fHashShift))
+
+	const Uint8* ip = srcPtr;
+	while (ip < srcLastMatch) {
+		const Uint32 cur = (Uint32)(ip - source);
+		const Uint32 h = F_HASH(ip);
+		const int m = fTable[h];
+		fTable[h] = (int)cur;
+		const Uint8* mStart;
+		Uint32 mLen, mOff;
+
+		const Uint32 rep0 = (Uint32)lastOffset[0];
+		if (rep0 <= cur && MemRead4(ip + 1) == MemRead4(ip + 1 - rep0)) {   /* the most recent offset, one byte ahead */
+			mStart = ip + 1;
+			mOff = rep0;
+			mLen = 4 + WLZ_Match_Count(ip + 5, ip + 5 - rep0, srcLastMatch, NULL);
+		}
+		else {
+			if (m < 0 || (Uint32)m >= cur || cur - (Uint32)m >= fWindow) {
+				ip += ((ip - anchor) >> fStep) + 1;
+				continue;
+			}
+			const Uint8* const mp = source + m;
+			const reg_t diff = MemReadARCH(ip) ^ MemReadARCH(mp);
+			const Uint32 len = diff ? N_ZeroBytes(diff) : REG_SIZE + WLZ_Match_Count(ip + REG_SIZE, mp + REG_SIZE, srcLastMatch, NULL);
+			if (len < (Uint32)fMls) {
+				ip += ((ip - anchor) >> fStep) + 1;
+				continue;
+			}
+			mStart = ip; mOff = cur - (Uint32)m; mLen = len;
+			while (mStart > anchor && (Uint32)(mStart - source) > mOff && mStart[-1] == mStart[-1 - (int)mOff]) {
+				mStart--;
+				mLen++;
+			}
+		}
+		if (mOff == 1)                           /* a run is not bound by the match-length cap */
+			while (mStart + mLen < srcLastMatch && mStart[mLen] == mStart[mLen - 1]) mLen++;
+		else if (mLen > MaxMatchLen) mLen = MaxMatchLen;
+		L0_EMIT_LITERALS(anchor, mStart);
+		L0_STORE_SEQUENCE((Uint32)(mStart - anchor), mLen, mOff);
+		ip = mStart + mLen;
+		anchor = ip;
+		if (ip >= srcLastMatch) break;
+		fTable[F_HASH(mStart + 2)] = (int)(mStart + 2 - source);            /* index the match */
+		fTable[F_HASH(ip - 2)] = (int)(ip - 2 - source);
+		while (ip < srcLastMatch) {        /* the second most recent offset right at the end of the match */
+			const Uint32 rep1 = (Uint32)lastOffset[1];
+			if (rep1 > (Uint32)(ip - source) || MemRead4(ip) != MemRead4(ip - rep1)) break;
+			Uint32 len = 4 + WLZ_Match_Count(ip + 4, ip + 4 - rep1, srcLastMatch, NULL);
+			if (len > MaxMatchLen) len = MaxMatchLen;
+			L0_STORE_SEQUENCE(0, len, rep1);
+			fTable[F_HASH(ip)] = (int)(ip - source);
+			ip += len;
+			anchor = ip;
+		}
+	}
+	L0_EMIT_LITERALS(anchor, srcEnd);       /* the last literals, all copied here */
+	srcPtr = srcEnd;
+#undef F_HASH
+#undef L0_EMIT_LITERALS
+#undef L0_STORE_SEQUENCE
+
+_last_literals:
+	/* Encode Last Literals */
+	litRun = (int)(srcEnd - anchor);
+
+	int lastLits = (int)(srcEnd - srcPtr);
+	if (lzLitPtr + lastLits > lzLitEnd) {
+		while (lzLitPtr < lzLitEnd) {
+			litHuf[*srcPtr].freq++;
+			*lzLitPtr++ = *srcPtr++;
+		}
+		if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+		zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+		wzipLitPtr += zipLitBlkSize;
+		lzLitPtr = lzLitBuffer;
+		memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+		nLzLits += HUF_BlockSize;
+	}
+	while (srcPtr < srcEnd) {
+		litHuf[*srcPtr].freq++;
+		*lzLitPtr++ = *srcPtr++;
+	}
+	Uint32 lastBufLits = (Uint32)(lzLitPtr - lzLitBuffer);
+	Literal_Histogram(lzLitBuffer, lastBufLits, litHuf);     /* the fast loop counts literals per block */     /* remaining number literals in the buffer to be flushed */
+	if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(lastBufLits) + LIT_BlockSlack) goto _lit_overflow;
+	zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, lastBufLits, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+	wzipLitPtr += zipLitBlkSize;
+	nLzLits += lastBufLits;
+	if (srcSize >> 16) MemWriteLE4(wzipStream, nLzLits);       /* record the number of LZ literals at the beginning of zip stream */
+	else               MemWriteLE2(wzipStream, (Uint16)nLzLits);
+
+#ifdef WZIP_DEBUG
+	fprintf(fptr, "srcIdx=%d, litRun=%d\n", (int)(anchor - (const Uint8*)source), litRun);
+	fclose(fptr);
+#endif
+
+	if (litRun < LitRunDirect) {
+		wlzSeqPtr->litRun = litRun;
+		huffmanSet.litRunHuf[litRun].freq++;
+	}
+	else {
+		litRunMsb = High_Bit32(litRun);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
+		huffmanSet.litRunHuf[litRunHufIdx].freq++;
+	}
+	wlzSeqPtr->mchLen = 255;   /* protocal for ending */
+	wlzSeqPtr++;
+
+	SEQ_ENSURE_ROOM();
+	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
+		goto _lit_overflow;
+	}
+
+	memcpy(wzipLitPtr, wlzStream, wlzStrPtr - wlzStream);
+	int cmprSize = (wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream);
+
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return cmprSize;
+_lit_overflow:                 /* the output buffer is full: the caller stores the input raw */
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return 0;
+}
+
+/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+********************************************************************Hash - Chain Compression Functions * *******************************************************************
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+
+ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
+	                                            const Uint8* srcLastMatch, const Uint32* lastOffset, WLZ_Match* matchStr, int chainSearchCnt)
+{
+	Uint32* chain1Table = (Uint32 *)wzipStr->chain1Table;
+	int* hash1Table = (int *)wzipStr->hash1Table;
+	const Uint32 chain1Mask = wzipStr->chain1Mask;
+	const Uint32 maxMatchLen = wzipStr->hash2Len - 1;
+	Uint8* matchPtr, *srcPtr;
+	int matchLen, matchIdx;
+	const int dictSize = wzipStr->dictSize;
+	Uint8* const dictEnd = wzipStr->dictEnd;
+	const Uint32 off1Window = WINDOW(OffWidth[maxMatchLen]);  
+	const int hash1Len = wzipStr->hash1Len;
+	
+	srcPtr = (Uint8*)source + wzipStr->curr1Idx;
+	while (wzipStr->curr1Idx <= currIdx + L_InsertAhead) {
+		if (srcPtr + L_HashAhead <= srcLastMatch)
+			PREFETCH_L1(hash1Table + (WLZ_Hash1(srcPtr + L_HashAhead) & wzipStr->hash1Mask));
+		Uint32 hashV = WLZ_Hash1(srcPtr++) & wzipStr->hash1Mask;
+		const int prevIdx = hash1Table[hashV];
+		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		PREFETCH_L1(chain1Table + ((Uint32)prevIdx & chain1Mask));
+		int dist = wzipStr->curr1Idx - hash1Table[hashV];
+		chain1Table[wzipStr->curr1Idx & chain1Mask] = (dist>0 && dist< chain1Mask && hash1Table[hashV]>=-dictSize)? dist: chain1Mask;
+		hash1Table[hashV] = wzipStr->curr1Idx++;
+	}
+
+	srcPtr = (Uint8*)source + currIdx;
+	Uint64 diffPattern, currPattern = MemReadARCH(srcPtr);
+	int matchDist = chain1Table[currIdx & chain1Mask];
+	matchIdx = currIdx - matchDist;
+	while (matchIdx >= -dictSize && matchDist < off1Window && chainSearchCnt) {		
+		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
+		diffPattern = currPattern ^ MemReadARCH(matchPtr);
+		matchLen = diffPattern ? N_ZeroBytes(diffPattern) : REG_SIZE;
+		if (matchLen > matchStr->len && matchDist< WINDOW(OffWidth[matchLen]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
+			matchStr->len = matchLen;
+			matchStr->off = matchDist;
+			if (matchLen >= maxMatchLen) break;
+		}
+		
+		chainSearchCnt--;
+		matchDist += chain1Table[matchIdx & chain1Mask];
+		matchIdx = currIdx - matchDist;
+	}
+}
+ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
+	                       const Uint8* srcLastMatch, const Uint8* dictLastMatch, const Uint32* lastOffset, WLZ_Match* matchStr, int chainSearchCnt)
+{
+	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
+	const Uint32 chain2Mask = wzipStr->chain2Mask;
+	int* hash2Table = (int*)wzipStr->hash2Table;
+	Uint8* matchPtr, * srcPtr;
+	int matchLen, matchIdx;
+	const int dictSize = wzipStr->dictSize;
+	Uint8* const dictEnd = wzipStr->dictEnd;
+	const Uint32 off2Window = WINDOW(OffWidth[8]);
+	const int hash2Len = wzipStr->hash2Len;
+
+	srcPtr = (Uint8*)source + wzipStr->curr2Idx;
+	while (wzipStr->curr2Idx <= currIdx + L_InsertAhead) {
+		if (srcPtr + L_HashAhead <= srcLastMatch)
+			PREFETCH_L1(hash2Table + (WLZ_Hash2(srcPtr + L_HashAhead) & wzipStr->hash2Mask));
+		Uint32 hashV = WLZ_Hash2(srcPtr++) & wzipStr->hash2Mask;
+		const int prevIdx = hash2Table[hashV];
+		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		PREFETCH_L1(chain2Table + ((Uint32)prevIdx & chain2Mask));
+		int dist = wzipStr->curr2Idx - hash2Table[hashV];
+		chain2Table[wzipStr->curr2Idx & chain2Mask] = (dist>0 && dist< chain2Mask && hash2Table[hashV] >= -dictSize)? dist : chain2Mask;
+		hash2Table[hashV] = wzipStr->curr2Idx++;
+
+	}
+
+	srcPtr = (Uint8*)source + currIdx;
+	Uint32 currPattern = MemRead4(srcPtr);
+	int matchDist = chain2Table[currIdx & chain2Mask];
+	matchIdx = currIdx - matchDist;
+	while (matchIdx >= -dictSize && matchDist < off2Window && chainSearchCnt) {
+		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
+		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH((int)matchStr->len + 1)) {
+			matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr));
+			if (matchLen > matchStr->len && matchDist < WINDOW(OffWidth[min(8, matchLen)]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
+				matchStr->len = matchLen;
+				matchStr->off = matchDist;
+			}
+		}
+		chainSearchCnt--;
+		matchDist += chain2Table[matchIdx &chain2Mask];
+		matchIdx = currIdx - matchDist;
+	}
+}
+
+/* Lazy evaluation: looks for a better match starting 1 to maxBack bytes after the current one. Candidates are taken
+   from the chain at currIdx (= current start + maxBack), extended backward by up to 2 bytes, and at
+   currIdx - (maxBack - 1). A candidate replaces the current match when its gain, less the cost of the literals it
+   delays, is larger. Returns the number of bytes by which the match start moves. */
+ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
+	int maxBack, const Uint32* lastOffset, const Uint8* srcLastMatch, const Uint8* dictLastMatch, WLZ_Match* matchStr, int chainSearchCnt)
+{
+	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
+	int* hash2Table = (int*)wzipStr->hash2Table;
+	const Uint32 chain2Mask = wzipStr->chain2Mask;
+	Uint8* matchPtr, *srcPtr;
+	int matchLen, matchIdx, back, optBack = maxBack;
+	static const int backTable[4] = { 0, 1, 0, 2 };
+	const int dictSize = wzipStr->dictSize;
+	Uint8* const dictEnd = wzipStr->dictEnd;
+	const Uint32 off2Window = WINDOW(OffWidth[8]);
+	const int hash2Len = wzipStr->hash2Len;
+	int bestGain = Match_Gain(matchStr, lastOffset);
+
+	srcPtr = (Uint8*)source + wzipStr->curr2Idx;
+	while (wzipStr->curr2Idx <= currIdx + L_InsertAhead) {
+		if (srcPtr + L_HashAhead <= srcLastMatch)
+			PREFETCH_L1(hash2Table + (WLZ_Hash2(srcPtr + L_HashAhead) & wzipStr->hash2Mask));
+		Uint32 hashV = WLZ_Hash2(srcPtr++) & wzipStr->hash2Mask;
+		const int prevIdx = hash2Table[hashV];
+		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		PREFETCH_L1(chain2Table + ((Uint32)prevIdx & chain2Mask));
+		int dist = wzipStr->curr2Idx - hash2Table[hashV];
+		chain2Table[wzipStr->curr2Idx & chain2Mask] = (dist > 0 && dist < chain2Mask && hash2Table[hashV] >= -dictSize) ? dist : chain2Mask;
+		hash2Table[hashV] = wzipStr->curr2Idx++;
+	}
+
+	/* candidates at currIdx, extended backward by up to 2 bytes */
+	srcPtr = (Uint8*)source + currIdx;
+	Uint32 currPattern = MemRead4(srcPtr);
+	const Uint8 back0 = srcPtr[-1], back1 = srcPtr[-2];
+	int matchDist = chain2Table[currIdx & chain2Mask];
+	int searchCnt = chainSearchCnt * 3 / 4 + 4;
+	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
+		matchIdx = currIdx - matchDist;
+		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
+		if (currPattern == MemRead4(matchPtr)) {
+			const int backIdx = (matchIdx >= 2 || (matchIdx < 0 && matchIdx >= 2 - (int)dictSize)) ? (back0 == *(matchPtr - 1)) ^ ((back1 == *(matchPtr - 2)) << 1) : 0;   /* never extend before the history start */
+			back = backTable[backIdx];
+			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
+			const int need = bestGain + cost;               /* the candidate must reach G_Byte * length > need */
+			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1 - back)) {
+				matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr)) + back;
+				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
+					matchStr->len = matchLen;
+					matchStr->off = matchDist;
+					optBack = back;
+					bestGain = G_Byte * matchLen - cost;
+				}
+			}
+		}
+		searchCnt--;
+		matchDist += chain2Table[matchIdx & chain2Mask];
+	}
+
+	/* candidates at currIdx - (maxBack - 1) */
+	back = maxBack - 1;
+	currIdx -= back;
+	srcPtr -= back;
+	currPattern = MemRead4(srcPtr);
+	matchDist = chain2Table[currIdx & chain2Mask];
+	searchCnt = 2 + chainSearchCnt / 4;
+	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
+		matchIdx = currIdx - matchDist;
+		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
+		if (currPattern == MemRead4(matchPtr)) {
+			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
+			const int need = bestGain + cost;
+			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1)) {
+				matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr));
+				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
+					matchStr->len = matchLen;
+					matchStr->off = matchDist;
+					optBack = back;
+					bestGain = G_Byte * matchLen - cost;
+				}
+			}
+		}
+		searchCnt--;
+		matchDist += chain2Table[matchIdx & chain2Mask];
+	}
+	return maxBack - optBack;
+}
+
+
+/* Replaces *matchStr (starting `delay` bytes later than srcIdx, with gain bestGain) by a repeat-offset match starting at
+   srcIdx + 1 .. srcIdx + maxDelay when that gains more. A repeat offset is coded by its cache slot, so it is not bound by
+   the length windows. Returns the delay of the chosen match. */
+ForceInlineTemplate int Pick_Repeat_Offset(const Uint8* const source, Uint32 srcIdx, int minDelay, int maxDelay, int delay, int bestGain,
+	const Uint32* const lastOffset, const int dictSize, const Uint8* const dictEnd, const Uint8* const srcLastMatch,
+	const Uint8* const dictLastMatch, WLZ_Match* const matchStr)
+{
+	for (int d = minDelay; d <= maxDelay; d++)
+		for (int k = 0; k < OffCasheSize; k++) {
+			const int len = Repeat_Match_Len(source, srcIdx + d, lastOffset[k], dictSize, dictEnd, srcLastMatch, dictLastMatch);
+			const int gain = G_Byte * len - k - G_Delay[d];              /* slot 0 is the cheapest to code */
+			if (len >= MinMatchLen && gain > bestGain) {
+				bestGain = gain;
+				matchStr->len = len;
+				matchStr->off = lastOffset[k];
+				delay = d;
+			}
+		}
+	return delay;
+}
+#define PICK_REPEAT_HERE(ms) Pick_Repeat_Offset(source, srcIdx, 0, 0, 0, (ms).len >= MinMatchLen ? Match_Gain(&(ms), lastOffset) : -(1 << 30), \
+                                                lastOffset, dictSize, dictEnd, srcLastMatch, dictLastMatch, &(ms))
+
+/** forced inline, to ensure branches are decided at compilation time **/
+ForceInlineTemplate Uint32 WLZ2_Compress(
+	WZIP_State_Str* const wzipStr,
+	const Uint8* const source,
+	const Uint32 srcSize,
+	Uint8* wzipStream,
+	int wzipCapSize,
+	int maxSearchCnt)
+{
+	int* hash0Table = (int*)wzipStr->hash0Table;
+	const Uint8* srcPtr = (const Uint8*)source;
+	const Uint8* anchor = (const Uint8*)source;
+	const Uint8* const srcEnd = (const Uint8*)source + srcSize;
+	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
+	const int dictSize = wzipStr->dictSize;
+	const Uint8* dictEnd = wzipStr->dictEnd;
+	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
+	Uint32 nLzLits;
+	Huffman_Str litHuf[N_HufLits];
+	Uint8* wzipLitPtr = wzipStream;
+	const Uint8* const wzipLitEnd = wzipLitPtr + wzipCapSize;
+	wzipLitPtr += (srcSize >> 16) ? 4 : 2;                 /* Reserved to record the number of literals */
+	Uint32  zipLitBlkSize;
+	Uint32 lastOffset[OffCasheSize];
+	int litRun, litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
+	const int hash2Len = wzipStr->hash2Len;
+	
+	WLZ_Match matchStr, nextMatchStr = { 0, 0 };
+
+	WLZ_Huffman_Set huffmanSet;
+	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+
+	Uint8* const lzLitBuffer = (Uint8*)malloc(HUF_BlockSize);
+	Uint8* lzLitPtr = lzLitBuffer;
+	const Uint8* lzLitEnd = lzLitBuffer + HUF_BlockSize;
+
+	WLZ_Set* const wlzSeq = (WLZ_Set*)malloc(SEQ_BlockSize * sizeof(WLZ_Set));
+	WLZ_Set* wlzSeqPtr = wlzSeq;
+	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
+
+	Uint32 wlzStrSize = srcSize;
+	Uint8* wlzStream = (Uint8*)malloc(wlzStrSize);
+	if (NULL == lzLitBuffer || NULL == wlzSeq || NULL == wlzStream) goto _lit_overflow;
+	Uint8* wlzStrPtr = wlzStream;
+	Uint8* wlzStrEnd = wlzStream + wlzStrSize;
+
+#ifdef WZIP_DEBUG 
+	FILE* fptr;
+	fopen_s(&fptr, "WLZ2_Compress_Index.txt", "w");
+	fprintf(fptr, "WZIP2_Compress_Kernel: srcSize=%i\n", srcSize);
+	int wlzStats[MaxMatchLen + 1] = { 0 };
+#endif
+	wzipStr->curr1Idx = 0;
+	wzipStr->curr2Idx = 0;
+
+	int curr0Idx = 0;
+	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
+	nLzLits = 0;
+	Uint32 srcIdx = 0, hashV;
+	int nextMatchDone = 0;
+	while (1) {
+
+		while (1) {
+			/*if (srcIdx == 1926247) {
+				srcIdx += 0;
+			}*/
+
+			if (unlikely(srcPtr >= srcLastMatch)) goto _last_literals;
+
+			if (nextMatchDone) {
+				matchStr = nextMatchStr;
+				nextMatchDone = 0;
+				PICK_REPEAT_HERE(matchStr);
+			}
+			else {
+				matchStr.len = 0;
+				WZIP_Search_Hash2Chain(wzipStr, source, srcIdx, srcLastMatch, dictLastMatch, lastOffset, &matchStr, maxSearchCnt);
+				if (matchStr.len >= hash2Len) {
+					PICK_REPEAT_HERE(matchStr);
+					break;
+				}
+
+				/* levels 2-3 use the 3-byte table and the long hash chain only; the 4/5-byte chain serves the lazy levels */
+				if (wzipStr->compressLevel > 3)
+					WZIP_Search_Hash1Chain(wzipStr, source, srcIdx, srcLastMatch, lastOffset, &matchStr, maxSearchCnt);
+				if (!matchStr.len) {
+					Uint8* src_ptr = (Uint8*)source + curr0Idx;
+					while (src_ptr < srcPtr) {
+						hashV = WLZ_Hash0(src_ptr++) & wzipStr->hash0Mask;
+						hash0Table[hashV] = curr0Idx++;
+					}
+					hashV = WLZ_Hash0(srcPtr) & wzipStr->hash0Mask;
+					int match0Idx = hash0Table[hashV];
+					int offset = srcIdx - match0Idx;   // note curr0Idx=srcIdx
+					hash0Table[hashV] = curr0Idx++; 
+					if ( match0Idx >= -dictSize && offset > 0 && offset < WINDOW(OffWidth[hash2Len]) ) {
+						Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
+						reg_t diffPattern = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
+						matchStr.len = diffPattern? N_ZeroBytes(diffPattern) : REG_SIZE;
+						matchStr.off = offset;
+						if (matchStr.len <= hash2Len && offset >= WINDOW(OffWidth[matchStr.len]) )
+							matchStr.len = 0;
+					}
+				}
+				PICK_REPEAT_HERE(matchStr);
+			}
+			if (matchStr.len >= MinMatchLen) break;
+
+			*lzLitPtr++ = *srcPtr;
+			litHuf[*srcPtr].freq++;
+			srcPtr++;
+			srcIdx++;
+			if (lzLitPtr == lzLitEnd) {
+				if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+				zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+				wzipLitPtr += zipLitBlkSize;
+				lzLitPtr = lzLitBuffer;
+				memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+				nLzLits += HUF_BlockSize;
+			}
+		}
+
+		if (wzipStr->compressLevel > 3 && srcPtr + matchStr.len < srcLastMatch && srcPtr + hash2Len < srcLastMatch && matchStr.len <= MaxMatchLen) {
+
+			nextMatchStr.len = 2;  //nextMatchStr.off = WLZ_MAX_DIST;
+			WZIP_Search_Hash2Chain(wzipStr, source, srcIdx + matchStr.len, srcLastMatch, dictLastMatch, lastOffset, &nextMatchStr, maxSearchCnt);
+			if ( nextMatchStr.len < hash2Len) {
+				WZIP_Search_Hash1Chain(wzipStr, source, srcIdx + matchStr.len, srcLastMatch, lastOffset, &nextMatchStr, maxSearchCnt/4);
+			}
+			
+			int lazyForward = WZIP_Search_Hash2Chain_2D(wzipStr, source, srcIdx + 3, 3, lastOffset, srcLastMatch, dictLastMatch, &matchStr, maxSearchCnt / 2);
+			/* repeat offsets at the next two positions compete as well */
+			lazyForward = Pick_Repeat_Offset(source, srcIdx, 1, 2, lazyForward, Match_Gain(&matchStr, lastOffset) - G_Delay[lazyForward],
+			                                 lastOffset, dictSize, dictEnd, srcLastMatch, dictLastMatch, &matchStr);
+
+			nextMatchDone = (0 == lazyForward);
+
+			const Uint8* srcPtrEnd = srcPtr + lazyForward;
+			while (srcPtr < srcPtrEnd) {
+				*lzLitPtr++ = *srcPtr;
+				litHuf[*srcPtr].freq++;
+				srcPtr++;
+				if (lzLitPtr == lzLitEnd) {
+					if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+					zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+					wzipLitPtr += zipLitBlkSize;
+					lzLitPtr = lzLitBuffer;
+					memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+					nLzLits += HUF_BlockSize;
+				}
+			}
+			srcIdx += lazyForward;
+		}
+
+		if (matchStr.len > MaxMatchLen) {
+			matchStr.len = MaxMatchLen;
+			nextMatchDone = 0;
+		}
+
+
+		litRun = (Uint32)(srcPtr - anchor);
+		
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "srcIdx=%d, litRun=%d,  matLen=%d, offset=%d ",
+			(int)(anchor - (const Uint8*)source), litRun, matchStr.len, matchStr.off);
+#endif
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Encode Literal Run ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (litRun < LitRunDirect) {
+			wlzSeqPtr->litRun = litRun;
+			huffmanSet.litRunHuf[litRun].freq++;
+		} else {
+			litRunMsb = High_Bit32(litRun);
+			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
+			huffmanSet.litRunHuf[litRunHufIdx].freq++;
+		}
+
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Fast Encode Match Pair  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (matchStr.off == 1) {                 /* a run is not bound by the match-length cap */
+			const Uint32 len0 = matchStr.len;
+			while (srcPtr + matchStr.len < srcLastMatch && srcPtr[matchStr.len] == srcPtr[matchStr.len - 1]) matchStr.len++;
+			if (matchStr.len != len0) nextMatchDone = 0;    /* the looked-ahead match started inside the run */
+		}
+		srcIdx += matchStr.len;
+		srcPtr += matchStr.len;
+
+		if (matchStr.off == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchStr.len) - 1;
+		else {
+		matchStr.off = Offset_Cashe(lastOffset, matchStr.off);
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "-> %d,  str=", matchStr.off);
+		for (int i = -matchStr.len; i < 0; i++)
+			fprintf(fptr, "%c", *(srcPtr + i));
+		fprintf(fptr, "\n");
+		fflush(fptr);
+		wlzStats[matchStr.len]++;
+#endif
+		if (matchStr.len < LitRunDirect) {
+			mchLenHufIdx = matchStr.len - MinMatchLen;
+			wlzSeqPtr->mchLen = mchLenHufIdx;
+			huffmanSet.mchLenHuf[mchLenHufIdx].freq++;
+		}
+		else {
+			matchLenMsb = High_Bit32(matchStr.len);
+			mchLenHufIdx = LitRunHufMap[matchLenMsb].hufIdx + ((matchStr.len ^ 1 << matchLenMsb) >> LitRunHufMap[matchLenMsb].lsBits) - MinMatchLen;
+			wlzSeqPtr->mchLen = mchLenHufIdx ^ (matchStr.len & BitMask[LitRunHufMap[matchLenMsb].lsBits])<<8;
+			huffmanSet.mchLenHuf[mchLenHufIdx].freq++;
+		}
+
+		if (matchStr.off < 4) {
+			wlzSeqPtr->mchOff = (Uint8)matchStr.off;
+			huffmanSet.mchOffHuf[OffGroupOf[mchLenHufIdx]][matchStr.off].freq++;
+		}
+		else {
+			offsetMsb = High_Bit32(matchStr.off);
+			offsetHufIdx = Offset_Huffman_Index(matchStr.off, offsetMsb);
+			wlzSeqPtr->mchOff = offsetHufIdx ^ (matchStr.off & BitMask[ExtHufMchOff[offsetHufIdx].lsBits]) << OFF_SymBits;
+			//huffmanSet.mchOffHuf[OffsetGroupTable[min(15, mchLenHufIdx)]][offsetHufIdx].freq++;
+			huffmanSet.mchOffHuf[OffGroupOf[mchLenHufIdx]][offsetHufIdx].freq++;
+		}
+		}
+
+		anchor = srcPtr;
+		matchStr.len = 0;
+
+		if (++wlzSeqPtr==wlzSeqEnd) {
+			SEQ_ENSURE_ROOM();
+			wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd-wlzStrPtr, &huffmanSet);
+			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));		
+			wlzSeqPtr = wlzSeq;
+		}
+	}
+
+_last_literals:
+	/* Encode Last Literals */
+	litRun = (int)(srcEnd - anchor);
+
+	int lastLits = (int)(srcEnd - srcPtr);
+	if (lzLitPtr + lastLits > lzLitEnd) {
+		while (lzLitPtr < lzLitEnd) {
+			litHuf[*srcPtr].freq++;
+			*lzLitPtr++ = *srcPtr++;
+		}
+		if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+		zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+		wzipLitPtr += zipLitBlkSize;
+		lzLitPtr = lzLitBuffer;
+		memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+		nLzLits += HUF_BlockSize;
+	}
+	while (srcPtr < srcEnd) {
+		litHuf[*srcPtr].freq++;
+		*lzLitPtr++ = *srcPtr++;
+	}
+	Uint32 lastBufLits = (Uint32)(lzLitPtr - lzLitBuffer);     /* remaining number literals in the buffer to be flushed */
+	if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(lastBufLits) + LIT_BlockSlack) goto _lit_overflow;
+	zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, lastBufLits, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+	wzipLitPtr += zipLitBlkSize;
+	nLzLits += lastBufLits;
+	if (srcSize >> 16) MemWriteLE4(wzipStream, nLzLits);       /* record the number of LZ literals at the beginning of zip stream */
+	else               MemWriteLE2(wzipStream, (Uint16)nLzLits);
+
+#ifdef WZIP_DEBUG
+	fprintf(fptr, "srcIdx=%d, litRun=%d\n", (int)(anchor - (const Uint8*)source), litRun);
+	fclose(fptr);
+
+	if (NULL == (fptr = fopen("wlz_stats.txt", "w"))) {
+		fprintf(stderr, "unable to write file wlz_stats.txt\n");
+		exit(1);
+	}
+	fprintf(fptr, "wlz match statistics\n");
+	fprintf(fptr, "   1: %d  uncompressed literals\n", nLzLits);
+	fprintf(fptr, "match-len   count\n");
+	for (int i = MinMatchLen; i <= MaxMatchLen; i++)
+		if( wlzStats[i] )
+			fprintf(fptr, "%8d: %d\n", i, wlzStats[i]);
+	fclose(fptr);
+#endif
+
+	if (litRun < LitRunDirect) {
+		wlzSeqPtr->litRun = (Uint8)litRun;
+		huffmanSet.litRunHuf[litRun].freq++;
+	}
+	else {
+		litRunMsb = High_Bit32(litRun);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
+		huffmanSet.litRunHuf[litRunHufIdx].freq++;
+	}
+	wlzSeqPtr->mchLen = 255;    /* protocal for ending */
+	wlzSeqPtr++;
+
+	SEQ_ENSURE_ROOM();
+	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
+		goto _lit_overflow;
+	}
+
+	memcpy(wzipLitPtr, wlzStream, wlzStrPtr - wlzStream);
+	int cmprSize = (wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream);
+
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return cmprSize;
+_lit_overflow:                 /* the output buffer is full: the caller stores the input raw */
+	free(lzLitBuffer);
+	free(wlzSeq);
+	free(wlzStream);
+	return 0;
+}
+
+/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Optimal parsing (levels 7-13) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   A shortest-path parse over segments of up to OPT_Num positions. Every position is priced in bits from running symbol
+   statistics, using the same symbols as the encoder: literals, literal-run and match-length codes with their extra bits,
+   and the offset code of the match's length group with its raw bits. A raw offset must lie in the window of its length;
+   an offset in the repeat cache (tracked per path) costs only its slot code and has no window limit. A match longer than
+   the level's sufficient length ends the segment at once. */
+#define   OPT_Num              4096
+#define   OPT_Unit             256                     /* prices in 1/256 bit */
+#define   OPT_Inf              0x3FFFFFFF
+#define   OPT_UpdateBytes      (1 << 15)               /* prices are refreshed from the statistics every so many bytes */
+/* levels 7 to 13: the search depth (tree steps), the match length that ends a segment, passes and states. Levels 7-10:
+   shallow searches and short segments (each level between its neighbours in both ratio and speed, and ahead of the
+   lazy parser at equal speed). From level 11 the tree searches deep and segments run long: with the chains capped
+   (OPT_ChainMax) this costs little, and gains more than the extra states and passes, which levels 12 and 13 add */
+static const int OPT_LevelDepth[7] = { 4, 4, 8, 16, 256, 256, 256 };
+static const int OPT_LevelSufficient[7] = { 16, 32, 32, 32, 1024, 1024, 1024 };
+static const int OPT_LevelPasses[7] = { 1, 1, 1, 1, 1, 1, 2 };
+static const int OPT_LevelStates[7] = { 1, 1, 1, 1, 1, 3, 3 };
+/* chains A and B stop after this many steps: the tree finds the long matches, and deeper chain walks found almost
+   nothing (level 13: -0.02% at 1.85x the speed with the chains at 4x and 1x the depth of 256) */
+#define   OPT_ChainMax         16
+/* a pass before the last only gathers the symbol counts that price the next one: a shallow one-state search does
+   nearly as well (level 13: -0.02% at 1.3x the speed of a full first pass) */
+#define   OPT_StatsDepth       16
+#define   OPT_StatsSufficient  64
+
+typedef struct {
+	int price;                                         /* cost of the path up to here, pending literal-run code included */
+	int litLen;                                        /* literals since the last match on the path */
+	Uint32 mLen, mOff;                                 /* match ending here (mLen 0: a literal ends here), raw offset */
+	Uint32 rep[OffCasheSize];                          /* offset cache after the path */
+	int prevC;                                         /* state (literal-run class) this one comes from */
+} Opt_Node;
+
+/* Up to three states per position, one per literal-run class (0, 1, 2+ literals since the last match): a match's joint
+   symbol depends on that class, so the best arrival of each class makes the shortest path exact with respect to it.
+   With one state, the cheapest arrival is kept whatever its class. */
+#define   OPT_C                3
+#define   OPT_Class(litLen)    ((litLen) < 2 ? (litLen) : 2)
+/* a later pass prices each region of 2^OPT_RegionLog bytes from the symbol counts the previous pass found in it */
+#define   OPT_RegionLog        17
+
+typedef struct {
+	Uint32 len, off;
+} Opt_Cand;
+
+typedef struct {
+	Uint32 start, len, off;
+} Opt_Path;
+
+typedef struct {
+	Uint32 litFreq[N_HufLits], litRunFreq[N_HufLitRun], mchLenFreq[N_HufJoint], mchOffFreq[MaxMchOffGroup][N_HufMchOffMax];
+	int litPrice[N_HufLits], litRunPrice[N_HufLitRun], mchLenPrice[N_HufJoint], mchOffPrice[MaxMchOffGroup][N_HufMchOffMax];
+} Opt_Stats;
+
+ForceInlineTemplate int LitRun_Symbol(Uint32 litRun, int* extraBits)
+{
+	if (litRun < LitRunDirect) { *extraBits = 0; return (int)litRun; }
+	const int msb = High_Bit32(litRun);
+	const int sym = msb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
+	*extraBits = ExtHufLitRun[sym].lsBits;
+	return sym;
+}
+
+ForceInlineTemplate int MchLen_Symbol(Uint32 len, int* extraBits)
+{
+	if (len < LitRunDirect) { *extraBits = 0; return (int)len - MinMatchLen; }
+	const int msb = High_Bit32(len);
+	*extraBits = LitRunHufMap[msb].lsBits;
+	return LitRunHufMap[msb].hufIdx + ((len ^ 1 << msb) >> LitRunHufMap[msb].lsBits) - MinMatchLen;
+}
+
+/* v: cache slot (0-3) or offset + OffCasheSize - 1 */
+ForceInlineTemplate int Offset_Symbol(Uint32 v, int* extraBits)
+{
+	if (v < OffCasheSize) { *extraBits = 0; return (int)v; }
+	const int msb = High_Bit32(v);
+	*extraBits = msb - 1;
+	return Offset_Huffman_Index(v, msb);
+}
+
+static void Opt_Set_Prices(const Uint32* freq, int n, int* price)
+{
+	Uint64 total = 0;
+	for (int i = 0; i < n; i++) total += freq[i] + 1;
+	for (int i = 0; i < n; i++) price[i] = (int)(OPT_Unit * log2((double)total / (freq[i] + 1)));
+}
+
+static void Opt_Update_Prices(Opt_Stats* st)
+{
+	Opt_Set_Prices(st->litFreq, N_HufLits, st->litPrice);
+	Opt_Set_Prices(st->litRunFreq, N_HufLitRun, st->litRunPrice);
+	Opt_Set_Prices(st->mchLenFreq, N_HufJoint, st->mchLenPrice);
+	for (int g = 0; g < MchOffGroup; g++)
+		Opt_Set_Prices(st->mchOffFreq[g], N_HufMchOff[g], st->mchOffPrice[g]);
+}
+
+/* halves the counts so that the prices follow the data */
+static void Opt_Age_Stats(Opt_Stats* st)
+{
+	for (int i = 0; i < N_HufLits; i++) st->litFreq[i] >>= 1;
+	for (int i = 0; i < N_HufLitRun; i++) st->litRunFreq[i] >>= 1;
+	for (int i = 0; i < N_HufJoint; i++) st->mchLenFreq[i] >>= 1;
+	for (int g = 0; g < MchOffGroup; g++)
+		for (int i = 0; i < N_HufMchOffMax; i++) st->mchOffFreq[g][i] >>= 1;
+}
+
+static void Opt_Init_Stats(Opt_Stats* st, const Uint8* source, Uint32 srcSize)
+{
+	memset(st, 0, sizeof(*st));
+	Uint32 hist[256] = { 0 };
+	for (Uint32 i = 0; i < srcSize; i++) hist[source[i]]++;
+	for (int i = 0; i < 256; i++) st->litFreq[i] = (Uint32)(((Uint64)hist[i] << 12) / (srcSize + 1));
+	for (int i = 0; i < N_HufLitRun; i++) st->litRunFreq[i] = 256 >> min(i, 8);
+	/* a weak prior over lengths, halving every 8 symbols: a steeper one makes short lengths cheap enough that the
+	   parser splits long matches, and the counts of that parse keep them cheap */
+	{   static const Uint32 slotW[N_SlotSel] = { 4, 2, 1, 1, 12 };    /* cache slots 0-3 and new offsets */
+		for (int i = 0; i < N_HufJoint; i++)
+			st->mchLenFreq[i] = ((256u >> min(i % N_HufMchLen / 8, 8)) >> (i / N_HufMchLen % N_LitClass)) * slotW[i / (N_HufMchLen * N_LitClass)] >> 2;
+	}
+	for (int g = 0; g < MchOffGroup; g++) {
+		for (int i = 0; i < N_HufMchOff[g]; i++) st->mchOffFreq[g][i] = 4;
+		st->mchOffFreq[g][0] = st->mchOffFreq[g][1] = st->mchOffFreq[g][2] = st->mchOffFreq[g][3] = 0;   /* slots: in the joint symbol */
+	}
+	Opt_Update_Prices(st);
+}
+
+/* the literal-run code: none for runs of 0 and 1 (their class is in the joint symbol) */
+ForceInlineTemplate int LitRun_Price(const Opt_Stats* st, Uint32 litRun)
+{
+	int extra;
+	if (litRun < 2) return 0;
+	const int sym = LitRun_Symbol(litRun, &extra);
+	return st->litRunPrice[sym] + extra * OPT_Unit;
+}
+
+/* price of a match of length len with raw offset off from a path whose offset cache is rep; OPT_Inf if not codable */
+ForceInlineTemplate int Match_Price(const Opt_Stats* st, Uint32 len, Uint32 off, const Uint32* rep, Uint32 litLen)
+{
+	if (off == 1) {       /* a run: the run symbol, and its count as an offset of the widest window */
+		const Uint32 v = len + OffCasheSize - 1;
+		const int msb = High_Bit32(v);
+		return st->mchLenPrice[JointIdx(OffCasheSize, LitClass(min(litLen, 2)), RunSym)] + st->mchOffPrice[OffGroupOf[RunSym]][Offset_Huffman_Index((int)v, msb)] + (msb - 1) * OPT_Unit;
+	}
+	int mlExtra, offExtra;
+	const int mlSym = MchLen_Symbol(len, &mlExtra);
+	const int group = OffGroupOf[mlSym];
+	Uint32 v;
+	if (off == rep[0]) v = 0;
+	else if (off == rep[1]) v = 1;
+	else if (off == rep[2]) v = 2;
+	else if (off == rep[3]) v = 3;
+	else {
+		if (off >= (Uint32)WINDOW(OffWidth[min(8, len)])) return OPT_Inf;
+		v = off + OffCasheSize - 1;
+	}
+	if (v < OffCasheSize) return st->mchLenPrice[JointIdx(v, LitClass(min(litLen, 2)), mlSym)] + mlExtra * OPT_Unit;
+	const int offSym = Offset_Symbol(v, &offExtra);
+	return st->mchLenPrice[JointIdx(OffCasheSize, LitClass(min(litLen, 2)), mlSym)] + mlExtra * OPT_Unit + st->mchOffPrice[group][offSym] + offExtra * OPT_Unit;
+}
+
+/* the length symbol and the price of the extra bits of every match length, for the parser's inner loop */
+typedef struct {
+	Uint8 sym[MaxMatchLen + 1];
+	int extra[MaxMatchLen + 1];
+} Opt_LenTab;
+
+static void Opt_Init_LenTab(Opt_LenTab* const t)
+{
+	for (Uint32 l = MinMatchLen; l <= MaxMatchLen; l++) {
+		int extra;
+		t->sym[l] = (Uint8)MchLen_Symbol(l, &extra);
+		t->extra[l] = extra * OPT_Unit;
+	}
+}
+
+/* Match finder of the optimal parser: three levels, each searched to the window of its longest length.
+     A: lengths 3-4, 3-byte hash chain, to the window of length 4 (nearly exhaustive)
+     B: lengths 5-6, 5-byte hash chain, to the window of length 6
+     C: lengths 7+,  7-byte hash binary tree over the full window (input positions only)
+   Chains are walked nearest first, so each length gets its nearest offset; each walk stops at the first match long
+   enough for the next level, which finds that match (or a nearer one) itself. The tree covers long matches cheaply. */
+#define   OPT_Nil              0xFFFFFFFFu
+
+typedef struct {
+	int* headA, *headB, *headC;
+	Uint32* chainA, *chainB, *bt;
+	Uint32 hMaskA, hMaskB, hMaskC, maskA, maskB, maskC;
+	int winA, winB, winC;
+	Uint32 nextA, nextB, nextC;                        /* next input position to insert */
+} Opt_Finder;
+
+static int Opt_Finder_Init(Opt_Finder* f, const Uint8* dict, int dictSize)
+{
+	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
+	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
+	f->hMaskA = BitMask[min(OffWidth[4] + 2, 20)]; f->hMaskB = BitMask[OffWidth[6]]; f->hMaskC = BitMask[OffWidth[8]];
+	f->headA = (int*)malloc(((size_t)f->hMaskA + 1) * sizeof(int));
+	f->headB = (int*)malloc(((size_t)f->hMaskB + 1) * sizeof(int));
+	f->headC = (int*)malloc(((size_t)f->hMaskC + 1) * sizeof(int));
+	f->chainA = (Uint32*)malloc(((size_t)f->maskA + 1) * sizeof(Uint32));
+	f->chainB = (Uint32*)malloc(((size_t)f->maskB + 1) * sizeof(Uint32));
+	f->bt = (Uint32*)malloc(((size_t)f->maskC + 1) * 2 * sizeof(Uint32));
+	if (!f->headA || !f->headB || !f->headC || !f->chainA || !f->chainB || !f->bt) return 0;
+	memset(f->headA, 0x80, ((size_t)f->hMaskA + 1) * sizeof(int));  /* 0x80808080: before any history */
+	memset(f->headB, 0x80, ((size_t)f->hMaskB + 1) * sizeof(int));
+	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
+	f->nextA = f->nextB = f->nextC = 0;
+	/* dictionary positions up to -16 (8-byte reads and match extension stay inside it) go into the chains */
+	const Uint8* const dictEnd = dict + dictSize;
+	for (int i = -dictSize; i <= -16; i++) {
+		const Uint8* const p = dictEnd + i;
+		Uint32 h = Hash_3B(p) & f->hMaskA;
+		int prev = f->headA[h];
+		f->chainA[(Uint32)i & f->maskA] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskA) ? (Uint32)(i - prev) : f->maskA + 1;
+		f->headA[h] = i;
+		h = Hash_5B(p) & f->hMaskB;
+		prev = f->headB[h];
+		f->chainB[(Uint32)i & f->maskB] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskB) ? (Uint32)(i - prev) : f->maskB + 1;
+		f->headB[h] = i;
+	}
+	return 1;
+}
+
+static void Opt_Finder_Free(Opt_Finder* f)
+{
+	free(f->headA); free(f->headB); free(f->headC); free(f->chainA); free(f->chainB); free(f->bt);
+}
+
+/* level C: inserts idx into the tree and, when out is given, records each match longer than all found before */
+ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, Uint32 idx, int searchCnt,
+	const Uint8* const srcLastMatch, Opt_Cand* out)
+{
+	const Uint8* const ip = source + idx;
+	const Uint32 h = Hash_7B(ip) & f->hMaskC;
+	int matchIdx = f->headC[h];
+	f->headC[h] = (int)idx;
+	Uint32* smallerPtr = f->bt + 2 * (idx & f->maskC);
+	Uint32* largerPtr = smallerPtr + 1;
+	const int low = (int)idx - f->winC;
+	int commonSmaller = 0, commonLarger = 0, bestLen = MinMatchLen - 1, n = 0;
+	const Uint8* const countEnd = srcLastMatch - ip > MaxMatchLen ? ip + MaxMatchLen : srcLastMatch;   /* counts stop where the walk does */
+	while (searchCnt-- > 0 && matchIdx > low && matchIdx >= 0 && matchIdx < (int)idx) {
+		Uint32* const nextPtr = f->bt + 2 * ((Uint32)matchIdx & f->maskC);
+		const Uint8* const match = source + matchIdx;
+		int len = min(commonSmaller, commonLarger);
+		len += (int)WLZ_Match_Count(ip + len, match + len, countEnd, NULL);
+		if (len > bestLen) {
+			bestLen = len;
+			if (out) { out[n].len = min(len, MaxMatchLen); out[n].off = idx - (Uint32)matchIdx; n++; }
+		}
+		if (len >= MaxMatchLen || ip + len >= srcLastMatch) break;      /* cannot be ordered: drop the rest */
+		if (match[len] < ip[len]) {
+			*smallerPtr = (Uint32)matchIdx;
+			commonSmaller = len;
+			smallerPtr = nextPtr + 1;
+			matchIdx = (int)nextPtr[1];
+		}
+		else {
+			*largerPtr = (Uint32)matchIdx;
+			commonLarger = len;
+			largerPtr = nextPtr;
+			matchIdx = (int)nextPtr[0];
+		}
+	}
+	*smallerPtr = *largerPtr = OPT_Nil;
+	return n;
+}
+
+/* Collects match candidates at currIdx: for each length, the nearest offset found for it (lengths and offsets both
+   increase along the list), limited to offsets that the window of the length admits. */
+ForceInlineTemplate int Opt_Candidates(Opt_Finder* const f, const Uint8* const source, Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, int searchCnt,
+	Opt_Cand* const cand, Opt_Cand* const tmp)
+{
+	const Uint8* const srcPtr = source + currIdx;
+	const Uint8* matchPtr;
+	int matchIdx, nTmp = 0;
+
+	/* chains A and B: insert up to currIdx */
+	for (; f->nextA <= currIdx; f->nextA++) {
+		const Uint32 h = Hash_3B(source + f->nextA) & f->hMaskA;
+		const int prev = f->headA[h], d = (int)f->nextA - prev;
+		f->chainA[f->nextA & f->maskA] = (prev >= -dictSize && d > 0 && d <= (int)f->maskA) ? (Uint32)d : f->maskA + 1;
+		f->headA[h] = (int)f->nextA;
+	}
+	for (; f->nextB <= currIdx; f->nextB++) {
+		const Uint32 h = Hash_5B(source + f->nextB) & f->hMaskB;
+		const int prev = f->headB[h], d = (int)f->nextB - prev;
+		f->chainB[f->nextB & f->maskB] = (prev >= -dictSize && d > 0 && d <= (int)f->maskB) ? (Uint32)d : f->maskB + 1;
+		f->headB[h] = (int)f->nextB;
+	}
+
+	/* A: lengths 3-4, nearest first, until a match of length 5 */
+	{
+		const reg_t currPattern = MemReadARCH(srcPtr);
+		Uint32 matchDist = f->chainA[currIdx & f->maskA];
+		int bestLen = MinMatchLen - 1, cnt = min(4 * searchCnt, OPT_ChainMax);
+		while (matchDist < (Uint32)f->winA && cnt--) {
+			matchIdx = (int)currIdx - (int)matchDist;
+			if (matchIdx < -dictSize) break;
+			matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
+			const reg_t diff = currPattern ^ MemReadARCH(matchPtr);
+			const int len = diff ? (int)N_ZeroBytes(diff) : REG_SIZE;
+			if (len > bestLen) {
+				bestLen = len;
+				tmp[nTmp].len = len; tmp[nTmp].off = matchDist; nTmp++;
+				if (len >= 5) break;
+			}
+			if (matchIdx < 0) break;                             /* dictionary links are not followed further */
+			matchDist += f->chainA[(Uint32)matchIdx & f->maskA];
+		}
+	}
+
+	/* B: lengths 5-6, nearest first, until a match of length 7 */
+	{
+		const Uint32 currPattern = MemRead4(srcPtr);
+		Uint32 matchDist = f->chainB[currIdx & f->maskB];
+		int bestLen = 4, cnt = min(searchCnt, OPT_ChainMax);
+		while (matchDist < (Uint32)f->winB && cnt--) {
+			matchIdx = (int)currIdx - (int)matchDist;
+			if (matchIdx < -dictSize) break;
+			matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
+			if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH(bestLen + 1)) {
+				const int len = 4 + (int)WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch - srcPtr > MaxMatchLen ? srcPtr + MaxMatchLen : srcLastMatch, DICT_LIMIT(matchPtr));
+				if (len > bestLen) {
+					bestLen = len;
+					tmp[nTmp].len = min(len, MaxMatchLen); tmp[nTmp].off = matchDist; nTmp++;
+					if (len >= 7) break;
+				}
+			}
+			if (matchIdx < 0) break;
+			matchDist += f->chainB[(Uint32)matchIdx & f->maskB];
+		}
+	}
+
+	/* C: lengths 7+, binary tree */
+	while (f->nextC < currIdx)                                     /* positions the parse skipped */
+		Opt_Tree_Insert(f, source, f->nextC++, searchCnt, srcLastMatch, NULL);
+	nTmp += Opt_Tree_Insert(f, source, currIdx, searchCnt, srcLastMatch, tmp + nTmp);
+	f->nextC = currIdx + 1;
+
+	/* nearest first; keep a candidate only if it is longer than all nearer ones and its window admits its length */
+	for (int i = 1; i < nTmp; i++) {
+		const Opt_Cand c = tmp[i];
+		int j = i - 1;
+		while (j >= 0 && tmp[j].off > c.off) { tmp[j + 1] = tmp[j]; j--; }
+		tmp[j + 1] = c;
+	}
+	int n = 0;
+	Uint32 bestLen = MinMatchLen - 1;
+	for (int i = 0; i < nTmp; i++)
+		if (tmp[i].len > bestLen && tmp[i].off < (Uint32)WINDOW(OffWidth[min(8, tmp[i].len)])) {
+			cand[n++] = tmp[i];
+			bestLen = tmp[i].len;
+		}
+	return n;
+}
+
+ForceInlineTemplate void Opt_Relax(Opt_Node* const opt, int* const lastPos, int from, int fromC, Uint32 len, Uint32 off, int price)
+{
+	const int to = from + (int)len;
+	while (*lastPos < to) {
+		++*lastPos;
+		opt[*lastPos * OPT_C].price = opt[*lastPos * OPT_C + 1].price = opt[*lastPos * OPT_C + 2].price = OPT_Inf;
+	}
+	if (price < opt[to * OPT_C].price) {        /* a match ends in class 0 */
+		Opt_Node* const node = opt + to * OPT_C;
+		node->price = price;
+		node->litLen = 0;
+		node->mLen = len;
+		node->mOff = off;
+		node->prevC = fromC;
+		const Uint32* const rep = opt[from * OPT_C + fromC].rep;
+		if (off == 1)                              /* runs leave the cache alone */
+			memcpy(node->rep, rep, sizeof(node->rep));
+		else {                                     /* the offset moves to the front; a new one pushes out the oldest */
+			const int k = off == rep[0] ? 0 : off == rep[1] ? 1 : off == rep[2] ? 2 : off == rep[3] ? 3 : 4;
+			node->rep[3] = k >= 3 ? rep[2] : rep[3];
+			node->rep[2] = k >= 2 ? rep[1] : rep[2];
+			node->rep[1] = k >= 1 ? rep[0] : rep[1];
+			node->rep[0] = off;
+		}
+	}
+}
+
+static Uint32 WLZ2_Compress_Opt_Pass(
+	WZIP_State_Str* const wzipStr,
+	const Uint8* const source,
+	const Uint32 srcSize,
+	Uint8* wzipStream,
+	int wzipCapSize,
+	int maxSearchCnt,
+	int sufficientLen,
+	const int nStates,                     /* states per position: 1 or OPT_C */
+	const Opt_Stats* const regionIn,       /* symbol counts per region from a previous pass, which price each region */
+	Opt_Stats* const regionOut)            /* receives the symbol counts per region of this pass (zeroed by the caller) */
+{
+	const Uint8* const srcEnd = source + srcSize;
+	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
+	const Uint32 lastMatchIdx = srcSize > REG_SIZE * 2 ? srcSize - REG_SIZE * 2 : 0;
+	const int dictSize = wzipStr->dictSize;
+	const Uint8* dictEnd = wzipStr->dictEnd;
+	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
+	Uint32 nLzLits = 0;
+	Huffman_Str litHuf[N_HufLits];
+	Uint8* wzipLitPtr = wzipStream;
+	const Uint8* const wzipLitEnd = wzipLitPtr + wzipCapSize;
+	wzipLitPtr += (srcSize >> 16) ? 4 : 2;                 /* Reserved to record the number of literals */
+	Uint32 zipLitBlkSize;
+	Uint32 lastOffset[OffCasheSize];
+	int litRunHufIdx, mchLenHufIdx, offsetHufIdx, extra;
+
+	WLZ_Huffman_Set huffmanSet;
+	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+	Uint8* const lzLitBuffer = (Uint8*)malloc(HUF_BlockSize);
+	WLZ_Set* const wlzSeq = (WLZ_Set*)malloc(SEQ_BlockSize * sizeof(WLZ_Set));
+	Uint8* wlzStream = (Uint8*)malloc(srcSize + 1024);
+	Opt_Node* const opt = (Opt_Node*)malloc((size_t)(OPT_Num + MaxMatchLen + 2) * OPT_C * sizeof(Opt_Node));
+	Opt_Cand* const cand = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
+	Opt_Cand* const tmp = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
+	Opt_Finder finder;
+	const int finderOk = Opt_Finder_Init(&finder, dictSize ? dictEnd - dictSize : NULL, dictSize);
+	Opt_Stats* const st = (Opt_Stats*)malloc(sizeof(Opt_Stats));
+	Opt_LenTab* const lenTab = (Opt_LenTab*)malloc(sizeof(Opt_LenTab));
+	Opt_Path* const path = (Opt_Path*)malloc(((OPT_Num + MaxMatchLen) / MinMatchLen + 2) * sizeof(Opt_Path));
+	if (!finderOk || !lzLitBuffer || !wlzSeq || !wlzStream || !opt || !cand || !tmp || !st || !path || !lenTab)
+		goto _lit_overflow;
+	Uint8* lzLitPtr = lzLitBuffer;
+	const Uint8* const lzLitEnd = lzLitBuffer + HUF_BlockSize;
+	WLZ_Set* wlzSeqPtr = wlzSeq;
+	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
+	Uint8* wlzStrPtr = wlzStream;
+	Uint8* wlzStrEnd = wlzStream + srcSize + 1024;
+
+	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
+	Opt_Init_Stats(st, source, srcSize);
+	Opt_Init_LenTab(lenTab);
+	Uint32 nextUpdate = regionIn ? 0 : OPT_UpdateBytes, seqCount = 0;
+
+	Uint32 anchor = 0, pos = 0;
+	while (pos < lastMatchIdx) {
+		if (pos >= nextUpdate) {
+			if (regionIn) {                                          /* the counts of this region in the previous pass */
+				const Opt_Stats* const r = regionIn + (pos >> OPT_RegionLog);
+				memcpy(st->litFreq, r->litFreq, sizeof(st->litFreq));
+				memcpy(st->litRunFreq, r->litRunFreq, sizeof(st->litRunFreq));
+				memcpy(st->mchLenFreq, r->mchLenFreq, sizeof(st->mchLenFreq));
+				memcpy(st->mchOffFreq, r->mchOffFreq, sizeof(st->mchOffFreq));
+				Opt_Update_Prices(st);
+				nextUpdate = ((pos >> OPT_RegionLog) + 1) << OPT_RegionLog;
+			}
+			else {
+				if (seqCount > (1u << 16)) { Opt_Age_Stats(st); seqCount >>= 1; }
+				Opt_Update_Prices(st);
+				nextUpdate = pos + OPT_UpdateBytes;
+			}
+		}
+
+		/* ---- shortest path over the segment starting at pos, nStates states (literal-run classes) per position */
+#define OPT_CLS(litLen)   (nStates > 1 ? OPT_Class(litLen) : 0)
+		int lastPos = 0, endCur = -1;
+		{
+			const int litLen0 = (int)(pos - anchor), c0 = OPT_CLS(litLen0);
+			opt[0].price = opt[1].price = opt[2].price = OPT_Inf;
+			Opt_Node* const n0 = opt + c0;
+			n0->litLen = litLen0;
+			n0->price = LitRun_Price(st, litLen0);
+			n0->mLen = 0;
+			n0->prevC = c0;
+			memcpy(n0->rep, lastOffset, sizeof(lastOffset));
+		}
+		const int newRunPrice = LitRun_Price(st, 0);
+
+		for (int cur = 0; ; cur++) {
+			if (cur > 0) {                                           /* literal steps into cur */
+				if (cur > lastPos) {
+					opt[cur * OPT_C].price = opt[cur * OPT_C + 1].price = opt[cur * OPT_C + 2].price = OPT_Inf;
+					lastPos = cur;
+				}
+				const int litPrice = st->litPrice[source[pos + cur - 1]];
+				for (int pc = 0; pc < nStates; pc++) {
+					const Opt_Node* const prev = opt + (cur - 1) * OPT_C + pc;
+					if (prev->price >= OPT_Inf) continue;
+					const int litLen = prev->litLen + 1, c = OPT_CLS(litLen);
+					const int price = prev->price + litPrice + LitRun_Price(st, litLen) - LitRun_Price(st, litLen - 1);
+					Opt_Node* const node = opt + cur * OPT_C + c;
+					if (price < node->price) {
+						node->price = price;
+						node->litLen = litLen;
+						node->mLen = 0;
+						node->prevC = pc;
+						memcpy(node->rep, prev->rep, sizeof(prev->rep));
+					}
+				}
+			}
+			const Uint32 idx = pos + cur;
+			const Uint8* const countEnd = srcLastMatch - (source + idx) > MaxMatchLen ? source + idx + MaxMatchLen : srcLastMatch;   /* lengths are capped there anyway */
+			if ((cur > 0 && cur >= lastPos) || cur >= OPT_Num || idx >= lastMatchIdx) { endCur = cur; break; }
+
+			/* searched matches, shared by the states */
+			const int nCand = Opt_Candidates(&finder, source, idx, dictSize, dictEnd, srcLastMatch, dictLastMatch, maxSearchCnt, cand, tmp);
+			Uint32 longest = nCand ? cand[nCand - 1].len : 0, longestOff = nCand ? cand[nCand - 1].off : 0;
+			int bestC = 0;
+			for (int c = 1; c < nStates; c++)
+				if (opt[cur * OPT_C + c].price < opt[cur * OPT_C + bestC].price) bestC = c;
+
+			for (int c = 0; c < nStates; c++) {
+				const Opt_Node* const node = opt + cur * OPT_C + c;
+				if (node->price >= OPT_Inf) continue;
+				const int base = node->price + newRunPrice;
+				const int lc = LitClass(min(node->litLen, 2));
+				/* repeat offsets */
+				for (int k = 0; k < OffCasheSize; k++) {
+					const Uint32 off = node->rep[k];
+					if (k && (off == node->rep[0] || (k > 1 && off == node->rep[1]) || (k > 2 && off == node->rep[2]))) continue;
+					Uint32 len = (Uint32)Repeat_Match_Len(source, idx, off, dictSize, dictEnd, countEnd, dictLastMatch);
+					if (len < MinMatchLen) continue;
+					len = min(len, MaxMatchLen);
+					if (c == bestC && len > longest) { longest = len; longestOff = off; }
+					if (len >= (Uint32)sufficientLen) continue;
+					if (off == 1)                                /* a run (never cached; kept for exactness) */
+						for (Uint32 l = MinMatchLen; l <= len; l++)
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(st, l, off, node->rep, node->litLen));
+					else {                                       /* slot k: its joint symbol only, no window */
+						const int* const lp = st->mchLenPrice + JointIdx(k, lc, 0);
+						for (Uint32 l = MinMatchLen; l <= len; l++)
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + lp[lenTab->sym[l]] + lenTab->extra[l]);
+					}
+				}
+				if (longest >= (Uint32)sufficientLen) continue;
+				if (idx >= 1 && source[idx] == source[idx - 1] && source[idx + 1] == source[idx - 1])    /* a run of two */
+					Opt_Relax(opt, &lastPos, cur, c, 2, 1, base + Match_Price(st, 2, 1, node->rep, node->litLen));
+				Uint32 l = MinMatchLen;
+				for (int ci = 0; ci < nCand; ci++) {
+					const Uint32 off = cand[ci].off, clen = cand[ci].len;
+					if (l > clen) continue;
+					const int k = off == node->rep[0] ? 0 : off == node->rep[1] ? 1 : off == node->rep[2] ? 2 : off == node->rep[3] ? 3 : OffCasheSize;
+					if (off == 1) {                              /* a run */
+						for (; l <= clen; l++)
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(st, l, off, node->rep, node->litLen));
+					}
+					else if (k < OffCasheSize) {                 /* in the cache: its slot code only */
+						const int* const lp = st->mchLenPrice + JointIdx(k, lc, 0);
+						for (; l <= clen; l++)
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + lp[lenTab->sym[l]] + lenTab->extra[l]);
+					}
+					else {                                       /* a new offset: its code in the offset group of each length */
+						int offExtra;
+						const int offSym = Offset_Symbol(off + OffCasheSize - 1, &offExtra);
+						int offPrice[MaxMchOffGroup];
+						for (int g = 0; g < MchOffGroup; g++) offPrice[g] = st->mchOffPrice[g][offSym] + offExtra * OPT_Unit;
+						const int* const lp = st->mchLenPrice + JointIdx(OffCasheSize, lc, 0);
+						while (l <= clen && off >= (Uint32)WINDOW(OffWidth[min(8, l)])) l++;   /* windows widen with the length */
+						for (; l <= clen; l++) {
+							const int sym = lenTab->sym[l];
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + lp[sym] + lenTab->extra[l] + offPrice[OffGroupOf[sym]]);
+						}
+					}
+				}
+			}
+			if (longest >= (Uint32)sufficientLen) {                  /* take it from the cheapest state and end the segment */
+				while (lastPos > cur) {
+					opt[lastPos * OPT_C].price = opt[lastPos * OPT_C + 1].price = opt[lastPos * OPT_C + 2].price = OPT_Inf;
+					lastPos--;
+				}
+				Opt_Relax(opt, &lastPos, cur, bestC, longest, longestOff, 0);
+				endCur = lastPos;
+				break;
+			}
+		}
+#undef OPT_CLS
+
+		/* ---- back-trace the cheapest state at endCur; its matches are stored last to first */
+		int nMatch = 0;
+		{
+			int c = 0;
+			for (int k = 1; k < nStates; k++)
+				if (opt[endCur * OPT_C + k].price < opt[endCur * OPT_C + c].price) c = k;
+			for (int cur = endCur; cur > 0; ) {
+				const Opt_Node* const node = opt + cur * OPT_C + c;
+				if (node->mLen) {
+					path[nMatch].start = pos + (Uint32)cur - node->mLen;
+					path[nMatch].len = node->mLen;
+					path[nMatch].off = node->mOff;
+					nMatch++;
+					cur -= (int)node->mLen;
+				}
+				else cur--;
+				c = node->prevC;
+			}
+		}
+
+		/* ---- emit the matches in order, exactly as the other parsers do */
+		for (int i = nMatch - 1; i >= 0; i--) {
+			const Uint32 start = path[i].start, len = path[i].len, rawOff = path[i].off;
+
+			/* literals */
+			Opt_Stats* const ro = regionOut ? regionOut + (start >> OPT_RegionLog) : NULL;
+			for (Uint32 q = anchor; q < start; q++) {
+				*lzLitPtr++ = source[q];
+				litHuf[source[q]].freq++;
+				st->litFreq[source[q]]++;
+				if (ro) ro->litFreq[source[q]]++;
+				if (lzLitPtr == lzLitEnd) {
+					if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+					zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+					wzipLitPtr += zipLitBlkSize;
+					lzLitPtr = lzLitBuffer;
+					memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+					nLzLits += HUF_BlockSize;
+				}
+			}
+			const Uint32 litRun = start - anchor;
+			litRunHufIdx = LitRun_Symbol(litRun, &extra);
+			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[extra]) << 8;
+			if (litRunHufIdx >= 2) { st->litRunFreq[litRunHufIdx]++; if (ro) ro->litRunFreq[litRunHufIdx]++; }
+
+			if (rawOff == 1) {                           /* a run */
+				const Uint32 jc = JointIdx(OffCasheSize, LitClass(litRunHufIdx), RunSym), v = len + OffCasheSize - 1;
+				const int os = Offset_Huffman_Index((int)v, High_Bit32(v)), group = OffGroupOf[RunSym];
+				st->mchLenFreq[jc]++;
+				st->mchOffFreq[group][os]++;
+				if (ro) { ro->mchLenFreq[jc]++; ro->mchOffFreq[group][os]++; }
+				wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, len) - 1;
+			}
+			else {
+			const Uint32 v = Offset_Cashe(lastOffset, rawOff);
+			mchLenHufIdx = MchLen_Symbol(len, &extra);
+			wlzSeqPtr->mchLen = mchLenHufIdx ^ (len & BitMask[extra]) << 8;
+			const Uint32 jc = JointIdx(v < OffCasheSize ? v : OffCasheSize, LitClass(litRunHufIdx), mchLenHufIdx);
+			st->mchLenFreq[jc]++;
+			if (ro) ro->mchLenFreq[jc]++;
+			const int group = OffGroupOf[mchLenHufIdx];
+			offsetHufIdx = Offset_Symbol(v, &extra);
+			wlzSeqPtr->mchOff = offsetHufIdx ^ (v & BitMask[extra]) << OFF_SymBits;
+			if (v >= OffCasheSize) {                    /* a cache slot is coded in the joint symbol */
+				huffmanSet.mchOffHuf[group][offsetHufIdx].freq++;
+				st->mchOffFreq[group][offsetHufIdx]++;
+				if (ro) ro->mchOffFreq[group][offsetHufIdx]++;
+			}
+			}
+			seqCount++;
+
+			anchor = start + len;
+			if (++wlzSeqPtr == wlzSeqEnd) {
+				SEQ_ENSURE_ROOM();
+				wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
+				memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
+				wlzSeqPtr = wlzSeq;
+			}
+		}
+		pos += endCur > 0 ? (Uint32)endCur : 1;
+	}
+
+	/* ---- last literals, then the terminating record */
+	const Uint8* srcPtr = source + anchor;
+	const Uint32 litRun = srcSize - anchor;
+	if (lzLitPtr + litRun > lzLitEnd) {
+		while (lzLitPtr < lzLitEnd) {
+			litHuf[*srcPtr].freq++;
+			*lzLitPtr++ = *srcPtr++;
+		}
+		if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(HUF_BlockSize) + LIT_BlockSlack) goto _lit_overflow;
+		zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, HUF_BlockSize, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+		wzipLitPtr += zipLitBlkSize;
+		lzLitPtr = lzLitBuffer;
+		memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
+		nLzLits += HUF_BlockSize;
+	}
+	while (srcPtr < srcEnd) {
+		litHuf[*srcPtr].freq++;
+		*lzLitPtr++ = *srcPtr++;
+	}
+	const Uint32 lastBufLits = (Uint32)(lzLitPtr - lzLitBuffer);
+	if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(lastBufLits) + LIT_BlockSlack) goto _lit_overflow;
+	zipLitBlkSize = Huffman_Compress_Block(lzLitBuffer, lastBufLits, wzipLitPtr, litHuf, N_HufLits, CapHufLitBits);
+	wzipLitPtr += zipLitBlkSize;
+	nLzLits += lastBufLits;
+	if (srcSize >> 16) MemWriteLE4(wzipStream, nLzLits);
+	else               MemWriteLE2(wzipStream, (Uint16)nLzLits);
+
+	litRunHufIdx = LitRun_Symbol(litRun, &extra);
+	wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[extra]) << 8;
+	huffmanSet.litRunHuf[litRunHufIdx].freq++;
+	wlzSeqPtr->mchLen = 255;    /* protocal for ending */
+	wlzSeqPtr++;
+	SEQ_ENSURE_ROOM();
+	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
+	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
+		goto _lit_overflow;
+	}
+	memcpy(wzipLitPtr, wlzStream, wlzStrPtr - wlzStream);
+	const int cmprSize = (int)((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream));
+
+	Opt_Finder_Free(&finder);
+	free(lzLitBuffer); free(wlzSeq); free(wlzStream); free(opt); free(cand); free(tmp); free(st); free(path); free(lenTab);
+	return cmprSize;
+_lit_overflow:                 /* the output buffer is full: the caller stores the input raw */
+	Opt_Finder_Free(&finder);
+	free(lzLitBuffer); free(wlzSeq); free(wlzStream); free(opt); free(cand); free(tmp); free(st); free(path); free(lenTab);
+	return 0;
+}
+
+/* Optimal parsing in one or more passes: after the first, each pass prices every region from the symbol counts the
+   previous pass found in it (the parse and the codes it implies are refined in turn) */
+static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* const source, const Uint32 srcSize,
+	Uint8* wzipStream, int wzipCapSize, int maxSearchCnt, int sufficientLen, int passes, int nStates)
+{
+	const size_t nRegions = ((size_t)srcSize >> OPT_RegionLog) + 1;
+	Opt_Stats* regionIn = NULL;
+	Uint32 size = 0;
+	for (int k = 0; k < passes; k++) {
+		Opt_Stats* regionOut = NULL;
+		if (k + 1 < passes && NULL == (regionOut = (Opt_Stats*)calloc(nRegions, sizeof(Opt_Stats)))) {
+			free(regionIn);
+			return 0;
+		}
+		const int last = k + 1 == passes;                       /* the others gather statistics */
+		size = WLZ2_Compress_Opt_Pass(wzipStr, source, srcSize, wzipStream, wzipCapSize, last ? maxSearchCnt : OPT_StatsDepth,
+		                              last ? sufficientLen : OPT_StatsSufficient, last ? nStates : 1, regionIn, regionOut);
+		free(regionIn);
+		regionIn = regionOut;
+		if (!size) break;                                   /* the output buffer is full */
+	}
+	free(regionIn);
+	return size;
+}
+
+/* The stream starts with the windows of lengths 3 to 7, each as its distance below the widest window (that of length 8,
+   which the decoder derives from the size), 4 bits each: d3 | d4 << 4, d5 | d6 << 4, d7 | groups << 4, where groups is
+   0 for the natural offset groups and 1 for the fine layout (other values are reserved) */
+#define   WIN_HeaderSize       3
+/* optimal parsing prices far short matches exactly: its windows of lengths 3, 4, 5 reach at least this close to the
+   widest (on Silesia: +0.7% at level 11 over the default windows, which suit the greedy and lazy parsers better) */
+static const int WideWinGap[3] = { 7, 3, 1 };
+
+int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSize, void* const wzipStream, int wzipCapSize)
+{
+	Uint8* const header = (Uint8*)wzipStream;
+	header[0] = (Uint8)((OffWidth[8] - OffWidth[3]) | (OffWidth[8] - OffWidth[4]) << 4);
+	header[1] = (Uint8)((OffWidth[8] - OffWidth[5]) | (OffWidth[8] - OffWidth[6]) << 4);
+	header[2] = (Uint8)((OffWidth[8] - OffWidth[7]) | OffGroupsFine << 4);
+	Uint8* const stream = header + WIN_HeaderSize;
+	const int cap = wzipCapSize - WIN_HeaderSize;
+	Uint32 size;
+	if (0 == wzipStr->compressLevel && 0 == wzipStr->dictSize)      /* the fast mode; with a dictionary, level 1's loop */
+		size = WLZ2_Compress_Fast1(wzipStr, (Uint8*)source, srcSize, stream, cap);
+	else if (wzipStr->compressLevel <= 1)
+		size = WLZ2_Compress_Fast(wzipStr, (Uint8*)source, srcSize, stream, cap);
+	else if (wzipStr->compressLevel >= 7)
+		size = WLZ2_Compress_Opt(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt, OPT_LevelSufficient[wzipStr->compressLevel - 7],
+		                         OPT_LevelPasses[wzipStr->compressLevel - 7], OPT_LevelStates[wzipStr->compressLevel - 7]);
+	else
+		size = WLZ2_Compress(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt);
+	return size ? (int)size + WIN_HeaderSize : 0;
+}
+
+WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int dictSize)
+{
+	static WZIP_State_Str wzipStr;
+	wzipStr.compressLevel = level;
+	wzipStr.dictSize = dictSize;
+	wzipStr.dictEnd = (Uint8*)dict + dictSize;
+
+	WZIP_Set_OffWidth(srcSize, OffWidth);
+	/* wider short windows for optimal parsing, measured from the widest window of the short lengths (2^26 at most; on
+	   enwik8, widening from the 2^27 window of lengths 8+ lost 0.06%); gaps fit in 4 bits */
+	const int shortTop = min(OffWidth[8], WZIP_SHORT_OFF_WIDTH);
+	for (int k = 3; k <= 7; k++) {
+		if (level >= 7 && k <= 5) OffWidth[k] = max(OffWidth[k], shortTop - WideWinGap[k - 3]);
+		OffWidth[k] = max(OffWidth[k], OffWidth[8] - 15);
+	}
+	/* windows widen with the length (the decoder checks it): from 16 MB on, the widening above can pass the next length's */
+	for (int k = 4; k <= 8; k++)
+		OffWidth[k] = max(OffWidth[k], OffWidth[k - 1]);
+
+	int n = 8;
+	while (n > 0 && OffWidth[n] == OffWidth[n - 1]) 
+		n--;
+	wzipStr.hash2Len = n;
+	
+
+	if (wzipStr.hash2Len>=7) {
+		wzipStr.hash1Len = 5;
+	} else {
+		wzipStr.hash1Len = 4;
+	}
+
+	OffGroupsFine = level == 13;
+	Set_Offset_Groups(wzipStr.hash2Len - MinMatchLen + 1, OffGroupsFine);
+	
+
+	wzipStr.hash0Mask = BitMask[OffWidth[3] + 4];
+	wzipStr.hash1Mask = BitMask[level > 1 ? OffWidth[wzipStr.hash2Len-1] : min(OffWidth[wzipStr.hash2Len-1], L0_HashLog)];
+	wzipStr.hash2Mask = BitMask[level > 1 ? OffWidth[8] : min(OffWidth[8], L0_HashLog)];
+	if (level <= 1 && level >= 0) {		
+		wzipStr.chain1Mask = 0;
+		wzipStr.chain2Mask = 0;
+	}
+	else if (level > 1 && level <= 13) {
+		/* chain search depth: levels 2-3 greedy, 4-6 lazy, 7-13 optimal parsing (lazy searches deeper than 64 lose to the
+		   optimal parser at equal speed) */
+		static const int lazyDepth[7] = { 0, 0, 4, 16, 8, 16, 64 };
+		wzipStr.maxSearchCnt = level >= 7 ? OPT_LevelDepth[level - 7] : lazyDepth[level];
+		wzipStr.chain1Mask = level > 3 ? BitMask[OffWidth[wzipStr.hash2Len - 1]] : 0;
+		wzipStr.chain2Mask = BitMask[OffWidth[8]];
+	}
+	else {
+		fprintf(stderr, "compression level must be in [0, 13]\n");
+		return NULL;
+	}
+	wzipStr.hash0Table = malloc((1 + wzipStr.hash0Mask) * sizeof(int));
+	wzipStr.hash1Table = malloc((1 + wzipStr.hash1Mask) * sizeof(int));
+	wzipStr.hash2Table = malloc((1 + wzipStr.hash2Mask) * sizeof(int));
+
+	if (0 == wzipStr.chain1Mask) wzipStr.chain1Table = NULL;
+	else wzipStr.chain1Table = malloc((1 + wzipStr.chain1Mask) * sizeof(Uint32));
+		
+	if (0 == wzipStr.chain2Mask) wzipStr.chain2Table = NULL;
+	else wzipStr.chain2Table = malloc((1 + wzipStr.chain2Mask) * sizeof(Uint32));
+	
+	if (dictSize == 0 || dict == NULL)
+		return &wzipStr;
+
+	// pre-build dictionary 
+	int* hash0Table = (int*)wzipStr.hash0Table;
+	int* hash1Table = (int*)wzipStr.hash1Table;
+	int* hash2Table = (int*)wzipStr.hash2Table;
+	Uint32* chain1Table = (Uint32*)wzipStr.chain1Table;
+	Uint32* chain2Table = (Uint32*)wzipStr.chain2Table;
+	const Uint32 chain1Mask = wzipStr.chain1Mask;
+	const Uint32 chain2Mask = wzipStr.chain2Mask;
+	const int hash1Len = wzipStr.hash1Len;
+	const int hash2Len = wzipStr.hash2Len;
+
+	int hashV, dist, matchIdx;
+	const Uint8* dictPtr = (Uint8*)dict;
+	/* positions up to -16 only: 8-byte compares and match extension then stay inside the dictionary */
+	for (int i = -dictSize; i <= -16; i++, dictPtr++) {
+		hashV = WLZ_Hash0(dictPtr) & wzipStr.hash0Mask;
+		matchIdx = hash0Table[hashV];
+		hash0Table[hashV] = i;
+
+		hashV = WLZ_Hash1(dictPtr) & wzipStr.hash1Mask;
+		matchIdx = hash1Table[hashV];
+		hash1Table[hashV] = i;
+		if (chain1Mask) {
+			dist = i - matchIdx;
+			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
+		}
+
+		hashV = WLZ_Hash2(dictPtr) & wzipStr.hash2Mask;
+		matchIdx = hash2Table[hashV];
+		hash2Table[hashV] = i;
+		if (chain2Mask) {
+			dist = i - matchIdx;
+			chain2Table[(Uint32)i & chain2Mask] = (dist > 0 && dist < chain2Mask) ? dist : chain2Mask;
+		}
+	}
+	return &wzipStr;
+}
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ WZIP Decoompression ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+
+/* decoding table of the joint symbol: its fields split out, so no division is needed */
+typedef struct {
+	Uint8 mlSym, litClass, slotSel, nbits;
+} Joint_DemapX1;
+
+/* canonical code as Build_Huffman_Table assigns it: shorter codes first, equal lengths in symbol order */
+static void Build_Joint_DecTable(const Uint32 maxBits, const Uint8* wt, Joint_DemapX1* table)
+{
+	if (0 == maxBits) return;
+	Uint32 start[MAX_HufWeight + 2] = { 0 }, pos = 0;
+	Uint32 count[MAX_HufWeight + 2] = { 0 };
+	for (Uint32 k = 0; k < N_HufJoint; k++) count[wt[k]]++;
+	for (Uint32 b = 1; b <= maxBits; b++) { start[b] = pos; pos += count[b] << (maxBits - b); }
+	for (Uint32 k = 0; k < N_HufJoint; k++) {
+		const Uint32 b = wt[k];
+		if (!b) continue;
+		const Joint_DemapX1 e = { (Uint8)(k % N_HufMchLen), (Uint8)(k / N_HufMchLen % N_LitClass), (Uint8)(k / (N_HufMchLen * N_LitClass)), (Uint8)b };
+		for (Uint32 r = 0; r < (1u << (maxBits - b)); r++) table[start[b] + r] = e;
+		start[b] += 1u << (maxBits - b);
+	}
+}
+
+ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
+	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
+{
+	register Uint32 i, n, lsValue, mchLenHufIdx;
+	register Uint32 litRun, matchLen, matchOffset;
+	Uint8* destPtr = (Uint8*)dest+decPos;
+	Uint8* matchPtr, *destPtrEnd;
+
+	static const ExtHuffman_Lit extHuf[] = {
+	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
+	{8, 3},  {9, 3},  {10, 3},  {11, 3},    {12, 3},  {13, 3}, {14, 3}, {15, 3},             /* 48-55:  64 - 127 */
+	{4, 5},  {5, 5}, {6, 5}, {7, 5},                                                         /* 56-59:  128 - 255 */
+	{4, 6},  {5, 6}, {6, 6}, {7, 6},                                                         /* 60-63:  256 - 511 */
+	{2, 8},  {3, 8},                                                                         /* 64-65:  512 - 1023 */
+	{2, 9},  {3, 9}, 																		 /* 66-67:  1024 - 2047 */
+	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
+	{0, 24},                                                                                 /* 70:     2048 - 16M  */
+	};
+
+	static const unsigned inc4table[8] = { 0, 0, 0,  1,  0,  4, 4, 4 };     /* 4 % matchOffset */
+	static const unsigned inc8table[8] = { 0, 0, 0,  2,  0,  3, 2, 1 };     /* 8 % matchOffset */
+
+	register ExtHuffman_Lit extHufRes;
+	register Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(*wzipSeqStart);
+	bitStream.streamPtr = *wzipSeqStart;
+	Uint8* lzLitBufPtr = *lzLitBufRef;
+#ifdef WZIP_DEBUG
+	FILE* fptr;
+	char filename[100];
+	snprintf(filename, sizeof(filename),
+		"WZIP_Seq_Decompress_%d.txt", decPos);
+
+	fptr = fopen(filename, "w");
+
+#endif
+
+	Huffman_DemapX1 litRunHufDemapX1[1 << CapHufLitRunBits];
+	const Uint32 remMaxLitRunHufWt = sizeof(bitStream.container) * 8 - hufWtSet->maxLitRunHufWt;
+	Build_Huffman_DecTableX1(N_HufLitRun, hufWtSet->maxLitRunHufWt, hufWtSet->litRunHufWt, litRunHufDemapX1);
+
+	Joint_DemapX1 jointDemapX1[1 << CapHufMchLenBits];          /* slot-joint blocks */
+	Huffman_DemapX1 mchLenHufDemapX1[1 << CapHufMchLenBits];    /* classic blocks */
+	const Uint32 remMaxMchLenHufWt = sizeof(bitStream.container) * 8 - hufWtSet->maxMchLenHufWt;
+	if (slotJoint) Build_Joint_DecTable(hufWtSet->maxMchLenHufWt, hufWtSet->mchLenHufWt, jointDemapX1);
+	else Build_Huffman_DecTableX1(N_HufJointClassic, hufWtSet->maxMchLenHufWt, hufWtSet->mchLenHufWt, mchLenHufDemapX1);
+
+	/* the offset table of each length group, built at the full CapHufMchOffBits width, at a fixed stride: a table is
+	   selected by arithmetic on the group, and all share one shift (an empty group, never read, is left unbuilt) */
+	Huffman_DemapX1* mchOff_HufDemapX1 = (Huffman_DemapX1*)malloc(MchOffGroup * (1 << CapHufMchOffBits)*sizeof(Huffman_DemapX1));
+	for (i = 0; i < MchOffGroup; i++)
+		Build_Huffman_DecTableX1(N_HufMchOff[i], hufWtSet->maxMchOffHufWt[i] ? CapHufMchOffBits : 0, hufWtSet->mchOffHufWt[i],
+			mchOff_HufDemapX1 + (i << CapHufMchOffBits));
+	const Uint32 lastOffGroup = MchOffGroup - 1;
+
+	for(int seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+
+		Uint32 litClass, slotSel;
+		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
+			const Joint_DemapX1 js = jointDemapX1[(Uint32)((bitStream.container << bitStream.nUsedBits) >> remMaxMchLenHufWt)];
+			bitStream.nUsedBits += js.nbits;
+			mchLenHufIdx = js.mlSym;
+			litClass = js.litClass;
+			slotSel = js.slotSel;
+		}
+		else {                                           /* joint symbol: literal-run class and length */
+			BITStream_Read_ExtHufX1(bitStream, remMaxMchLenHufWt, mchLenHufDemapX1, mchLenHufIdx);
+			litClass = mchLenHufIdx >= 2 * N_HufMchLen ? 2 : mchLenHufIdx >= N_HufMchLen;
+			mchLenHufIdx -= litClass * N_HufMchLen;
+			slotSel = OffCasheSize;
+		}
+		{   /* the literal-run symbol is looked up for every sequence but consumed for class 2 only: no branch */
+			const Huffman_DemapX1 lr = litRunHufDemapX1[(Uint32)((bitStream.container << bitStream.nUsedBits) >> remMaxLitRunHufWt)];
+			const Uint32 isRun = litClass >> 1;
+			bitStream.nUsedBits += lr.nbits & (0u - isRun);
+			litRun = isRun ? lr.lit : litClass;
+		}
+		if (unlikely(litRun >= LitRunDirect)) { /* Read extra number of bytes */
+			extHufRes = extHuf[litRun - LitRunDirect];
+			BITStream_Read(bitStream, extHufRes.lsBits, lsValue);
+			litRun = extHufRes.msValue << extHufRes.lsBits ^ lsValue;
+			BITStream_Read_Flush(bitStream);
+		}
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "DecPos=%d, litRun=%d,  ", (Uint32)(destPtr - dest), litRun);
+#endif
+
+		destPtrEnd = destPtr + litRun;
+		if ( unlikely(destPtrEnd >= destEnd) ) {        /* note the ending is checked right after literal run */
+			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
+			destPtr = destPtrEnd;
+			break;
+		}
+
+		if (!slotJoint || slotSel == OffCasheSize) {     /* the offset symbol: a new offset, a run count, or (classic) a cache slot */
+			const Uint32 offGroup = fineGroups ? min(5u, mchLenHufIdx) + (mchLenHufIdx >= 7) + (mchLenHufIdx >= 13) : min(lastOffGroup, mchLenHufIdx);
+			const Huffman_DemapX1* const offTable = mchOff_HufDemapX1 + (offGroup << CapHufMchOffBits);
+			BITStream_Read_ExtHufX1(bitStream, (sizeof(bitStream.container) * 8 - CapHufMchOffBits), offTable, n);
+			if (slotJoint) n = n < OffCasheSize ? OffCasheSize : n;    /* only new offsets here: corrupt input harmless */
+		}
+		else n = slotSel;
+		if (likely(n >= OffCasheSize)) {
+			i = (n >> 1) - 1;
+			//lsBits = ExtHufMchOff[n].lsBits;
+			BITStream_Read(bitStream, i, lsValue);
+			//matchOffset = (ExtHufMchOff[n].msValue << lsBits ^ lsValue) - (OffCasheSize - 1);
+			matchOffset = ((2 ^ (n & 1)) << i ^ lsValue) - (OffCasheSize - 1);
+			if (unlikely(mchLenHufIdx == RunSym)) {         /* a run: its count came in the offset field */
+				matchLen = matchOffset;
+				matchOffset = 1;
+				BITStream_Read_Flush(bitStream);
+				if (matchLen > (Uint32)(destEnd - destPtrEnd)) break;     /* corrupt: the size check fails */
+				if (unlikely(destPtrEnd + matchLen > destEnd - 16 || destPtrEnd == (Uint8*)dest)) goto _execute;
+				MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
+				lzLitBufPtr += litRun;
+				if (matchLen <= 16) {                                /* a short run: two wild 8-byte stores */
+					const Uint64 fill = destPtrEnd[-1] * 0x0101010101010101ull;
+					memcpy(destPtrEnd, &fill, 8);
+					memcpy(destPtrEnd + 8, &fill, 8);
+				}
+				else memset(destPtrEnd, destPtrEnd[-1], matchLen);
+				destPtr = destPtrEnd += matchLen;
+				continue;
+			}
+			offsetLast[3] = offsetLast[2];                       /* explicit shifts: a memmove() here becomes a library call */
+			offsetLast[2] = offsetLast[1];
+			offsetLast[1] = offsetLast[0];
+			offsetLast[0] = matchOffset;
+		}
+		else {                                           /* a hit moves to the front of the cache */
+			matchOffset = offsetLast[n];
+			if (n) {
+				offsetLast[3] = n >= 3 ? offsetLast[2] : offsetLast[3];
+				offsetLast[2] = n >= 2 ? offsetLast[1] : offsetLast[2];
+				offsetLast[1] = offsetLast[0];
+				offsetLast[0] = matchOffset;
+			}
+		}
+
+		matchLen = mchLenHufIdx + MinMatchLen;
+		if (unlikely(matchLen >= LitRunDirect)) {
+			extHufRes = extHuf[matchLen - LitRunDirect];
+			BITStream_Read_Flush(bitStream);
+			BITStream_Read(bitStream, extHufRes.lsBits, lsValue);
+			matchLen = extHufRes.msValue << extHufRes.lsBits ^ lsValue;
+		}
+		BITStream_Read_Flush(bitStream);
+
+	_execute:
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		if (unlikely(destPtrEnd + matchLen > destEnd - 16)) {  /* near the end: wild copies would write past it */
+			memcpy(destPtr, lzLitBufPtr, litRun);
+			destPtr = destPtrEnd;
+			lzLitBufPtr += litRun;
+			destPtrEnd += matchLen;
+			if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset)
+				memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
+			else
+				for (Uint8* q = destPtr; q < destPtrEnd; q++) *q = *(q - matchOffset);
+			destPtr = destPtrEnd;
+			continue;
+		}
+		MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
+		destPtr = destPtrEnd;
+		lzLitBufPtr += litRun;
+
+		destPtrEnd += matchLen;
+		if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset) {
+			/* the match lies in the dictionary, which the compressor never lets it run past:
+			   copy exactly, as the dictionary may end at the end of its buffer */
+			memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
+		}
+		else if (likely(matchOffset >= 16)) {
+			matchPtr = destPtr - matchOffset;
+			MemWildCopy(destPtr, matchPtr, destPtrEnd);
+		}
+		else {
+			matchPtr = destPtr - matchOffset;
+			if (likely(matchOffset < 8)) {
+				destPtr[0] = matchPtr[0];
+				destPtr[1] = matchPtr[1];
+				destPtr[2] = matchPtr[2];
+				destPtr[3] = matchPtr[3];
+				memcpy(destPtr + 4, matchPtr + inc4table[matchOffset], 4);   /* inc4table equivalent to 4 % matchOffset */
+				matchPtr += inc8table[matchOffset];                         /* equivalent to 8 % matchOffset */
+			}
+			else {
+				memcpy(destPtr, matchPtr, 8);
+				matchPtr += 8;
+			}
+			MemWildCopy_Overlap(destPtr + 8, matchPtr, destPtrEnd);
+		}
+		destPtr = destPtrEnd;
+
+#ifdef WZIP_DEBUG
+		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
+		fflush(fptr);
+#endif
+
+	}
+#ifdef WZIP_DEBUG
+	fclose(fptr);
+#endif
+
+	*lzLitBufRef = lzLitBufPtr;
+	BITStream_Read_FlushEnd(bitStream);
+	*wzipSeqStart = bitStream.streamPtr;
+	free(mchOff_HufDemapX1);
+	return (Uint32)(destPtr - dest);
+}
+
+#define SEQ_BODY_CALL(body, fine)   (hufWtSet->slotJoint                                                                                                    \
+    ? body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 1)                                             \
+    : body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 0))
+
+#define DECOMPRESS_SEQUENCE_GEN(fun)                                                                                                                  \
+    static int fun(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize])   \
+    {                                                                                                                                               \
+        return OffGroupsFine ? SEQ_BODY_CALL(fun##_Body, 1)                                               : SEQ_BODY_CALL(fun##_Body, 0);                 \
+    }
+
+DECOMPRESS_SEQUENCE_GEN(Decompress_WLZ_Sequence)
+
+/* The same decoder compiled for BMI2, whose shifts by a register count take one micro-op and leave the flags alone;
+   the bit reader shifts by a variable count several times per sequence. Chosen at run time, as zstd does. */
+#if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
+#  define WZIP_DYNAMIC_BMI2 1
+static __attribute__((target("bmi,bmi2,lzcnt")))
+int Decompress_WLZ_Sequence_Bmi2(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize])
+{
+	return OffGroupsFine ? SEQ_BODY_CALL(Decompress_WLZ_Sequence_Body, 1)
+	                     : SEQ_BODY_CALL(Decompress_WLZ_Sequence_Body, 0);
+}
+static int CPU_Has_Bmi2(void)
+{
+	static int has = -1;
+	if (has < 0) {
+		__builtin_cpu_init();
+		has = __builtin_cpu_supports("bmi2") != 0;
+	}
+	return has;
+}
+#else
+#  define WZIP_DYNAMIC_BMI2 0
+#endif
+
+/* srcSize guards the window header; the rest of the stream is read up to destSize */
+int WZIP_Decompress_L(
+	const void* const source, int const srcSize,
+	void* const dest, int const destSize,
+	void* const dict, int const dictSize)
+{
+	int i;
+	Uint32 nLzLits, zipLitSize;
+	Uint8* srcPtr = (Uint8*)source;
+	Uint8* const dictEnd = (Uint8*)dict + dictSize;
+
+	WZIP_Set_OffWidth(destSize, OffWidth);
+	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
+		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 1) return 0;
+		OffGroupsFine = srcPtr[2] >> 4;
+		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
+		for (i = 3; i <= 7; i++) OffWidth[i] = OffWidth[8] - gap[i - 3];
+		if (OffWidth[3] < 4) return 0;
+		for (i = 4; i <= 8; i++)
+			if (OffWidth[i] < OffWidth[i - 1]) return 0;
+		srcPtr += WIN_HeaderSize;
+	}
+	i = 8;
+	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
+		i--;
+
+	Set_Offset_Groups(i - MinMatchLen + 1, OffGroupsFine);
+
+	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
+		nLzLits = MemReadLE4(srcPtr);
+		srcPtr += 4;
+	}
+	else {
+		nLzLits = MemReadLE2(srcPtr);
+		srcPtr += 2;
+	}
+	Uint8* lzLitBuffer, *lzLitBufPtr;
+	if (nLzLits > (Uint32)destSize) return 0;                                   /* corrupt */
+	if (NULL == (lzLitBuffer = (Uint8*)malloc(nLzLits + 256))) return 0;       /* margin for MemWildCopy */
+	
+	zipLitSize = Huffman_Decompress(srcPtr, lzLitBuffer, nLzLits, N_HufLits);
+	srcPtr += zipLitSize;
+
+	Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(srcPtr);
+	bitStream.streamPtr = srcPtr;
+
+	Uint8 wtHufWt[MAX_HufWeight + 3];                /* Second-level Huffman Weight table on the Huffman weights */
+	Uint32 maxWtHufWt;
+	Huffman_DemapX1 wtHufDemapX1[1 << MAX_HufHufWt];     /* Second-level Huffman demapper for Huffman weights */
+	WLZ_HufWt_Set hufWtSet;
+
+	Uint32 offsetLast[OffCasheSize];
+	memset(offsetLast, 0x7F, OffCasheSize * sizeof(int));
+	int decSize = 0;
+	lzLitBufPtr = lzLitBuffer;
+	Uint8* const destEnd = (Uint8*)dest + destSize;
+	while (decSize < destSize) {
+		BITStream_Read(bitStream, 1, hufWtSet.slotJoint);           /* the block's coding: slot-joint or classic */
+		maxWtHufWt = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, wtHufWt);
+		Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxWtHufWt, wtHufWt, wtHufDemapX1);
+		hufWtSet.maxLitRunHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufLitRun, hufWtSet.litRunHufWt);
+		hufWtSet.maxMchLenHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, hufWtSet.slotJoint ? N_HufJoint : N_HufJointClassic, hufWtSet.mchLenHufWt);
+		for (i = 0; i < MchOffGroup; i++)
+			hufWtSet.maxMchOffHufWt[i] = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], hufWtSet.mchOffHufWt[i]);
+		BITStream_Read_FlushEnd(bitStream);
+		
+#if WZIP_DYNAMIC_BMI2
+		if (CPU_Has_Bmi2())
+			decSize = Decompress_WLZ_Sequence_Bmi2(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		else
+#endif
+		decSize = Decompress_WLZ_Sequence(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		bitStream.container = MemReadBE8(bitStream.streamPtr);
+		bitStream.nUsedBits = 0;
+	}
+
+	free(lzLitBuffer);
+	if (destSize == decSize) return decSize;
+	else return 0;
+}
+

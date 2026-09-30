@@ -1,0 +1,17 @@
+# build outputs
+build/
+*.o
+*.a
+*.exe
+*.obj
+*.lib
+*.pdb
+
+# benchmark dependencies fetched by bench/Makefile
+bench/deps/
+
+# test corpora (download them; see bench/README.md)
+data_corpus/
+
+# local files that are not part of the release
+local/

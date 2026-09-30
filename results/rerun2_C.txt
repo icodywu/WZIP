@@ -1,0 +1,1 @@
+wlz4hc    4  ratio 2.6750  comp    43.79 MB/s  dec   2853.3 MB/s  encmem     0.9 MB  fails 0
