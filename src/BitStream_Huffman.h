@@ -211,8 +211,14 @@ Uint32 Huffman_Compress4X_Kernel(const void* srcStart, Uint32 srcSize, void* des
 Uint32 Huffman_Compress_Block(const void* srcStart, Uint32 srcSize, void* dest, Huffman_Str* litHuf, Uint32 nLits, Uint32 litHufCapBits);
 Uint32 Huffman_Compress(const void* srcStart, Uint32 srcSize, void* dest, Uint32 nLits, Uint32 litHufCapBits);
 
+#define HUF_CODE_CORRUPT  0xFFu           /* returned by the header readers for a repeat run past the table's end */
 Uint32 Read_Huffman_Header(Bit_Stream* bitStream, const Uint32 hufCodeSize, const Uint32 hufCodeCapBits, Uint8* hufCodeBits);
 Uint32 Read_Huffman_Header_byHuffman(Bit_Stream* bitStream, Uint32 maxHufWtHufCodeBits, Huffman_DemapX1* hufWtHufCodeDemapX1, const Uint32 hufCodeSize, Uint8* hufCodeBits);
+int Huffman_Check_Code(const Uint8* hufCodeBits, const Uint32 nSym, const Uint32 capBits);
+int Huffman_Read_Code(Bit_Stream* bitStream, const Uint32 nSym, const Uint32 capBits, Uint8* hufCodeBits);
+int Huffman_Read_Code_byHuffman(Bit_Stream* bitStream, const Uint32 maxWtBits, Huffman_DemapX1* wtDemap, const Uint32 nSym,
+	const Uint32 capBits, Uint8* hufCodeBits);
+Uint32 Huffman_Build_SafeX1(const Uint32 nSym, const int maxBits, Uint8* hufCodeBits, Huffman_DemapX1* table);
 
 void Build_Huffman_DecTableX0(const Uint32 hufCodeSize, const Uint32 maxHufCodeBits, Uint8* hufCodeBits, Uint8* hufCodeDemap);
 void Build_Huffman_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHufCodeBits, Uint8* hufCodeBits, Huffman_DemapX1* hufDemapX1);
@@ -220,7 +226,7 @@ void Build_Huffman_DecTableX2(const Uint32 hufCodeSize, const Uint32 maxHufCodeB
 void Build_ExtHuffman_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHufCodeBits, Uint8* hufCodeBits, const ExtHuffman_Lit* extHufLit, ExtHuffman_DemapX1* litHufDemapX1);
 
 int Huffman_Select_Decompressor(Uint32 cmprSize, Uint32 srcSize, Uint32 maxHufBits, Uint32* decTabBitsX2);
-Uint32 Huffman_Decompress(const void* source, void* dest, Uint32 destSize, int nLits);
+int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32 destSize, int nLits);
 void Huffman_Decompress_Block_Body(Uint8* litHufCodeBits, int nLits, Uint32 maxLitHufBits, int algId, Uint8* cmprBuffer, Uint32 cmprSize, Uint8* decBuffer, const Uint32 decSize);
 
 void Huffman_Tester(); 

@@ -5,7 +5,10 @@
    Usage: bench_all <codec> <level> <crounds> <drounds> file...
    codecs: wzip (0-13), zstd (1-22), brotli (0-11, window 2^24), xz (0-9, add 100 for extreme), lz4 (acceleration),
            lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy; level ignored), wlz4hc (0-12)
-   Env PERFILE=1 prints each file's compressed size. */
+   Env PERFILE=1 prints each file's compressed size.
+   Env STREAMS=<dir>: decompression only, from compressed streams saved in <dir> (<file>.<codec><level>); a missing
+   stream is compressed (untimed) and saved first. The compression speed and memory then print as 0; with
+   STREAMS_ONLY=1 the program only prepares the streams, unpinned, so that several can be prepared in parallel. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,10 +67,21 @@ static size_t decompress1(const unsigned char* src, size_t cs, unsigned char* ds
     return WLZ_Decompress((const char*)src, (char*)dst, (unsigned)cs, (unsigned)cap);
 }
 
+static const char* base_name(const char* p)
+{
+    const char* s = strrchr(p, '/'), *t = strrchr(p, '\\');
+    if (t > s) s = t;
+    return s ? s + 1 : p;
+}
+
 int main(int argc, char** argv)
 {
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
+    const char* const streams = getenv("STREAMS");
+    const int streamsOnly = streams && getenv("STREAMS_ONLY") != NULL;
+    if (!streamsOnly) {
+        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+        SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
+    }
     codec = argv[1]; level = atoi(argv[2]);
     const int crounds = atoi(argv[3]), drounds = atoi(argv[4]), nf = argc - 5;
     const int perFile = getenv("PERFILE") != NULL;
@@ -95,7 +109,26 @@ int main(int argc, char** argv)
     }
     const double before = wsMB(0);
     double bestC = 1e30, total = 0, ctotal = 0;
-    for (int r = 0; r < crounds; r++) {
+    if (streams) {                                       /* saved streams: decompression only */
+        for (int f = 0; f < nf; f++) {
+            char path[4096];
+            snprintf(path, sizeof path, "%s/%s.%s%d", streams, base_name(argv[f + 5]), codec, level);
+            FILE* fp = fopen(path, "rb");
+            if (fp) {
+                fseek(fp, 0, SEEK_END); cs[f] = (size_t)ftell(fp); fseek(fp, 0, SEEK_SET);
+                if (fread(cmp[f], 1, cs[f], fp) != cs[f]) return 1;
+                fclose(fp);
+            }
+            else {
+                cs[f] = compress1(src[f], n[f], cmp[f], n[f] + n[f] / 8 + 65536);
+                if (NULL == (fp = fopen(path, "wb")) || fwrite(cmp[f], 1, cs[f], fp) != cs[f]) { printf("cannot write %s\n", path); return 1; }
+                fclose(fp);
+            }
+            total += n[f]; ctotal += cs[f];
+        }
+        if (streamsOnly) return 0;
+    }
+    for (int r = 0; r < (streams ? 0 : crounds); r++) {
         double t = 0;
         total = ctotal = 0;
         for (int f = 0; f < nf; f++) {
@@ -106,7 +139,8 @@ int main(int argc, char** argv)
         }
         if (t < bestC) bestC = t;
     }
-    const double encMem = wsMB(1) - before;
+    const double encMem = streams ? 0 : wsMB(1) - before;
+    if (streams) bestC = 1e300;                          /* prints 0: not measured */
 
     double bestD = 1e30;
     int fails = 0;

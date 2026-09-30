@@ -36,7 +36,15 @@ test: build/roundtrip$(EXE)
 check: build/roundtrip$(EXE)
 	./build/roundtrip$(EXE) $(FILES)
 
+# decodes damaged streams under AddressSanitizer and UndefinedBehaviorSanitizer (GCC or clang, Linux or macOS)
+FUZZFLAGS := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Isrc
+build/corrupt$(EXE): tests/corrupt.c $(SRC) $(HDR) | build
+	$(CC) $(FUZZFLAGS) tests/corrupt.c $(SRC) -lm -o $@
+
+fuzz: build/corrupt$(EXE)
+	./build/corrupt$(EXE) $(ITERS)
+
 clean:
 	rm -rf build
 
-.PHONY: all test check clean
+.PHONY: all test check fuzz clean

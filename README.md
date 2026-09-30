@@ -75,11 +75,18 @@ WZIP_S keeps them in a reusable context.
 make          # build/libwzip.a and build/roundtrip
 make test     # round trip of every codec and level on synthetic inputs, with guard checks on every buffer
 make check FILES="file1 file2"
+make fuzz     # damaged streams of every codec, under AddressSanitizer and UndefinedBehaviorSanitizer (Linux, macOS)
 ```
 
 The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 (MinGW-w64, Windows), and GCC 11.4
 and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer.
 On x86 the decoders pick BMI2 code paths at run time.
+
+All decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing outside
+the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated stream
+returns 0. `make fuzz` decodes flipped, overwritten, truncated, spliced and extended streams of every codec from
+buffers of exactly their size, so that the sanitizers catch any stray access; it also decodes each undamaged stream
+from such a buffer.
 
 ## Usage
 
@@ -106,8 +113,6 @@ WZIP_S, for 4 KB and 8 KB blocks, has its own interface (below).
 
 ## Limitations
 
-- The WLZ4, WZIP_L and WZIP_M decoders trust their input: do not decode untrusted data with them. The WZIP_S decoder
-  checks bounds and never writes past the stored size.
 - WZIP_L and WZIP_M keep their window schedule in global state: use them from one thread at a time. WZIP_S and WLZ4
   keep their state in contexts.
 - WZIP's optimal levels (7-13) need about 950 MB of encoder memory on a 50 MB input and about 2 GB on enwik9. Inputs
@@ -148,7 +153,7 @@ All three store the decoded size first, so a decoder allocates its output exactl
 | Literals | Huffman, four streams | Huffman, four streams | Huffman, four streams from 8 KB |
 | Dictionary | indexed on each call | indexed on each call | prepared once and shared read-only; matches may cross into the input |
 | Worst-case output | input + 2 bytes (stored) | input + 2 bytes (stored) | input + 3 bytes |
-| Decoder | trusts its input | trusts its input | bounds-checked; never writes past the stored size |
+| Decoder | bounds-checked | bounds-checked | bounds-checked |
 
 ## Dictionary compression
 

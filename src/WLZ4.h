@@ -250,10 +250,10 @@ WLZLIB_API unsigned WLZ_Compress_Fast(WLZ_State_Str *lzbStr, const char* src, ch
 /*! WLZ_decompress() :
 	compressedSize : is the exact complete size of the compressed block.
 	dstCapacity : is the size of destination buffer, which must be already allocated.
-   @return : the number of bytes decompressed into destination buffer (necessarily <= dstCapacity)
-			 If destination buffer is not large enough, decoding will stop and output an error code (negative value).
-			 If the source stream is detected malformed, the function will stop decoding and return a negative result.
-	Note : the input is trusted: it is not validated, and malformed data can make the decoder read or write out of bounds.
+   @return : the decoded size, or 0 if dstCapacity is too small or the input is malformed.
+	Note : the input is validated as LZ4's safe decoder validates its own: whatever the input, no read leaves
+	       src[0, compressedSize) or the dictionary, and no write leaves dst[0, dstCapacity); a malformed or truncated
+	       input returns 0 (so does a decoded size that differs from the header's).
 	'dstCapacity' must exceed the decoded size by WLZ_MEM_OVERHEAD (wild copies).
 */
 WLZLIB_API unsigned WLZ_Decompress(const char* src, char* dst, unsigned compressedSize, unsigned dstCapSize);

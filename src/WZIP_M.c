@@ -1466,7 +1466,16 @@ WZIP_State_Str* WZIP_New_State_M(int level, const void* dict, int dictSize)
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ WZIP Decoompression ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-/* Executes one sequence: litRun literals, then a match; returns the new end of the output */
+/* a match that starts in the dictionary, `produced` bytes into the output; a corrupt one may run on into the output */
+static void Copy_Dict_Match(Uint8* destPtr, const Uint8* dest, const Uint32 produced, const Uint32 offset, const Uint32 len, const Uint8* dictEnd)
+{
+	const Uint32 inDict = min(len, offset - produced);
+	memcpy(destPtr, dictEnd - (offset - produced), inDict);
+	for (Uint32 k = inDict; k < len; k++) destPtr[k] = dest[k - inDict];
+}
+
+/* Executes one sequence: litRun literals, then a match; returns the new end of the output. The caller has checked
+   the literal run, the offset and the length against the literals, the history and the output. */
 ForceInlineTemplate Uint8* WLZ_Execute(Uint8* destPtr, const Uint8* litPtr, const Uint32 litRun, const Uint32 matchLen, const Uint32 matchOffset,
 	Uint8* const dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize)
 {
@@ -1475,12 +1484,12 @@ ForceInlineTemplate Uint8* WLZ_Execute(Uint8* destPtr, const Uint8* litPtr, cons
 	Uint8* destPtrEnd = destPtr + litRun;
 	Uint8* matchPtr;
 
-	if (unlikely(destPtrEnd + matchLen > destEnd - 16)) {  /* near the end: wild copies would write past it */
+	if (unlikely(matchLen + 16 > (Uint32)(destEnd - destPtrEnd))) {  /* near the end: wild copies would write past it */
 		memcpy(destPtr, litPtr, litRun);
 		destPtr = destPtrEnd;
 		destPtrEnd += matchLen;
-		if (dictSize && (int)(destPtr - dest) < (int)matchOffset)
-			memcpy(destPtr, dictEnd + ((int)(destPtr - dest) - (int)matchOffset), matchLen);
+		if (dictSize && (Uint32)(destPtr - dest) < matchOffset)
+			Copy_Dict_Match(destPtr, dest, (Uint32)(destPtr - dest), matchOffset, matchLen, dictEnd);
 		else
 			for (Uint8* q = destPtr; q < destPtrEnd; q++) *q = *(q - matchOffset);
 		return destPtrEnd;
@@ -1488,10 +1497,10 @@ ForceInlineTemplate Uint8* WLZ_Execute(Uint8* destPtr, const Uint8* litPtr, cons
 	MemWildCopy(destPtr, litPtr, destPtrEnd);
 	destPtr = destPtrEnd;
 	destPtrEnd += matchLen;
-	if (dictSize && (int)(destPtr - dest) < (int)matchOffset) {
-		/* the match lies in the dictionary, which the compressor never lets it run past:
-		   copy exactly, as the dictionary may end at the end of its buffer */
-		memcpy(destPtr, dictEnd + ((int)(destPtr - dest) - (int)matchOffset), matchLen);
+	if (dictSize && (Uint32)(destPtr - dest) < matchOffset) {
+		/* the match starts in the dictionary, which the compressor never lets it run past: copy exactly, as the
+		   dictionary may end at the end of its buffer */
+		Copy_Dict_Match(destPtr, dest, (Uint32)(destPtr - dest), matchOffset, matchLen, dictEnd);
 	}
 	else if (likely(matchOffset >= 16)) {
 		matchPtr = destPtr - matchOffset;
@@ -1536,7 +1545,18 @@ static Uint32 Build_Safe_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHu
 	return 64 - (maxHufCodeBits ? maxHufCodeBits : 1);
 }
 
-ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd)
+/* stream bounds: the input sits in a buffer with M_PadFront zero bytes before it and M_PadBack after it; each round
+   checks that both streams are still within M_StreamSlack of the input, and a round reads fewer than 32 bytes more */
+#define M_PadFront      128
+#define M_PadBack       1024       /* also covers the code tables, read before any check */
+#define M_StreamSlack   32
+
+/* Decodes the sequences; returns the decoded size, or -1 if the stream is corrupt. The literal run and match length
+   of every sequence are checked against the output, and its offset against the bytes decoded and the dictionary; the
+   streams are kept within the padded input. The literal buffer spans the output: each literal read becomes an output
+   byte, so it needs no check. */
+ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd,
+	const Uint8* const bufStart)
 {
 	register Uint32 i, n, lsValue, mchLenHufIdx;
 	register Uint32 litRun, matchLen, matchOffset;
@@ -1575,6 +1595,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8*
 	   chains of table lookups, which the processor overlaps; the offset cache and the copies still go in order */
 	while (1) {
 		Uint32 litRunB, mchLenHufIdxB, nB, rawA = 0, rawB = 0, matchLenB;
+		if (unlikely(bitStream.streamPtr > seqEnd + M_StreamSlack || bitStreamB.streamPtr < bufStart - M_StreamSlack)) return -1;
 
 		BITStream_Read_ExtHufX1(bitStream, remMaxLitRunHufWt, litRunHufDemapX1, litRun);
 		BITStream_Read_ExtHufX1(bitStreamB, remMaxLitRunHufWt, litRunHufDemapX1, litRunB);
@@ -1589,7 +1610,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8*
 			BITStream_Read_FlushBack(bitStreamB);
 		}
 
-		if (unlikely(destPtr + litRun >= destEnd)) {     /* A is the terminal record */
+		if (unlikely(litRun >= (Uint32)(destEnd - destPtr))) {   /* A is the terminal record */
+			if (litRun > (Uint32)(destEnd - destPtr)) return -1;
 			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
 			destPtr += litRun;
 			break;
@@ -1641,11 +1663,14 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8*
 				offsetLast[0] = matchOffset;
 			}
 		}
+		if (unlikely(matchOffset - 1 >= (Uint32)(destPtr - dest) + litRun + (Uint32)dictSize ||
+		             matchLen > (Uint32)(destEnd - destPtr) - litRun)) return -1;    /* corrupt: before the history, past the end */
 		destPtr = WLZ_Execute(destPtr, lzLitBufPtr, litRun, matchLen, matchOffset, dest, destEnd, dictEnd, dictSize);
 		lzLitBufPtr += litRun;
 
 		/* B */
-		if (unlikely(destPtr + litRunB >= destEnd)) {    /* B is the terminal record */
+		if (unlikely(litRunB >= (Uint32)(destEnd - destPtr))) {  /* B is the terminal record */
+			if (litRunB > (Uint32)(destEnd - destPtr)) return -1;
 			memcpy(destPtr, lzLitBufPtr, litRunB);
 			destPtr += litRunB;
 			break;
@@ -1666,6 +1691,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8*
 				offsetLast[0] = matchOffset;
 			}
 		}
+		if (unlikely(matchOffset - 1 >= (Uint32)(destPtr - dest) + litRunB + (Uint32)dictSize ||
+		             matchLenB > (Uint32)(destEnd - destPtr) - litRunB)) return -1;
 		destPtr = WLZ_Execute(destPtr, lzLitBufPtr, litRunB, matchLenB, matchOffset, dest, destEnd, dictEnd, dictSize);
 		lzLitBufPtr += litRunB;
 	}
@@ -1674,13 +1701,17 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8* wzipSeqStart, Uint8*
 	fclose(fptr);
 #endif
 
-	return (Uint32)(destPtr - (Uint8*)dest);
+	return (int)(destPtr - (Uint8*)dest);
 }
 
+#define SEQ_DEC_PARAMS  Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize,  \
+    WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd, const Uint8* const bufStart
+#define SEQ_DEC_ARGS    wzipSeqStart, lzLitBuffer, dest, destEnd, dictEnd, dictSize, hufWtSet, seqEnd, bufStart
+
 #define DECOMPRESS_SEQUENCE_GEN(fun)                                                                                                                  \
-    static int fun(Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd)   \
+    static int fun(SEQ_DEC_PARAMS)                                                                                                                  \
     {                                                                                                                                               \
-        return fun##_Body(wzipSeqStart, lzLitBuffer, dest, destEnd, dictEnd, dictSize, hufWtSet, seqEnd);                                                            \
+        return fun##_Body(SEQ_DEC_ARGS);                                                                                                            \
     }
 
 
@@ -1691,9 +1722,9 @@ DECOMPRESS_SEQUENCE_GEN(Decompress_WLZ_Sequence)
 #if (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
 #  define WZIP_DYNAMIC_BMI2 1
 static __attribute__((target("bmi,bmi2,lzcnt")))
-int Decompress_WLZ_Sequence_Bmi2(Uint8* wzipSeqStart, Uint8* lzLitBuffer, Uint8* dest, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, const Uint8* const seqEnd)
+int Decompress_WLZ_Sequence_Bmi2(SEQ_DEC_PARAMS)
 {
-	return Decompress_WLZ_Sequence_Body(wzipSeqStart, lzLitBuffer, dest, destEnd, dictEnd, dictSize, hufWtSet, seqEnd);
+	return Decompress_WLZ_Sequence_Body(SEQ_DEC_ARGS);
 }
 static int CPU_Has_Bmi2(void)
 {
@@ -1709,27 +1740,39 @@ static int CPU_Has_Bmi2(void)
 #endif
 
 
-/* srcSize must be exact: the second sequence stream is read backward from the end of the block */
+/* srcSize must be exact: the second sequence stream is read backward from the end of the block. Returns destSize, or
+   0 if the stream is corrupt; no read or write leaves source[0, srcSize), dest[0, destSize) or the dictionary. */
 int WZIP_Decompress_M(
 	const void* const source, int const srcSize,
 	void* const dest, int const destSize,
 	void* const dict, int const dictSize)
 {
-	int i;
-	Uint32 nLzLits, zipLitSize;
-	Uint8* srcPtr = (Uint8*)source;
-	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
+	int i, maxBits;
+	Uint32 nLzLits;
+	const int histSize = dict && dictSize > 0 ? dictSize : 0;
+	Uint8* const dictEnd = histSize ? (Uint8*)dict + dictSize : NULL;
+	const int nLenBytes = (destSize >> 16) ? 4 : 2;
+	if (destSize <= 0 || srcSize < nLenBytes + 8) return 0;
 
-	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
-		nLzLits = MemReadLE4(srcPtr);
-		srcPtr += 4;
-	}
-	else {
-		nLzLits = MemReadLE2(srcPtr);
-		srcPtr += 2;
-	}
-	Uint8* lzLitBuffer = (Uint8*)malloc(nLzLits + 256);                 /* leave margin to allow for overwrite by MemWildCopy */
-	zipLitSize = Huffman_Decompress(srcPtr, lzLitBuffer, nLzLits, N_HufLits);
+	/* the input, small by design (under 32 KB decoded), in a zero-padded copy: see M_PadFront */
+	Uint8* const buf = (Uint8*)malloc(M_PadFront + (size_t)srcSize + M_PadBack);
+	if (NULL == buf) return 0;
+	Uint8* const body = buf + M_PadFront;
+	const Uint8* const bodyEnd = body + srcSize;
+	memset(buf, 0, M_PadFront);
+	memcpy(body, source, srcSize);
+	memset(body + srcSize, 0, M_PadBack);
+	Uint8* srcPtr = body;
+
+	nLzLits = nLenBytes == 4 ? MemReadLE4(srcPtr) : MemReadLE2(srcPtr);   /* the length of the LZ literal sequence */
+	srcPtr += nLenBytes;
+	/* sized to the output, zero beyond the literals: every literal consumed becomes an output byte, so no sequence can
+	   read past it, even a corrupt one (and 256 more bytes for MemWildCopy) */
+	Uint8* lzLitBuffer = nLzLits <= (Uint32)destSize ? (Uint8*)calloc((size_t)destSize + 256, 1) : NULL;
+	if (NULL == lzLitBuffer) { free(buf); return 0; }
+	int decSize = -1;
+	const int zipLitSize = Huffman_Decompress(srcPtr, (int)(bodyEnd - srcPtr), lzLitBuffer, nLzLits, N_HufLits);
+	if (zipLitSize < 0) goto _end;
 	srcPtr += zipLitSize;
 
 	Bit_Stream bitStream;
@@ -1738,29 +1781,34 @@ int WZIP_Decompress_M(
 	bitStream.streamPtr = srcPtr;
 
 	Uint8 wtHufWt[MAX_HufWeight + 3];                /* Second-level Huffman Weight table on the Huffman weights */
-	Uint32 maxWtHufWt;
 	Huffman_DemapX1 wtHufDemapX1[1 << MAX_HufHufWt];     /* Second-level Huffman demapper for Huffman weights */
 	WLZ_HufWt_Set hufWtSet;
 
-	maxWtHufWt = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, wtHufWt);
-	Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxWtHufWt, wtHufWt, wtHufDemapX1);
-	hufWtSet.maxLitRunHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufLitRun, hufWtSet.litRunHufWt);
-	hufWtSet.maxMchLenHufWt = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchLen, hufWtSet.mchLenHufWt);
-	for (i = 0; i < MchOffGroup; i++)
-		hufWtSet.maxMchOffHufWt[i] = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], hufWtSet.mchOffHufWt[i]);
+	const int maxWtHufWt = Huffman_Read_Code(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, wtHufWt);
+	if (maxWtHufWt <= 0) goto _end;
+	Build_Huffman_DecTableX1(MAX_HufWeight + 3, (Uint32)maxWtHufWt, wtHufWt, wtHufDemapX1);
+	if ((maxBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxWtHufWt, wtHufDemapX1, N_HufLitRun, CapHufLitRunBits, hufWtSet.litRunHufWt)) < 0) goto _end;
+	hufWtSet.maxLitRunHufWt = (Uint32)maxBits;
+	if ((maxBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxWtHufWt, wtHufDemapX1, N_HufMchLen, CapHufMchLenBits, hufWtSet.mchLenHufWt)) < 0) goto _end;
+	hufWtSet.maxMchLenHufWt = (Uint32)maxBits;
+	for (i = 0; i < MchOffGroup; i++) {
+		if ((maxBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], CapHufMchOffBits, hufWtSet.mchOffHufWt[i])) < 0) goto _end;
+		hufWtSet.maxMchOffHufWt[i] = (Uint32)maxBits;
+	}
 	BITStream_Read_FlushEnd(bitStream);
+	if (bitStream.streamPtr > bodyEnd) goto _end;
 
 	Uint8* const destEnd = (Uint8*)dest + destSize;
-	int decSize;
 #if WZIP_DYNAMIC_BMI2
 	if (CPU_Has_Bmi2())
-		decSize = Decompress_WLZ_Sequence_Bmi2(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, dictSize, &hufWtSet, (const Uint8*)source + srcSize);
+		decSize = Decompress_WLZ_Sequence_Bmi2(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, histSize, &hufWtSet, bodyEnd, body);
 	else
 #endif
-	decSize = Decompress_WLZ_Sequence(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, dictSize, &hufWtSet, (const Uint8*)source + srcSize);
+	decSize = Decompress_WLZ_Sequence(bitStream.streamPtr, lzLitBuffer, dest, destEnd, dictEnd, histSize, &hufWtSet, bodyEnd, body);
 
+_end:
 	free(lzLitBuffer);
-
+	free(buf);
 	if (destSize == decSize) return decSize;
 	else return 0;
 }

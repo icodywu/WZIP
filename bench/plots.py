@@ -1,21 +1,31 @@
-"""Ratio vs compression speed and ratio vs decompression speed on Silesia, from bench_all output files
-   (later files override earlier ones). usage: plots.py <out.pdf> <results>..."""
+"""Ratio vs compression speed and ratio vs decompression speed on Silesia, from bench_all output files.
+   usage: plots.py <out.pdf> <results>... [--dec <decompression-only results>...]
+   A configuration measured in several passes keeps its best speeds; files after --dec (bench_all with STREAMS)
+   replace the decompression speeds of their configurations."""
 import re, sys
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
+def load(paths):
+    d = {}
+    for path in paths:
+        for line in open(path):
+            m = re.match(r'(\S+)\s+(\d+)\s+ratio ([\d.]+)\s+comp\s+([\d.]+) MB/s\s+dec\s+([\d.]+) MB/s', line)
+            if m:
+                k = (m.group(1), int(m.group(2)))
+                v = (float(m.group(3)), float(m.group(4)), float(m.group(5)))
+                if k in d:                               # several passes: the best speeds
+                    v = (v[0], max(v[1], d[k][1]), max(v[2], d[k][2]))
+                d[k] = v
+    return d
+
 out = sys.argv[1]
-d = {}
-for path in sys.argv[2:]:
-    for line in open(path):
-        m = re.match(r'(\S+)\s+(\d+)\s+ratio ([\d.]+)\s+comp\s+([\d.]+) MB/s\s+dec\s+([\d.]+) MB/s', line)
-        if m:
-            k = (m.group(1), int(m.group(2)))
-            v = (float(m.group(3)), float(m.group(4)), float(m.group(5)))
-            if k in d:                                   # several passes: the best speeds
-                v = (v[0], max(v[1], d[k][1]), max(v[2], d[k][2]))
-            d[k] = v
+files = sys.argv[2:]
+decFiles = files[files.index('--dec') + 1:] if '--dec' in files else []
+d = load(files[:files.index('--dec')] if '--dec' in files else files)
+for k, v in load(decFiles).items():
+    if k in d: d[k] = (d[k][0], d[k][1], v[2])
 
 # each family's points in level order (fast/lazy WLZ4 before its hash-chain levels)
 def order(c, l):

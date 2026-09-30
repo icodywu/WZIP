@@ -64,9 +64,9 @@ int WZIP_Decompress_M(const void* const source, int const srcSize, void* const d
 int wzip_compress(const void* const source, int srcSize, void* const wzipStream, int *wzipCapSize, int level);
 
 /* Decompresses a stream of wzip_compress into decmp, whose capacity *decCapSize must hold the decoded size (which
-   WZIP_Read_DecSize reports); nothing is written past it. Returns the decoded size, or 0 if the buffer is too small.
-   The input is trusted: a corrupt stream can make the decoder read or write out of bounds. Not thread-safe (WZIP_L
-   and WZIP_M keep their window schedule in global state). */
+   WZIP_Read_DecSize reports); nothing is written past it. Returns the decoded size, or 0 if the buffer is too small
+   or the stream is corrupt or truncated: the input is validated, and no read leaves source[0, srcSize). Not
+   thread-safe (WZIP_L and WZIP_M keep their window schedule in global state). */
 int wzip_decompress(const void* const source, int srcSize, void* decmp, int *decCapSize);
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ WZIP_S : short fixed-size blocks (e.g. 4K/8K storage pages) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/

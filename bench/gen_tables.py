@@ -1,6 +1,8 @@
 """LaTeX tables of the paper from bench_all output.
-   usage: gen_tables.py <outdir> S=<file>[,<file>...] C=<file>[,<file>...]
-   A configuration measured more than once (several passes) keeps its best speeds; ratio and memory are the same."""
+   usage: gen_tables.py <outdir> S=<file>[,<file>...] C=<file>[,<file>...] [E8=... E9=...] [SD=... CD=... E8D=... E9D=...]
+   A configuration measured more than once (several passes) keeps its best speeds; ratio and memory are the same.
+   SD, CD, E8D, E9D: decompression-only runs (bench_all with STREAMS); their decompression speeds replace those of
+   the same configurations, whose other columns stay (the ratio is checked to match)."""
 import re, sys, os
 
 def load(paths):
@@ -17,11 +19,23 @@ def load(paths):
                 d[k] = v
     return d
 
+def override_dec(d, paths, tag):
+    """replaces the decompression speeds of d with those of decompression-only runs"""
+    for k, v in load(paths).items():
+        if k not in d:
+            print('%s: %s %d has no full measurement; skipped' % (tag, k[0], k[1]))
+            continue
+        if abs(d[k][0] - v[0]) > 5e-5:
+            print('%s: %s %d ratio %.4f differs from %.4f' % (tag, k[0], k[1], v[0], d[k][0]))
+        d[k] = (d[k][0], d[k][1], v[2], d[k][3])
+
 outdir = sys.argv[1]
 args = dict(a.split('=', 1) for a in sys.argv[2:])
 S, C = load(args['S']), load(args['C'])
 E8 = load(args['E8']) if 'E8' in args else {}
 E9 = load(args['E9']) if 'E9' in args else {}
+for tag, d in (('SD', S), ('CD', C), ('E8D', E8), ('E9D', E9)):
+    if tag in args: override_dec(d, args[tag], tag)
 
 def label(c, l):
     if c == 'lz4': return 'LZ4 (default)'

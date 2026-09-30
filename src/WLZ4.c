@@ -1592,35 +1592,139 @@ ForceInlineTemplate void WLZ_Copy_Short_Offset(Uint8* d, const Uint8* s, Uint8* 
 	do { memcpy(d, v, 8); d += 8; } while (d < dstEnd);
 }
 
- /*   This generic decompression function covers all use cases.
-  *   Note that it is important for performance that this function really get inlined,
-  *   in order to remove useless branches during compilation optimization.
-  */
+/* a match of offset <= produced + dictionary size: from the dictionary (a corrupt one may run on into the output), or
+   from the output; the wild copies write up to 31 bytes past the match (WLZ_MEM_OVERHEAD) */
+ForceInlineTemplate void WLZ_Copy_Match(Uint8* destPtr, const Uint8* const dest, const size_t produced, const unsigned offset,
+	const unsigned matchLen, const Uint8* const dictEnd)
+{
+	if (offset > produced) {
+		const size_t inDict = matchLen < offset - produced ? matchLen : offset - produced;
+		memcpy(destPtr, dictEnd - (offset - produced), inDict);
+		for (size_t k = inDict; k < matchLen; k++) destPtr[k] = dest[k - inDict];
+		return;
+	}
+	const Uint8* const match = destPtr - offset;
+	if (offset >= 16) WLZ_WildCopy32(destPtr, match, destPtr + matchLen);
+	else if (offset >= 8) WLZ_WildCopy8(destPtr, match, destPtr + matchLen);
+	else WLZ_Copy_Short_Offset(destPtr, match, destPtr + matchLen, offset);
+}
+
+/* a length extension, reading nothing past srcEnd; returns 0 if it does not fit */
+static int WLZ_Read_Ext_Exact(const Uint8** srcRef, const Uint8* const srcEnd, size_t* value)
+{
+	const Uint8* s = *srcRef;
+	if (s >= srcEnd) return 0;
+	size_t v = *s++;
+	if (v > 251) {
+		const unsigned n = (unsigned)v - 251;
+		if ((size_t)(srcEnd - s) < n) return 0;
+		Uint32 x = 0;
+		for (unsigned k = 0; k < n; k++) x |= (Uint32)s[k] << (8 * k);
+		v = 252 + (size_t)x;
+		s += n;
+	}
+	*srcRef = s;
+	*value = v;
+	return 1;
+}
+
+#define WLZ_LIT_UNKNOWN   ((size_t)-1)
+
+/* The last sequences, within WLZ_SRC_MARGIN bytes of the end of the input: every field is read exactly, as it may end
+   the input. litLen: the literal run of the current sequence if its extension is already read, else WLZ_LIT_UNKNOWN.
+   Returns the decoded size at the end marker, or 0 if the input is corrupt. */
+static unsigned WLZ_Decode_Tail(const Uint8* srcPtr, const Uint8* const srcEnd, unsigned token, size_t litLen,
+	Uint8* destPtr, Uint8* const dest, Uint8* const destEnd, const Uint8* const dictEnd, const size_t dictSize)
+{
+	while (1) {
+		const unsigned code = token & ML_MASK;
+		size_t ext, matchLen;
+		unsigned offset;
+		if (litLen == WLZ_LIT_UNKNOWN) {
+			litLen = token >> ML_BITS;
+			if (litLen == RUN_MASK) {
+				if (!WLZ_Read_Ext_Exact(&srcPtr, srcEnd, &ext)) return 0;
+				litLen += ext;
+			}
+		}
+		if (litLen > (size_t)(srcEnd - srcPtr) || litLen > (size_t)(destEnd - destPtr)) return 0;
+		memcpy(destPtr, srcPtr, litLen);
+		srcPtr += litLen;
+		destPtr += litLen;
+
+		if (srcPtr >= srcEnd) return 0;
+		if (code < 2) {                                  /* a one-byte offset */
+			offset = *srcPtr++;
+			matchLen = MIN_MATCH_LEN + code;
+		}
+		else {                                           /* a flagged offset: two bytes, or three */
+			const size_t nOff = 2 + (srcPtr[0] & 1);
+			if ((size_t)(srcEnd - srcPtr) < nOff) return 0;
+			offset = ((Uint32)srcPtr[0] | (Uint32)srcPtr[1] << 8 | (nOff == 3 ? (Uint32)srcPtr[2] << 16 : 0)) >> 1;
+			srcPtr += nOff;
+			matchLen = MIN_MATCH_LEN + code - 1;
+			if (code == WLZ_CODE_LONG) {
+				if (!WLZ_Read_Ext_Exact(&srcPtr, srcEnd, &ext)) return 0;
+				matchLen += ext;
+			}
+		}
+		const size_t produced = (size_t)(destPtr - dest);
+		if (offset == 0 || offset > produced + dictSize)
+			return offset == 0 && code != WLZ_CODE_LONG ? (unsigned)produced : 0;   /* the end marker, or corrupt */
+		if (matchLen > (size_t)(destEnd - destPtr)) return 0;
+		WLZ_Copy_Match(destPtr, dest, produced, offset, (unsigned)matchLen, dictEnd);
+		destPtr += matchLen;
+		if (srcPtr >= srcEnd) return 0;                  /* a block ends with the end marker */
+		token = *srcPtr++;
+		litLen = WLZ_LIT_UNKNOWN;
+	}
+}
+
+#define WLZ_SRC_MARGIN    64      /* the main loop reads at most this far past a sequence's literal run */
+#define WLZ_DST_MARGIN    32      /* a short sequence (up to 14 literals, a 16-byte match) writes less than this */
+
+/* The decoder checks every sequence, as LZ4's safe decoder does, at little cost to the common short sequence. The main
+   loop runs while WLZ_SRC_MARGIN bytes of input and WLZ_DST_MARGIN bytes of output remain: the input margin covers
+   every read past a literal run (16-byte copies, the offset word, a length extension, the next token), and the output
+   margin a short sequence, so only a long literal run or a long match checks its length. Every offset is checked
+   against the bytes decoded (and the dictionary). Near either end, WLZ_Decode_Tail finishes with exact checks.
+   Output: dest holds decSize bytes plus WLZ_MEM_OVERHEAD for wild copies. Returns the decoded size at the end marker,
+   or 0 if the input is corrupt. Forced inline, so that a dictionary size of 0 removes its branches. */
 ForceInlineTemplate unsigned
 WLZ_Decompress_Kernel(
-                 const char* const src,
-                 char* const dest,
-                 const Uint8* const dictEnd,  
-                 const unsigned dictSize)
+                 const Uint8* const src,
+                 const Uint8* const srcEnd,
+                 Uint8* const dest,
+                 const unsigned decSize,
+                 const Uint8* const dictEnd,
+                 const size_t dictSize)
 {
-	if (src == NULL) {
-		return 0;
-	}
-
-    const Uint8* srcPtr = (const Uint8*) src;
-    Uint8* destPtr = (Uint8*) dest;
+    const Uint8* srcPtr = src;
+    Uint8* destPtr = dest;
+    Uint8* const destEnd = dest + decSize;
     const Uint8* match;
-    register unsigned token = *srcPtr++;
+    register unsigned token;
 	register unsigned litLen, matchLen, offset, code, nb, adv;
 	Uint32 word;
 
+	if (srcPtr >= srcEnd) return 0;
+	token = *srcPtr++;
+	if ((size_t)(srcEnd - srcPtr) <= WLZ_SRC_MARGIN || decSize <= WLZ_DST_MARGIN)     /* short: all exact */
+		return WLZ_Decode_Tail(srcPtr, srcEnd, token, WLZ_LIT_UNKNOWN, destPtr, dest, destEnd, dictEnd, dictSize);
+	const Uint8* const srcFast = srcEnd - WLZ_SRC_MARGIN;
+	Uint8* const destFast = destEnd - WLZ_DST_MARGIN;
     while (1) {
+		if (unlikely(srcPtr > srcFast || destPtr > destFast))
+			return WLZ_Decode_Tail(srcPtr, srcEnd, token, WLZ_LIT_UNKNOWN, destPtr, dest, destEnd, dictEnd, dictSize);
         litLen = token >> ML_BITS;    /* literal length */
 		code = token & ML_MASK;       /* match code */
 
 		if (unlikely(litLen == RUN_MASK)) {
 			WLZ_READ_ExtraLength(srcPtr, litLen);
 			litLen += RUN_MASK;
+			/* a run that reaches within the margins of either end is finished exactly (the macro reuses token) */
+			if (unlikely((size_t)litLen + WLZ_SRC_MARGIN > (size_t)(srcEnd - srcPtr) || litLen > (size_t)(destFast - destPtr)))
+				return WLZ_Decode_Tail(srcPtr, srcEnd, code, litLen, destPtr, dest, destEnd, dictEnd, dictSize);
 			MemWildCopy(destPtr + 16, srcPtr + 16, destPtr + litLen);
 		}
 		MemCopy16(destPtr, srcPtr);
@@ -1637,19 +1741,24 @@ WLZ_Decompress_Kernel(
 		token = (word >> (8 * adv)) & 0xFF;
 		srcPtr += adv + 1;
 		matchLen = MIN_MATCH_LEN + code - nb;
-
-		if (dictSize && (ptrdiff_t)(destPtr - (const Uint8*)dest) < (ptrdiff_t)offset) {   /* in the dictionary, whole */
-			match = dictEnd + ((ptrdiff_t)(destPtr - (const Uint8*)dest) - (ptrdiff_t)offset);
-			if (unlikely(code == WLZ_CODE_LONG)) {
-				srcPtr--;
-				WLZ_READ_ExtraLength(srcPtr, litLen);
-				matchLen += litLen;
-				token = *srcPtr++;
-			}
-			memcpy(destPtr, match, matchLen);
-			destPtr += matchLen;
-			continue;
+		if (unlikely(code == WLZ_CODE_LONG)) {           /* the extension, then the next token */
+			srcPtr--;
+			WLZ_READ_ExtraLength(srcPtr, litLen);
+			matchLen += litLen;
+			token = *srcPtr++;
+			if (unlikely(matchLen > (size_t)(destEnd - destPtr))) return 0;         /* corrupt: past the end */
 		}
+
+		if (dictSize) {                                  /* the history includes the dictionary */
+			if (unlikely((size_t)offset - 1 >= (size_t)(destPtr - dest) + dictSize))     /* before the history: */
+				return offset == 0 && code != WLZ_CODE_LONG ? (unsigned)(destPtr - dest) : 0;   /* the end marker, or corrupt */
+			if ((size_t)(destPtr - dest) < offset) {     /* starts in the dictionary */
+				WLZ_Copy_Match(destPtr, dest, (size_t)(destPtr - dest), offset, matchLen, dictEnd);
+				destPtr += matchLen;
+				continue;
+			}
+		}
+		else if (unlikely((uintptr_t)destPtr - (uintptr_t)dest < offset)) return 0;     /* corrupt: before the output */
 		match = destPtr - offset;
 
 		if (likely(code != WLZ_CODE_LONG)) {             /* at most 16 bytes */
@@ -1659,23 +1768,17 @@ WLZ_Decompress_Kernel(
 				destPtr += matchLen;
 				continue;
 			}
-			if (unlikely(!offset)) return (unsigned)(destPtr - (const Uint8*)dest);
+			if (unlikely(!offset)) return (unsigned)(destPtr - dest);                   /* the end marker */
 			WLZ_Copy_Short_Offset(destPtr, match, destPtr + matchLen, offset);
 			destPtr += matchLen;
 			continue;
 		}
-		srcPtr--;                                        /* the extension, then the next token */
-		WLZ_READ_ExtraLength(srcPtr, litLen);
-		matchLen += litLen;
-		token = *srcPtr++;
 		if (offset >= 16) WLZ_WildCopy32(destPtr, match, destPtr + matchLen);
 		else if (offset >= 8) WLZ_WildCopy8(destPtr, match, destPtr + matchLen);
-		else WLZ_Copy_Short_Offset(destPtr, match, destPtr + matchLen, offset);
+		else if (likely(offset)) WLZ_Copy_Short_Offset(destPtr, match, destPtr + matchLen, offset);
+		else return 0;                                   /* corrupt: a long match cannot end the block */
 		destPtr += matchLen;
     }
-
-    /* end of decoding */
-    return (unsigned) (destPtr- (const Uint8*)dest);     /* Nb of output bytes decoded */
 }
 
 
@@ -1685,26 +1788,25 @@ WLZ_Decompress_Kernel(
 FORCE_O2_GCC_PPC64LE
 unsigned WLZ_Decompress(const char* source, char* destiny, unsigned compressedSize, unsigned decCapSize)
 {
-	if (decCapSize < WLZ_Read_DecSize(source, compressedSize) + WLZ_MEM_OVERHEAD) {
-		return 0;
-	}
-
-    	if (compressedSize < 4) return 0;                     /* header, token and the ending zero offset at least */
-	return WLZ_Decompress_Kernel(source + WLZ_Size_Bytes(source), destiny, NULL, 0);
+	if (source == NULL || destiny == NULL || compressedSize < 4) return 0;   /* header, token and the ending zero offset at least */
+	const unsigned decSize = WLZ_Read_DecSize(source, compressedSize);
+	if (decCapSize < decSize + WLZ_MEM_OVERHEAD) return 0;
+	const unsigned d = WLZ_Decompress_Kernel((const Uint8*)source + WLZ_Size_Bytes(source), (const Uint8*)source + compressedSize,
+		(Uint8*)destiny, decSize, NULL, 0);
+	return d == decSize ? d : 0;
 }
 
 FORCE_O2_GCC_PPC64LE
 unsigned WLZ_Decompress_wDict(const char* source, char* destiny, unsigned compressedSize, unsigned decCapSize,
                                      const char* dictionary, unsigned dictSize)
 {
-	if (decCapSize < WLZ_Read_DecSize(source, compressedSize) + WLZ_MEM_OVERHEAD) {
-		return 0; 
-	}
-
-	const Uint8* const dictEnd = (const Uint8*)dictionary + dictSize;
-
-		if (compressedSize < 4) return 0;
-	return WLZ_Decompress_Kernel(source + WLZ_Size_Bytes(source), destiny, dictEnd, dictSize);
+	if (source == NULL || destiny == NULL || compressedSize < 4) return 0;
+	const unsigned decSize = WLZ_Read_DecSize(source, compressedSize);
+	if (decCapSize < decSize + WLZ_MEM_OVERHEAD) return 0;
+	if (dictionary == NULL) dictSize = 0;
+	const unsigned d = WLZ_Decompress_Kernel((const Uint8*)source + WLZ_Size_Bytes(source), (const Uint8*)source + compressedSize,
+		(Uint8*)destiny, decSize, (const Uint8*)dictionary + dictSize, dictSize);
+	return d == decSize ? d : 0;
 }
 
 
