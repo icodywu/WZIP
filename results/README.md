@@ -17,5 +17,6 @@ python gen_tables.py OUT S=../results/final_S.txt,../results/final2_S.txt,../res
 | `rerun_S.txt`, `rerun_C.txt` | WLZ4 levels 2, 4 and 6, rerun because another job disturbed their first timing |
 | `rerun2_C.txt` | WLZ4 level 4 on Canterbury+Calgary, rerun for the same reason |
 | `e8c.txt`, `e9c.txt` | enwik8 and enwik9, all measured in one later session |
+| `blocks_S.txt`, `blocks_C.txt` | `bench/bench_blocks` on Silesia and on Canterbury+Calgary cut into 4 KB and 8 KB blocks (README); `wzips-L2` is WZIP_S with length-2 matches within 16 bytes |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.

@@ -16,15 +16,23 @@ WZIP_SRC := $(wildcard ../src/*.c)
 LZ4_SRC  := $(LZ4)/lz4.c $(LZ4)/lz4hc.c
 ZSTD_SRC  = $(wildcard $(ZSTD)/common/*.c $(ZSTD)/compress/*.c $(ZSTD)/decompress/*.c)
 
+all: bench_all.exe bench_blocks.exe
+
 bench_all.exe: bench_all.c $(WZIP_SRC) $(LZ4_SRC)
 	$(CC) $(CFLAGS) -w -I../src -I$(LZ4) -I$(ZSTD) -DZSTD_DISABLE_ASM bench_all.c $(WZIP_SRC) $(LZ4_SRC) $(ZSTD_SRC) \
 		-lbrotlienc -lbrotlidec -llzma -lpsapi -lm -o $@
+
+# independent blocks (storage pages); S_W2 builds a WZIP_S that also codes length-2 matches with S_W2 raw offset bits
+S_W2 ?= 0
+bench_blocks.exe: bench_blocks.c $(WZIP_SRC) $(LZ4_SRC)
+	$(CC) $(CFLAGS) -w -I../src -I$(LZ4) -I$(ZSTD) -DZSTD_DISABLE_ASM -DS_W2_BITS=$(S_W2) bench_blocks.c $(WZIP_SRC) \
+		$(LZ4_SRC) $(ZSTD_SRC) -lm -o $@
 
 deps:
 	git clone --depth 1 --branch v1.10.0 https://github.com/lz4/lz4 $(DEPS)/lz4
 	git clone --depth 1 --branch v1.5.6 https://github.com/facebook/zstd $(DEPS)/zstd
 
 clean:
-	rm -f bench_all.exe
+	rm -f bench_all.exe bench_blocks.exe
 
 .PHONY: deps clean

@@ -19,6 +19,11 @@ make deps     # LZ4 1.10.0 and Zstandard 1.5.6 from source (the MSYS2 LZ4 packag
 make          # bench_all.exe
 ```
 
+`bench_blocks.c` measures independent fixed-size blocks instead (storage pages): each file is cut into blocks,
+and each block is compressed and decompressed by its own call; `run_blocks.sh` reproduces the block tables of the
+top-level README, including the length-2 experiment (`make S_W2=4 bench_blocks.exe` builds WZIP_S with length-2
+matches within 16 bytes).
+
 ## Reproducing the paper
 
 Corpora: Silesia (https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia), Canterbury and Calgary

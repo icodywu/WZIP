@@ -35,6 +35,32 @@ output; speeds in MB/s. Full tables, the harness and the raw outputs are in [`be
 | **WZIP 11** | 4.745 | 0.92 | 492 |
 | **WZIP 13** | 4.759 | 0.42 | 484 |
 
+### Independent 4 KB and 8 KB blocks
+
+Storage pages and key-value stores compress small blocks independently. Here every Silesia file is cut into 4 KB
+or 8 KB blocks, each compressed and decompressed by its own call (`bench/bench_blocks.c`; results for
+Canterbury+Calgary are in [`results/blocks_C.txt`](results/blocks_C.txt)).
+
+| Silesia in blocks | 4 KB ratio | Compress | Decompress | 8 KB ratio | Compress | Decompress |
+|---|---:|---:|---:|---:|---:|---:|
+| LZ4 | 1.727 | 539 | 2564 | 1.824 | 505 | 2727 |
+| LZ4HC 12 | 1.856 | 33.6 | 2856 | 2.004 | 30.2 | 3107 |
+| **WLZ4 2** | 1.893 | 62.7 | 2347 | 2.020 | 71.1 | 2647 |
+| **WLZ4 10** | 1.940 | 20.6 | 1610 | 2.081 | 24.9 | 2376 |
+| Zstandard 1 | 2.315 | 210 | 571 | 2.476 | 251 | 699 |
+| Zstandard 9 | 2.424 | 33.3 | 599 | 2.619 | 28.4 | 693 |
+| Zstandard 19 | 2.522 | 3.88 | 530 | 2.737 | 3.80 | 636 |
+| **WZIP_S 1** | 2.434 | 52.3 | 314 | 2.580 | 59.3 | 410 |
+| **WZIP_S 5** | 2.499 | 31.7 | 330 | 2.680 | 30.8 | 424 |
+| **WZIP_S 9** | 2.500 | 24.2 | 332 | 2.682 | 17.6 | 424 |
+| **WZIP_M 12** | 2.502 | 0.82 | 379 | 2.718 | 0.51 | 479 |
+
+WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at the same
+compression speed, but WZIP_S decodes at 55-61% of Zstandard's speed, and Zstandard 19 still compresses 1-2% more
+than WZIP_S 9. WLZ4 compresses 1-4.5% more than LZ4HC 12, decoding 15-44% slower. WZIP_M, reached through
+`wzip_compress`, compresses slowly on small blocks because the one-call interface builds its tables on every call;
+WZIP_S keeps them in a reusable context.
+
 ## Papers
 
 - Y. Wu, "WZIP and WLZ4: Practical LZ77 codecs with match-length-dependent sliding windows," submitted to the 2027
@@ -85,6 +111,25 @@ WZIP_S, for 4 KB and 8 KB blocks, has its own interface (below).
   keep their state in contexts.
 - WZIP's optimal levels (7-13) need about 950 MB of encoder memory on a 50 MB input and about 2 GB on enwik9. Inputs
   are limited to 2 GB, and windows to 128 MB.
+
+## Length-2 matches: measured, not used
+
+Apart from WZIP_S's length-2 match at the most recent offset, every match in these codecs has length 3 or more. A
+length-2 match with an offset can pay only at very short distances. In WLZ4 it cannot pay at all: it would need an extra token and an offset byte, as many bytes as
+the two literals it replaces. In WZIP it was measured with WZIP_S, whose format has a length-2 symbol with raw offset
+bits (`S_W2_BITS`), built with 4 bits (distances up to 16) against 0 (off) (`results/blocks_*.txt`, `wzips-L2`):
+
+| WZIP_S ratio | Cant.+Calg. 4 KB | Cant.+Calg. 8 KB | Silesia 4 KB | Silesia 8 KB |
+|---|---:|---:|---:|---:|
+| level 5 | 2.7968 | 2.9904 | 2.4989 | 2.6796 |
+| level 5, length 2 within 16 bytes | 2.7947 | 2.9891 | 2.4978 | 2.6793 |
+| level 9 | 2.7979 | 2.9905 | 2.4997 | 2.6816 |
+| level 9, length 2 within 16 bytes | 2.7957 | 2.9893 | 2.4986 | 2.6812 |
+
+Length-2 matches lowered the ratio in every case, by 0.01-0.08%: the two literals they replace cost little after
+Huffman coding, while each such match adds a sequence. Their effect on decoding speed was within measurement noise.
+So no codec here codes length-2 matches at a distance; WZIP_S keeps only a length-2 match at the most recent offset,
+which costs one length symbol and no offset bits.
 
 ## The three WZIP variants
 
