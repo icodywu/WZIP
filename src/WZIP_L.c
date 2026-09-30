@@ -728,8 +728,8 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 
 		matchLen = min(matchLen, MaxMatchLen);
 		
-		/* index the start and the last two positions of the match */
-		for (i = 2; i < matchLen; i = (i + 3 < matchLen) ? matchLen - 2 : i + 1) {
+		/* index the start and the last two positions of the match (the hashes read 8 bytes: stop 16 before the end) */
+		for (i = 2; i < matchLen && srcPtr + i <= srcLastMatch; i = (i + 3 < matchLen) ? matchLen - 2 : i + 1) {
 			hashV1 = WLZ_Hash1(srcPtr + i) & wzipStr->hash1Mask;
 			hashV2 = WLZ_Hash2(srcPtr + i) & wzipStr->hash2Mask;
 			hash1Table[hashV1] = srcIdx + i;
@@ -1195,7 +1195,7 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 			PREFETCH_L1(hash1Table + (WLZ_Hash1(srcPtr + L_HashAhead) & wzipStr->hash1Mask));
 		Uint32 hashV = WLZ_Hash1(srcPtr++) & wzipStr->hash1Mask;
 		const int prevIdx = hash1Table[hashV];
-		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		if (prevIdx >= -dictSize) PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
 		PREFETCH_L1(chain1Table + ((Uint32)prevIdx & chain1Mask));
 		int dist = wzipStr->curr1Idx - hash1Table[hashV];
 		chain1Table[wzipStr->curr1Idx & chain1Mask] = (dist>0 && dist< chain1Mask && hash1Table[hashV]>=-dictSize)? dist: chain1Mask;
@@ -1240,7 +1240,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 			PREFETCH_L1(hash2Table + (WLZ_Hash2(srcPtr + L_HashAhead) & wzipStr->hash2Mask));
 		Uint32 hashV = WLZ_Hash2(srcPtr++) & wzipStr->hash2Mask;
 		const int prevIdx = hash2Table[hashV];
-		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		if (prevIdx >= -dictSize) PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
 		PREFETCH_L1(chain2Table + ((Uint32)prevIdx & chain2Mask));
 		int dist = wzipStr->curr2Idx - hash2Table[hashV];
 		chain2Table[wzipStr->curr2Idx & chain2Mask] = (dist>0 && dist< chain2Mask && hash2Table[hashV] >= -dictSize)? dist : chain2Mask;
@@ -1292,7 +1292,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 			PREFETCH_L1(hash2Table + (WLZ_Hash2(srcPtr + L_HashAhead) & wzipStr->hash2Mask));
 		Uint32 hashV = WLZ_Hash2(srcPtr++) & wzipStr->hash2Mask;
 		const int prevIdx = hash2Table[hashV];
-		PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
+		if (prevIdx >= -dictSize) PREFETCH_L1(prevIdx < 0 ? dictEnd + prevIdx : source + prevIdx);
 		PREFETCH_L1(chain2Table + ((Uint32)prevIdx & chain2Mask));
 		int dist = wzipStr->curr2Idx - hash2Table[hashV];
 		chain2Table[wzipStr->curr2Idx & chain2Mask] = (dist > 0 && dist < chain2Mask && hash2Table[hashV] >= -dictSize) ? dist : chain2Mask;
@@ -1903,7 +1903,7 @@ static int Opt_Finder_Init(Opt_Finder* f, const Uint8* dict, int dictSize)
 	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
 	f->nextA = f->nextB = f->nextC = 0;
 	/* dictionary positions up to -16 (8-byte reads and match extension stay inside it) go into the chains */
-	const Uint8* const dictEnd = dict + dictSize;
+	const Uint8* const dictEnd = dict ? dict + dictSize : NULL;
 	for (int i = -dictSize; i <= -16; i++) {
 		const Uint8* const p = dictEnd + i;
 		Uint32 h = Hash_3B(p) & f->hMaskA;
@@ -2458,7 +2458,7 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	static WZIP_State_Str wzipStr;
 	wzipStr.compressLevel = level;
 	wzipStr.dictSize = dictSize;
-	wzipStr.dictEnd = (Uint8*)dict + dictSize;
+	wzipStr.dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
 	WZIP_Set_OffWidth(srcSize, OffWidth);
 	/* wider short windows for optimal parsing, measured from the widest window of the short lengths (2^26 at most; on
@@ -2841,7 +2841,7 @@ int WZIP_Decompress_L(
 	int i;
 	Uint32 nLzLits, zipLitSize;
 	Uint8* srcPtr = (Uint8*)source;
-	Uint8* const dictEnd = (Uint8*)dict + dictSize;
+	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
 	WZIP_Set_OffWidth(destSize, OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */

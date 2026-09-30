@@ -1405,7 +1405,7 @@ WZIP_State_Str* WZIP_New_State_M(int level, const void* dict, int dictSize)
 	static WZIP_State_Str wzipStr;
 	wzipStr.compressLevel = level;
 	wzipStr.dictSize = dictSize;
-	wzipStr.dictEnd = (Uint8*)dict + dictSize;
+	wzipStr.dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 	wzipStr.hash0Mask = BitMask[14];
 	wzipStr.hash1Mask = BitMask[15];
 	wzipStr.hash2Mask = 0;
