@@ -53,12 +53,9 @@ window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decode
 `ablation/harness.c` compresses one file at level 11, verifies it with the checked decoder and prints the process's
 peak working set.
 
-Zstandard 1.5.7 check: `make ZSTD=path/to/zstd-1.5.7/lib bench_all.exe`, then levels 19 and 22 as above.
-
-WZIP ablation (the paper's "WZIP's parts"): `sh bench/ablation/run.sh path/to/silesia` from the repository root.
-`ablation/switches.py` adds three encoder switches to a copy of `WZIP_L.c` in `build/` (never to `src/`):
-`WZ_CLASSIC=1` codes every block with the 204-value alphabet, the cache slot going to the offset symbol (same parse);
-`WZ_NG=k` uses k offset tables (`k=1`: one for all lengths; reparsed); `WZ_ONEWIN=1` gives lengths 3-7 the widest
-window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decoder derives the groups from the windows).
-`ablation/harness.c` compresses one file at level 11, verifies it with the checked decoder and prints the process's
-peak working set.
+WLZ4 ablation (the paper's Table 5 and its "offset size by length alone" sentence): `sh bench/ablation/wlz4/run.sh`
+from the repository root (Windows, MSYS2; LZ4 from `make deps`, or `LZ4=path/to/lz4/lib`). It builds WLZ4 as of
+2026-09-29, before the flagged offset: `WLZ4_twowin.c`, the two-window format (Table 5, row 2), and
+`WLZ4_variants.c`, the same code with table-driven match codes, `-DWLZ_VARIANT=0` the far code (row 3) and `1`, `2`
+offset size by length alone. Levels 10 and 12 run on Silesia and on Canterbury+Calgary; the flagged format (row 4)
+is `wlz4hc` in the main benchmark. `wlz4/v3stat.c` counts the far-code parse's matches by length and offset class.
