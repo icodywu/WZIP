@@ -20,5 +20,7 @@ python gen_tables.py OUT S=../results/final_S.txt,../results/final2_S.txt,../res
 | `rerun2_C.txt` | WLZ4 level 4 on Canterbury+Calgary, rerun for the same reason |
 | `e8c.txt`, `e9c.txt` | enwik8 and enwik9, all measured in one later session |
 | `blocks_S.txt`, `blocks_C.txt` | `bench/bench_blocks` on Silesia and on Canterbury+Calgary cut into 4 KB and 8 KB blocks (README); `wzips-L2` is WZIP_S with length-2 matches within 16 bytes |
+| `ablation_wzip.txt` | `bench/ablation/run.sh`: WZIP level 11 on Silesia under each ablation switch, every file verified (the paper's "WZIP's parts") |
+| `zstd157.txt` | Zstandard 1.5.7 at levels 19 and 22, the paper's check that 1.5.7 changes the ratios by at most 0.06% |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.

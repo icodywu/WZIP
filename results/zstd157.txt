@@ -1,0 +1,7 @@
+# Zstandard 1.5.7 (bench_all built with ZSTD=zstd-1.5.7/lib), measured 2026-09-30 for the ratio check only;
+# S = Silesia, C = Canterbury+Calgary, E8 = enwik8. Speeds were taken while other jobs ran and are not used.
+S zstd     19  ratio 4.0070  comp     0.77 MB/s  dec    163.5 MB/s  encmem    81.0 MB  fails 0
+C zstd     19  ratio 4.2093  comp     0.94 MB/s  dec    188.0 MB/s  encmem    17.3 MB  fails 0
+S zstd     22  ratio 4.0474  comp     1.01 MB/s  dec    607.1 MB/s  encmem   641.2 MB  fails 0
+C zstd     22  ratio 4.2101  comp     1.66 MB/s  dec    534.2 MB/s  encmem    17.3 MB  fails 0
+E8 zstd     22  ratio 3.9573  comp     1.03 MB/s  dec    451.1 MB/s  encmem   705.1 MB  fails 0

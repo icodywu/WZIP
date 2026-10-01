@@ -42,3 +42,23 @@ fast codecs (`runlist_fast.txt`), and the large inputs (`runlist.txt` on enwik8,
 `gen_tables.py` writes the LaTeX tables, keeping the best speeds of repeated configurations, and `plots.py` the
 Silesia trade-off figure. Timings need a quiet machine: AC power, a high-performance power plan, and no other load
 (sync clients and chat apps disturbed ours by up to 15%).
+
+Zstandard 1.5.7 check: `make ZSTD=path/to/zstd-1.5.7/lib bench_all.exe`, then levels 19 and 22 as above.
+
+WZIP ablation (the paper's "WZIP's parts"): `sh bench/ablation/run.sh path/to/silesia` from the repository root.
+`ablation/switches.py` adds three encoder switches to a copy of `WZIP_L.c` in `build/` (never to `src/`):
+`WZ_CLASSIC=1` codes every block with the 204-value alphabet, the cache slot going to the offset symbol (same parse);
+`WZ_NG=k` uses k offset tables (`k=1`: one for all lengths; reparsed); `WZ_ONEWIN=1` gives lengths 3-7 the widest
+window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decoder derives the groups from the windows).
+`ablation/harness.c` compresses one file at level 11, verifies it with the checked decoder and prints the process's
+peak working set.
+
+Zstandard 1.5.7 check: `make ZSTD=path/to/zstd-1.5.7/lib bench_all.exe`, then levels 19 and 22 as above.
+
+WZIP ablation (the paper's "WZIP's parts"): `sh bench/ablation/run.sh path/to/silesia` from the repository root.
+`ablation/switches.py` adds three encoder switches to a copy of `WZIP_L.c` in `build/` (never to `src/`):
+`WZ_CLASSIC=1` codes every block with the 204-value alphabet, the cache slot going to the offset symbol (same parse);
+`WZ_NG=k` uses k offset tables (`k=1`: one for all lengths; reparsed); `WZ_ONEWIN=1` gives lengths 3-7 the widest
+window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decoder derives the groups from the windows).
+`ablation/harness.c` compresses one file at level 11, verifies it with the checked decoder and prints the process's
+peak working set.

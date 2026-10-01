@@ -1,0 +1,80 @@
+# bench/ablation/run.sh: WZIP level 11 on Silesia under each switch (bench/ablation/switches.py), rerun 2026-09-30.
+# Columns: config, level, file, input -> output bytes, ratio, compression speed, process peak working set, verification.
+# Ratios are deterministic; these speeds were taken with five runs in parallel and are not used. Paper figures:
+#   classic   (cache slot in the offset symbol, same parse):  1 - 51945869/52091690 = 0.28% lower ratio
+#   ng1       (one offset table for all lengths, reparsed):  1 - 51945869/52246925 = 0.58% lower ratio
+#   onewin_ng5 vs ng5 (lengths 3-7 get the widest window, five offset tables in both): 51937542/51936495 - 1 = +0.002%
+#   mozilla peak working set: 1063 MB (ng5) -> 1440 MB (onewin_ng5)
+# The 11% compression-speed drop on mozilla is from an earlier sequential pair of single runs on a quiet machine:
+#   [WZ_NG=5]             peak 1063 MB comp 1.38 MB/s OK
+#   [WZ_ONEWIN=1 WZ_NG=5] peak 1440 MB comp 1.23 MB/s OK
+
+base L11 data_corpus/SilesiaCorpus/dickens 10192446 -> 2845924 ratio 3.5814 comp 0.33 MB/s peak 290 MB OK
+base L11 data_corpus/SilesiaCorpus/mozilla 51220480 -> 14884737 ratio 3.4411 comp 0.47 MB/s peak 1063 MB OK
+base L11 data_corpus/SilesiaCorpus/mr 9970564 -> 3070218 ratio 3.2475 comp 0.31 MB/s peak 287 MB OK
+base L11 data_corpus/SilesiaCorpus/nci 33553445 -> 1530942 ratio 21.9169 comp 0.37 MB/s peak 599 MB OK
+base L11 data_corpus/SilesiaCorpus/ooffice 6152192 -> 2597320 ratio 2.3687 comp 0.52 MB/s peak 165 MB OK
+base L11 data_corpus/SilesiaCorpus/osdb 10085684 -> 3035959 ratio 3.3221 comp 0.52 MB/s peak 287 MB OK
+base L11 data_corpus/SilesiaCorpus/reymont 6627202 -> 1337171 ratio 4.9561 comp 0.29 MB/s peak 169 MB OK
+base L11 data_corpus/SilesiaCorpus/samba 21606400 -> 3904958 ratio 5.5331 comp 0.61 MB/s peak 495 MB OK
+base L11 data_corpus/SilesiaCorpus/sao 7251944 -> 4868373 ratio 1.4896 comp 0.97 MB/s peak 181 MB OK
+base L11 data_corpus/SilesiaCorpus/webster 41458703 -> 8411985 ratio 4.9285 comp 0.50 MB/s peak 969 MB OK
+base L11 data_corpus/SilesiaCorpus/x-ray 8474240 -> 4995480 ratio 1.6964 comp 0.44 MB/s peak 270 MB OK
+base L11 data_corpus/SilesiaCorpus/xml 5345280 -> 462802 ratio 11.5498 comp 0.51 MB/s peak 151 MB OK
+base TOTAL in 211938580 out 51945869 ratio 4.0800 all_ok 1
+
+classic L11 data_corpus/SilesiaCorpus/dickens 10192446 -> 2845924 ratio 3.5814 comp 0.33 MB/s peak 290 MB OK
+classic L11 data_corpus/SilesiaCorpus/mozilla 51220480 -> 14969679 ratio 3.4216 comp 0.47 MB/s peak 1064 MB OK
+classic L11 data_corpus/SilesiaCorpus/mr 9970564 -> 3070218 ratio 3.2475 comp 0.31 MB/s peak 287 MB OK
+classic L11 data_corpus/SilesiaCorpus/nci 33553445 -> 1559081 ratio 21.5213 comp 0.37 MB/s peak 599 MB OK
+classic L11 data_corpus/SilesiaCorpus/ooffice 6152192 -> 2603610 ratio 2.3629 comp 0.50 MB/s peak 165 MB OK
+classic L11 data_corpus/SilesiaCorpus/osdb 10085684 -> 3035959 ratio 3.3221 comp 0.53 MB/s peak 287 MB OK
+classic L11 data_corpus/SilesiaCorpus/reymont 6627202 -> 1337925 ratio 4.9533 comp 0.28 MB/s peak 169 MB OK
+classic L11 data_corpus/SilesiaCorpus/samba 21606400 -> 3929211 ratio 5.4989 comp 0.60 MB/s peak 495 MB OK
+classic L11 data_corpus/SilesiaCorpus/sao 7251944 -> 4868373 ratio 1.4896 comp 0.92 MB/s peak 181 MB OK
+classic L11 data_corpus/SilesiaCorpus/webster 41458703 -> 8411985 ratio 4.9285 comp 0.52 MB/s peak 969 MB OK
+classic L11 data_corpus/SilesiaCorpus/x-ray 8474240 -> 4995480 ratio 1.6964 comp 0.46 MB/s peak 270 MB OK
+classic L11 data_corpus/SilesiaCorpus/xml 5345280 -> 464245 ratio 11.5139 comp 0.47 MB/s peak 151 MB OK
+classic TOTAL in 211938580 out 52091690 ratio 4.0686 all_ok 1
+
+ng1 L11 data_corpus/SilesiaCorpus/dickens 10192446 -> 2860617 ratio 3.5630 comp 0.33 MB/s peak 290 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/mozilla 51220480 -> 14929378 ratio 3.4309 comp 0.47 MB/s peak 1064 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/mr 9970564 -> 3073691 ratio 3.2438 comp 0.31 MB/s peak 287 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/nci 33553445 -> 1530679 ratio 21.9206 comp 0.37 MB/s peak 599 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/ooffice 6152192 -> 2612131 ratio 2.3552 comp 0.56 MB/s peak 165 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/osdb 10085684 -> 3068735 ratio 3.2866 comp 0.52 MB/s peak 287 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/reymont 6627202 -> 1358777 ratio 4.8773 comp 0.29 MB/s peak 169 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/samba 21606400 -> 3911201 ratio 5.5242 comp 0.59 MB/s peak 495 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/sao 7251944 -> 4909546 ratio 1.4771 comp 0.93 MB/s peak 181 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/webster 41458703 -> 8445457 ratio 4.9090 comp 0.51 MB/s peak 969 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/x-ray 8474240 -> 5082820 ratio 1.6672 comp 0.44 MB/s peak 271 MB OK
+ng1 L11 data_corpus/SilesiaCorpus/xml 5345280 -> 463893 ratio 11.5227 comp 0.50 MB/s peak 151 MB OK
+ng1 TOTAL in 211938580 out 52246925 ratio 4.0565 all_ok 1
+
+ng5 L11 data_corpus/SilesiaCorpus/dickens 10192446 -> 2845282 ratio 3.5822 comp 0.38 MB/s peak 290 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/mozilla 51220480 -> 14884737 ratio 3.4411 comp 0.76 MB/s peak 1063 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/mr 9970564 -> 3071003 ratio 3.2467 comp 0.54 MB/s peak 287 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/nci 33553445 -> 1530942 ratio 21.9169 comp 0.64 MB/s peak 599 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/ooffice 6152192 -> 2598975 ratio 2.3672 comp 0.97 MB/s peak 165 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/osdb 10085684 -> 3034369 ratio 3.3238 comp 0.70 MB/s peak 287 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/reymont 6627202 -> 1337452 ratio 4.9551 comp 0.63 MB/s peak 169 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/samba 21606400 -> 3904958 ratio 5.5331 comp 0.65 MB/s peak 495 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/sao 7251944 -> 4857501 ratio 1.4929 comp 1.01 MB/s peak 181 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/webster 41458703 -> 8411985 ratio 4.9285 comp 0.74 MB/s peak 969 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/x-ray 8474240 -> 4997345 ratio 1.6957 comp 1.03 MB/s peak 270 MB OK
+ng5 L11 data_corpus/SilesiaCorpus/xml 5345280 -> 462993 ratio 11.5451 comp 1.15 MB/s peak 151 MB OK
+ng5 TOTAL in 211938580 out 51937542 ratio 4.0806 all_ok 1
+
+onewin_ng5 L11 data_corpus/SilesiaCorpus/dickens 10192446 -> 2846291 ratio 3.5810 comp 0.37 MB/s peak 323 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/mozilla 51220480 -> 14883597 ratio 3.4414 comp 0.70 MB/s peak 1440 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/mr 9970564 -> 3041881 ratio 3.2778 comp 0.55 MB/s peak 319 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/nci 33553445 -> 1537397 ratio 21.8248 comp 0.63 MB/s peak 851 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/ooffice 6152192 -> 2598420 ratio 2.3677 comp 0.95 MB/s peak 185 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/osdb 10085684 -> 3036397 ratio 3.3216 comp 0.66 MB/s peak 319 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/reymont 6627202 -> 1337480 ratio 4.9550 comp 0.49 MB/s peak 191 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/samba 21606400 -> 3907760 ratio 5.5291 comp 0.71 MB/s peak 651 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/sao 7251944 -> 4872819 ratio 1.4882 comp 0.92 MB/s peak 206 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/webster 41458703 -> 8413951 ratio 4.9274 comp 0.75 MB/s peak 1267 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/x-ray 8474240 -> 4997197 ratio 1.6958 comp 0.97 MB/s peak 296 MB OK
+onewin_ng5 L11 data_corpus/SilesiaCorpus/xml 5345280 -> 463305 ratio 11.5373 comp 1.44 MB/s peak 168 MB OK
+onewin_ng5 TOTAL in 211938580 out 51936495 ratio 4.0807 all_ok 1
