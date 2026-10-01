@@ -8,8 +8,13 @@ before offsets, so the decoder knows each match's window and no extra field is s
 - **WLZ4** is a byte-aligned, LZ4-class codec: one-byte offsets for lengths 3 and 4, and flagged two- or three-byte
   offsets (32 KB or 8 MB) for longer matches.
 
-Both streams begin with the input length, from which WZIP derives its window schedule and a decoder sizes its output.
-Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
+Each compressed block begins with its decoded length, from which WZIP derives its window schedule and a decoder sizes
+its output. Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
+
+**Dictionary compression, simpler than zstd's.** A dictionary is just the history before the input, at negative
+positions: one address space, one sign test to locate a match's source, and one chain walk over dictionary and input
+together. WZIP_S indexes a dictionary once and shares it read-only across blocks, contexts and threads, never copying
+or re-indexing it. See [Dictionary compression](#dictionary-compression).
 
 ## Results
 
@@ -184,6 +189,10 @@ source = (pos < 0) ? dictEnd + pos : input + pos;
 ```
 
 ### What this design gives you
+
+zstd addresses dictionary positions through a base pointer and limits, keeps an attached dictionary's tables apart
+from the input's and searches them separately, and copies a prepared dictionary into the context for larger inputs
+(details in the comparison below). Treating the dictionary as ordinary history removes that bookkeeping:
 
 - **One address space, one test.** Hash tables and chains store history positions. A negative
   position is in the dictionary; there are no base pointers, window limits or index deltas to
