@@ -15,3 +15,7 @@ data_corpus/
 
 # local files that are not part of the release
 local/
+
+# Python bytecode
+__pycache__/
+*.pyc
