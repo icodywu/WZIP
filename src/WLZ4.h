@@ -24,9 +24,8 @@ extern "C" {
     - a single step (described as Simple Functions)
     - a single step, reusing a context (described in Advanced Functions)
 
-  WLZ.h generates and decodes WLZ-compressed blocks (doc/WLZ_Block_format.md).
-  Decompressing a block requires additional metadata, such as its compressed size.
-  Each application is free to encode and pass such metadata in whichever way it wants.
+  WLZ4.h generates and decodes WLZ4 blocks, specified in doc/WLZ4_format.md.
+  Decompressing a block requires its compressed size, which the application stores as it wants.
 
   Block format: the decoded size (2 bytes below 32 KB, else 4), then sequences of a token (literal run in the high
   nibble, match code c in the low one), the literals, and the match, of length 3 + c (code 15: 18 + extension).
@@ -35,13 +34,7 @@ extern "C" {
   (15 bits, 32K), lengths 6 and up two bytes or three (23 bits, 8M). Literal runs from 15 and lengths from 18 take
   an extension (one byte below 252, else 251+n and n bytes). A zero offset ends the block.
 
-  WLZ.h only handle blocks, it can not generate Frames.
-
-  Blocks are different from Frames (doc/WLZ_Frame_format.md).
-  Frames bundle both blocks and metadata in a specified manner.
-  This are required for compressed data to be self-contained and portable.
-  Frame format is delivered through a companion API, declared in WLZframe.h.
-  Note that the `WLZ` CLI can only manage frames.
+  There is no frame format: a block holds one whole input, with no checksum and no version field.
 */
 
 /*^***************************************************************

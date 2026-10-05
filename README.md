@@ -82,6 +82,18 @@ WZIP_S keeps them in a reusable context.
   calibration, run and period gains, and exact minimum-cost parsing.
 - Y. Wu, "Improved LZ77 compression," in Proc. Data Compression Conference, 2021, p. 377. Introduces the scheme.
 
+## Format specifications
+
+The papers measure the codecs; the formats themselves are specified in [`doc/`](doc), precisely enough to write
+an independent decoder, together with the reference decoders' techniques and the encoders' levels:
+
+- [`doc/WLZ4_format.md`](doc/WLZ4_format.md): the WLZ4 block, with a byte-by-byte worked example;
+- [`doc/WZIP_format.md`](doc/WZIP_format.md): the `wzip_compress` stream (WZIP_L, WZIP_M) and WZIP_S blocks.
+
+Each comes with a small decoder written from the specification alone ([`doc/wlz4_decode.py`](doc/wlz4_decode.py),
+[`doc/wzip_decode.py`](doc/wzip_decode.py)), which checks every rule and decodes the output of every encoder level
+identically; they are slow, and meant as executable references.
+
 ## Build and test
 
 ```sh
@@ -146,6 +158,8 @@ may be damaged or crafted: a bad stream can make it read or write out of bounds.
   keep their state in contexts.
 - WZIP's optimal levels (7-13) need about 950 MB of encoder memory on a 50 MB input and about 2 GB on enwik9. Inputs
   are limited to 2 GB, and windows to 128 MB.
+- A WZIP_L literal run holds at most 2^24 - 1 bytes: an input with about 16 MB in which no match is found (and data
+  after it worth compressing) is stored rather than compressed.
 
 ## Length-2 matches: measured, not used
 
@@ -271,6 +285,7 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 | Path | Contents |
 |---|---|
 | `src/` | the codecs: `WZIP.h` (WZIP_L, WZIP_M, WZIP_S), `WLZ4.h`, and their sources |
+| `doc/` | format specifications and reference decoders (Python) |
 | `tests/roundtrip.c` | round-trip test of every codec and level (`make test`) |
 | `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |

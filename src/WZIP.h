@@ -15,7 +15,9 @@ extern "C" {
 #include <stdlib.h>
 #include <stddef.h>   /* size_t */
 
-#define WZIP_MAX_INPUT_SIZE       0x7EEEE000   
+/* The compressed formats (the wzip_compress stream, WZIP_L, WZIP_M and WZIP_S) are specified in doc/WZIP_format.md. */
+
+#define WZIP_MAX_INPUT_SIZE       0x7EEEE000
 #define WZIP_MEM_OVERHEAD         256
 #define WZIP_MAX_OFF_WIDTH        27          /* the window of lengths 8+ covers the input up to 2^27 bytes */
 #define WZIP_SHORT_OFF_WIDTH      26          /* the windows of lengths 3-7 stop at 2^26 */
