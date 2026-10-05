@@ -4,7 +4,18 @@ Two LZ77 codecs built on **match-length-dependent sliding windows**: each match 
 distance, so short matches use short, cheap offsets while long matches reach the whole history. Lengths are decoded
 before offsets, so the decoder knows each match's window and no extra field is sent.
 
-- **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only).
+- **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only), in three formats, because what pays on a
+  large input costs too much on a small one ([comparison](#the-three-wzip-variants)):
+  - **WZIP_L**, for inputs of 32 KB and more, sizes its windows to the input (up to 128 MB) and sends fresh Huffman
+    tables, among them a 1020-symbol joint code, every 16,384 sequences: rich statistics whose description pays off
+    on a large input.
+  - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
+    that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
+  - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
+    prepared dictionary across pages instead of rebuilding them, and adds features for short blocks: repeat offsets
+    preset to 1, 4 and 8, length-2 matches at the last offset, and a two-byte form for a page of one repeated byte.
+
+  `wzip_compress` picks WZIP_L or WZIP_M from the input size, which the stream records; WZIP_S has its own interface.
 - **WLZ4** is a byte-aligned, LZ4-class codec with one offset rule: a one-byte offset for length 3, and for longer
   matches a flagged offset of 1 + (length >= 6) bytes, or one more when the flag is set: one or two bytes (128 B or
   32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6. It sits between LZ4 and Zstandard, nearer
@@ -16,8 +27,18 @@ before offsets, so the decoder knows each match's window and no extra field is s
 *How far back a WLZ4 match can reach, by length and offset-field size, against LZ4's single 64 KB window
 ([more figures](doc/WLZ4_format.md)).*
 
-Each compressed block begins with its decoded length, from which WZIP derives its window schedule and a decoder sizes
-its output. Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
+**The decoded size comes first.** Every WZIP and WLZ4 stream begins with its decoded size: 2 bytes below 32 KB, else
+4 (WZIP_S: two bits of its header byte for 4, 8 or 16 KB pages). A decoder therefore allocates its output exactly,
+with no size kept beside the data (the LZ4 block format records none, LZ4 and Zstandard frames only optionally), and
+checks that decoding ends exactly there. WZIP gets more from it: which format follows (a size of 0 marks stored
+input), the window of WZIP_L's longest matches, which just covers the input, and the end of the stream: the last sequence
+is the one whose literals reach that size, so no end-of-block symbol or sequence count is coded. Incompressible input
+grows by at most 2 bytes with WZIP and 15 with WLZ4.
+
+<img src="doc/figures/wzip-size.svg" alt="The WZIP size field and what a decoder derives from it" width="620">
+
+*The size field of a `wzip_compress` stream, and what a decoder derives from it before reading the payload
+([format](doc/WZIP_format.md#41-the-one-call-stream)).*
 
 **Dictionary compression, simpler than zstd's.** A dictionary is just the history before the input, at negative
 positions: one address space, one sign test to locate a match's source, and one chain walk over dictionary and input

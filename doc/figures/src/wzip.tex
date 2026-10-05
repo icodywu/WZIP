@@ -233,4 +233,34 @@
 \node[anchor=west, font=\footnotesize, align=left] at (-0.1,-4.2) {$q = \lfloor L/4\rfloor$. Below 8 KiB there are no C and D: the main stream holds the first $\lceil L/2\rceil$ literals and B the rest.\\The literals are decoded first; then each sequence reads its run and length from the main stream and its offset from B.};
 \end{tikzpicture}
 
+%% 10. wzip-size: the size field, and what a decoder derives from it
+\begin{tikzpicture}[font=\small, node distance=0pt]
+\node[anchor=west] at (-0.1,1.0) {(a) the size field, as \texttt{u16} values (bit 15 on the left; each stored little-endian)};
+\node[anchor=east] at (2.4,0) {$n<32\,768$};
+\node[fld, fill=flg, minimum width=7mm] (f1) at (2.95,0) {0};
+\node[fld, fill=hdr, minimum width=45mm, right=of f1] (v1) {$n$ \footnotesize (15 bits)};
+\node[anchor=west, font=\footnotesize] at ($(v1.east)+(0.25,0)$) {2 bytes};
+\node[anchor=east] at (2.4,-1.15) {$n\ge 32\,768$};
+\node[fld, fill=flg, minimum width=7mm] (f2) at (2.95,-1.15) {1};
+\node[fld, fill=hdr, minimum width=45mm, right=of f2] (v2) {$n \bmod 2^{15}$};
+\node[fld, fill=hdr, minimum width=52mm, right=1.5mm of v2] (v3) {$\lfloor n / 2^{15}\rfloor$ \footnotesize (16 bits)};
+\node[anchor=west, font=\footnotesize] at ($(v3.east)+(0.25,0)$) {4 bytes};
+\node[anchor=east] at (2.4,-2.3) {stored};
+\node[fld, fill=hdr, minimum width=52mm, anchor=west] (s1) at (2.6,-2.3) {0};
+\node[fld, minimum width=52mm, right=1.5mm of s1] (s2) {the input, verbatim};
+\node[anchor=west, font=\footnotesize] at ($(s2.east)+(0.25,0)$) {$n$ + 2 bytes};
+\node[anchor=west] at (-0.1,-3.6) {(b) what a decoder derives from $n$ before it reads the payload};
+\node[draw, circle, fill=hdr, minimum size=13mm, font=\large] (n) at (1.3,-6.95) {$n$};
+\foreach \f/\t [count=\i from 0] in {
+    white/{\textbf{output}: exactly $n$ bytes, allocated up front; nothing is kept beside the stream},
+    tok!50/{\textbf{payload}: WZIP\_M if $n<32\,768$, else WZIP\_L; no type byte},
+    off/{\textbf{widest window} (WZIP\_L): $w(8)$ just covers the input ($2^{w(8)}-3\ge n$), up to $w(8)=27$},
+    lit/{\textbf{literal count} (WZIP\_L): \texttt{u16} if $n<65\,536$, else \texttt{u32}},
+    endm/{\textbf{end}: the last sequence is the one whose literal run reaches $n$; no end symbol, no count},
+    white/{\textbf{check}: a match or literal run that passes $n$, or a stream that ends before it, is rejected}} {
+  \node[draw, fill=\f, anchor=west, minimum height=7mm, text width=118mm, align=left, font=\footnotesize]
+    (d\i) at (3.3,-4.75-0.88*\i) {\t};
+  \draw[-{Stealth}] (n) -- (d\i.west);}
+\end{tikzpicture}
+
 \end{document}

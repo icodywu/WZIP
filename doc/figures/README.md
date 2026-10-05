@@ -8,7 +8,7 @@ script names page k after the k-th name it lists.
 |---|---|
 | `src/concepts.tex` | `parsers`, `indexes`, `mwparse`: unchanged from the IEEE Trans. IT paper (`papers/WLZ.pdf`) |
 | `src/wlz4.tex` | `wlz4-block`, `wlz4-offsets`, `wlz4-windows`, `wlz4-example` (`doc/WLZ4_format.md`) |
-| `src/wzip.tex` | `wzip-stream`, `wzip-parse`, `wzip-windows`, `wzip-sequence`, `wzip-literals`, `wzip-codes`, `wzip-offsets`, `wzip-m`, `wzip-s` (`doc/WZIP_format.md`) |
+| `src/wzip.tex` | `wzip-stream`, `wzip-parse`, `wzip-windows`, `wzip-sequence`, `wzip-literals`, `wzip-codes`, `wzip-offsets`, `wzip-m`, `wzip-s`, `wzip-size` (`doc/WZIP_format.md`) |
 
 `wlz4-position.svg`, a measurement rather than a format figure, comes from `bench/plot_position.py` (see
 `bench/README.md`).
