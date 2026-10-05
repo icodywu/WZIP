@@ -27,6 +27,12 @@ followed by a match that copies earlier output. It differs from LZ4 in three way
 A block holds one whole input; there is no frame format, no checksum and no block chaining (a dictionary,
 section 7, provides history before the input).
 
+![The largest offset of each match length](figures/wlz4-windows.svg)
+
+*Figure 1. How far back a match can reach, by length and offset-field size (section 4.4). The short form of each
+field is the lower part of a bar, the flagged long form one byte more. LZ4 gives every match of 4 bytes or more a
+2-byte offset and a 64 KiB window.*
+
 ## 2. Conventions
 
 - Multi-byte integers are little-endian.
@@ -40,6 +46,12 @@ section 7, provides history before the input).
 ```
 size header | sequence | sequence | ... | last sequence (literals and the end marker)
 ```
+
+![A block and one sequence](figures/wlz4-block.svg)
+
+*Figure 2. (a) A block: the decoded size, then sequences; the last ends with a zero offset (section 5). (b) A
+sequence: the token's two nibbles, an optional extension of the literal run, the literals, the offset field and an
+optional extension of the match length (section 4).*
 
 ### 3.1 Size header
 
@@ -100,6 +112,12 @@ the flag is bit 0 of the field's first byte, so it is known before the rest of t
 With code 0 the field is one plain byte (no flag). So for every code: **offset bytes = 1 if `c = 0`, else
 `1 + [c > 2] + flag`**.
 
+![The offset field of each match code](figures/wlz4-offsets.svg)
+
+*Figure 3. The offset field, bytes in stream order. In a flagged field (codes 1-15) bit 0 of the first byte is the
+flag, and the other bits, read as a little-endian integer, are the offset: bits 6..0 in the first byte, then 14..7,
+then 22..15.*
+
 An encoder may write the long form (flag 1) for an offset that the short form could hold; the reference encoders
 always write the shortest form. Code 15 is used exactly for lengths 18 and up; a length from 4 to 17 uses code
 `length - 3`.
@@ -148,6 +166,12 @@ of a dictionary are reachable.
 The 32-byte block below decodes to the 61 bytes
 `abcabcabcabcXYZabcdefghijkabcdefghijkhijkabcabcabcabcXYZabcde`. It was written by hand from this document and is
 decoded identically by `WLZ_Decompress`, `WLZ_Decompress_Trusted` and `doc/wlz4_decode.py`.
+
+![The worked example, byte by byte](figures/wlz4-example.svg)
+
+*Figure 4. The example block with its fields colored (top) and the output it decodes to (bottom), where shaded
+bytes are literals and each brace a match `(length, offset)`. The first match, `(9, 3)`, overlaps its own output
+and repeats `abc`; the last uses code 15 with an extension of 2.*
 
 | Bytes | Meaning | Output so far |
 |---|---|---|
@@ -207,6 +231,21 @@ grows by at most 15 bytes including the header (LZ4: about `n/255`). The output 
 | `WLZ_Compress` | lazy | the same, with one step of lazy evaluation and a check of the last offset |
 | `WLZhc_Compress(..., 0..7)` | hash chain | a 5-byte hash chain over 64 KiB walked 1, 2, 4, ..., 128 steps; candidates compared by length less offset bytes beyond two; probes of the far window (the previous position of the same 5-byte hash, uncapped, and of the same 8 bytes in a table of up to 2^20 entries) |
 | `WLZhc_Compress(..., 8..12)` | optimal | a 3-byte chain (256 B), a 4-byte chain (64 KiB) and a 6-byte chain (8 MiB); one candidate per offset class (within 128 B, 256 B, 32 KiB, 64 KiB, and beyond), each length priced with the cheapest candidate that codes it; segments of up to 4096 positions priced in exact bytes |
+
+![Greedy, lazy and minimum-cost parses](figures/parsers.svg)
+
+*Figure 5 (from the IEEE Trans. IT paper, `papers/WLZ.pdf`). Three parses of one input, with literals of 9 bits
+(shaded) and matches of 20 bits. Greedy parsing takes the longest match at each position; lazy parsing defers by one
+literal when the next position offers a longer match; the minimum-cost parse is a shortest path over all phrases.
+WLZ4's fast level is greedy, its lazy and hash-chain levels lazy, and levels 8-12 approximate the minimum-cost parse
+with exact byte prices.*
+
+![Hash-chain search with one window and with length-dependent windows](figures/indexes.svg)
+
+*Figure 6 (from `papers/WLZ.pdf`). Match finding with one window and with length-dependent windows: each class of
+lengths has its own index on seeds of its shortest length, covering only its window, and each chain is walked
+nearest first. WLZ4's optimal levels use three such indexes: 3-byte seeds over 256 B, 4-byte seeds over 64 KiB and
+6-byte seeds over 8 MiB.*
 
 Optimal-level parameters (chain steps in the 64 KiB, 256 B and far windows; a match this long is taken at once):
 

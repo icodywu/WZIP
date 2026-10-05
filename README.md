@@ -9,6 +9,11 @@ before offsets, so the decoder knows each match's window and no extra field is s
   matches a flagged offset of 1 + (length >= 6) bytes, or one more when the flag is set: one or two bytes (128 B or
   32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6.
 
+<img src="doc/figures/wlz4-windows.svg" alt="How far back a WLZ4 match can reach, by length and offset bytes" width="560">
+
+*How far back a WLZ4 match can reach, by length and offset-field size, against LZ4's single 64 KB window
+([more figures](doc/WLZ4_format.md)).*
+
 Each compressed block begins with its decoded length, from which WZIP derives its window schedule and a decoder sizes
 its output. Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
 
@@ -85,7 +90,8 @@ WZIP_S keeps them in a reusable context.
 ## Format specifications
 
 The papers measure the codecs; the formats themselves are specified in [`doc/`](doc), precisely enough to write
-an independent decoder, together with the reference decoders' techniques and the encoders' levels:
+an independent decoder, together with the reference decoders' techniques and the encoders' levels, and illustrated
+with figures of every layout:
 
 - [`doc/WLZ4_format.md`](doc/WLZ4_format.md): the WLZ4 block, with a byte-by-byte worked example;
 - [`doc/WZIP_format.md`](doc/WZIP_format.md): the `wzip_compress` stream (WZIP_L, WZIP_M) and WZIP_S blocks.

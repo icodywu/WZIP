@@ -31,6 +31,13 @@ on the input size and on a 3-byte header; in WZIP_M they are fixed (8 KiB for le
 in WZIP_S they depend on the block and dictionary sizes. Offsets taken from the cache of recent offsets are not bound
 by the windows.
 
+![A parse, its literal stream and its sequences](figures/wzip-parse.svg)
+
+*Figure 1. (a) A parse of `abcabcabXabc`: literals (shaded) and two matches `(length, offset)`. (b) Its literals,
+coded apart in the literal stream. (c) Its sequences as a WZIP_L slot-joint block codes them (section 5.5): each
+has a joint symbol for its literal-run class, length and cache slot, a literal-run symbol when it has two or more
+literals, and an offset symbol with extra bits for a new offset; the last sequence's literal run ends the output.*
+
 ## 2. Conventions
 
 - **Byte fields** are little-endian.
@@ -60,6 +67,13 @@ A valid code is one of:
 - **complete**: at least two symbols, all lengths at most the cap, and `sum 2^(-length) = 1`.
 
 Encoders produce only these; a decoder must reject any other code.
+
+![A canonical code, and code lengths coded by the weight code](figures/wzip-codes.svg)
+
+*Figure 2. (a) Six code lengths and the canonical code they define, as a tree and a table. A decoder can index a
+table of `2^maxLength` entries by the next `maxLength` bits: here `000` and `001` decode `b`, `100` decodes `a`.
+(b) A table's code lengths written as weight-code symbols (section 3.2): a repeat (13) for two more copies of 3, a
+zero run (14) for five zeros, and lone lengths written as themselves.*
 
 ### 3.2 The weight code
 
@@ -101,6 +115,12 @@ if `n < 32768` (section 6). The largest input is `0x7EEEE000` bytes.
 The reference encoder stores inputs below 32 bytes and every input that compression would not shrink by at least
 32 bytes, so no stream exceeds `n + 2` bytes.
 
+![The one-call stream, a WZIP_L payload and a sequence block](figures/wzip-stream.svg)
+
+*Figure 3. (a) The three forms of a one-call stream. (b) A WZIP_L payload (section 5): the window header, the
+literal count, the literal stream and the sequence blocks. (c) A sequence block (section 5.4): a header bit stream
+with the block's coding bit and code tables, then up to 16384 sequences.*
+
 ### 4.2 The literal stream
 
 The literals of a WZIP_L or WZIP_M payload, `L` bytes in all, are coded in blocks of 32768 literals (the last block
@@ -116,6 +136,11 @@ holds the rest). Each block is one of:
     literals each, in order, and stream 3 the remaining `size - 3q`.
 
 Each bit stream ends byte-aligned. The next block (or the next part of the payload) follows the body.
+
+![A stored and a Huffman literal block](figures/wzip-literals.svg)
+
+*Figure 4. The two kinds of literal block. A Huffman block of 512 literals or more splits them into four streams,
+which a decoder can decode in parallel; the three `u16` values give where streams 0-2 end.*
 
 ### 4.3 Offset values
 
@@ -135,6 +160,12 @@ Four recent offsets `c[0..3]`, most recent first, persist through the whole payl
 before it move down one). Initially every entry is unset; a reference to an unset entry is invalid (the reference
 decoders initialize them to `0x7F7F7F7F` in WZIP_L and `0xFFFFFFFF` in WZIP_M, offsets that no valid stream reaches).
 For a new offset the value is `v = offset + 3`.
+
+![Offset values, their symbols, and the offset cache](figures/wzip-offsets.svg)
+
+*Figure 5. (a) Offset values and symbols (section 4.3): values 0-3 have their own symbols; each larger symbol covers
+a range of values twice as wide as the symbol two below it, with one more extra bit. (b) The offset cache: a hit
+moves its entry to the front; a new offset is pushed in front and the oldest entry drops out.*
 
 ### 4.5 Matches
 
@@ -184,6 +215,12 @@ The **window header** gives lengths 3-7 as gaps below `w(8)`, 4 bits each, and t
 
 Valid widths satisfy `w(3) >= 4` and `w(3) <= w(4) <= ... <= w(8)`. (The base widths of lengths 3-7 in the table are
 the reference encoder's starting point; only `w(8)` is derived by the decoder.)
+
+![The window schedule of a 16 MiB input and its header](figures/wzip-windows.svg)
+
+*Figure 6. The windows of a 16 MiB input. The base widths (levels 0-6) widen with the length up to `w(8) = 25`,
+which covers the input; the optimal levels widen the short lengths' windows further. Right: the window header that
+the optimal levels write, as three bytes of two nibbles each.*
 
 ### 5.3 Offset groups
 
@@ -235,6 +272,12 @@ Each sequence reads, in this order:
    **match length** is `m + 3` if below 32, else it follows the value table below for `s = m + 3` (lengths up to 4095).
 7. The `r` literals (the next ones of the literal stream) are output, then the match is copied (section 4.5).
 
+![The fields of a WZIP_L sequence and the joint alphabet](figures/wzip-sequence.svg)
+
+*Figure 7. (a) The fields of one sequence, in bit-stream order, with the condition under which each is present.
+(b) The joint alphabet of a slot-joint block: 5 slots by 3 literal-run classes by 68 length symbols. One symbol
+decides whether an offset field follows (row `t = 4`) or the offset comes from the cache (rows 0-3).*
+
 Value table (WZIP_L literal-run symbols 32-70, and match lengths from 32):
 
 | `s` | value | extra bits |
@@ -277,6 +320,11 @@ The **sequence streams**: sequences 0, 2, 4, ... are in stream A, which starts a
 sequences 1, 3, 5, ... are in stream B, which is stored byte-reversed at the end of the payload: its first byte is the
 payload's last byte, its second byte the one before, and so on. Both streams end byte-aligned, and together they
 fill the payload exactly (so the payload size must be known exactly).
+
+![A WZIP_M payload and its two sequence streams](figures/wzip-m.svg)
+
+*Figure 8. A WZIP_M payload. Even sequences are read forward from after the tables, odd ones backward from the
+payload's end, so that a decoder can follow two independent bit positions.*
 
 ### 6.2 Sequences
 
@@ -353,6 +401,12 @@ Literal shares, in literal order: with two streams, the main stream holds the fi
 rest; with four streams (`q = L >> 2`), C holds literals `[0, q)`, D `[q, 2q)`, the main stream `[2q, 3q)` and B
 `[3q, L)`.
 
+![A WZIP_S header byte and a four-stream body](figures/wzip-s.svg)
+
+*Figure 9. (a) The first byte of a WZIP_S block. (b) A Huffman body of 8 KiB or more, in storage order: the main
+stream's header, streams C and D, the rest of the main stream, and stream B, which is stored byte-reversed and read
+from the block's end.*
+
 ### 7.4 Sequences
 
 Three **repeat slots** `rep = (1, 4, 8)` initially. Each sequence:
@@ -400,6 +454,26 @@ offsets reach into it as into earlier output (section 2). Only WZIP_S records in
 | | 7-13 | optimal parsing (a bounded shortest path priced in 1/256 bit from running symbol statistics); from 7 the windows of lengths 3-5 are widened; 12-13 keep three path states per position (one per literal-run class); 13 makes a first pass for per-region prices and uses the fine offset grouping |
 | WZIP_M | 0, 1-9, 10-12 | fast, hash-chain, optimal (the one-call interface uses levels up to 12) |
 | WZIP_S | 1-9 | greedy (1-2) or lazy parsing with a 3-byte hash chain of 4 to 4096 steps |
+
+![Greedy, lazy and minimum-cost parses](figures/parsers.svg)
+
+*Figure 10 (from the IEEE Trans. IT paper, `papers/WLZ.pdf`). Three parses of one input, with literals of 9 bits
+(shaded) and matches of 20 bits: greedy, lazy and minimum cost. WZIP's levels 2-3 parse greedily, 4-6 lazily, and
+7-13 approximate the minimum-cost parse with prices from running symbol statistics.*
+
+![Hash-chain search with one window and with length-dependent windows](figures/indexes.svg)
+
+*Figure 11 (from `papers/WLZ.pdf`). One index per class of lengths, each on seeds of its shortest length and covering
+only its window, searched nearest first. WZIP's optimal levels use a 3-byte chain for lengths 3-4 searched to
+`W(4)`, a 5-byte chain for lengths 5-6 searched to `W(6)`, and a binary tree on 7-byte seeds over the whole window;
+the short seeds' indexes stay small because their windows are.*
+
+![Parses under length-dependent windows](figures/mwparse.svg)
+
+*Figure 12 (from `papers/WLZ.pdf`). Why a parser must price shorter lengths of a candidate under length-dependent
+windows: with window 1 for lengths 2-4 and 8 for lengths 5-8, the cheapest parse takes the shorter match `(4,1)`,
+because the remaining `1000` has its only copy at distance 7, which only lengths of 5 or more may reach. WZIP's
+optimal parser therefore prices each length with the nearest candidate whose window admits it.*
 
 Every WZIP_L block chooses slot-joint or classic coding by estimated size. The windows, levels and measurements are
 discussed in the paper (`papers/WZIP_WLZ4_DCC.pdf`); results are in `results/`.
