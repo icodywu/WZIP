@@ -29,10 +29,11 @@ extern "C" {
   Each application is free to encode and pass such metadata in whichever way it wants.
 
   Block format: the decoded size (2 bytes below 32 KB, else 4), then sequences of a token (literal run in the high
-  nibble, match code in the low one), the literals, and the match. Match codes 0-1: lengths 3-4 with a one-byte
-  offset (window 256); codes 2-14: lengths 4-16, and 15: length 17 + extension, with a flagged offset of 2 or 3
-  bytes whose low bit is the flag (0: 15-bit offset, window 32K; 1: 23-bit offset, window 8M). Literal runs from 15
-  and lengths from 17 take an extension (one byte below 252, else 251+n and n bytes). A zero offset ends the block.
+  nibble, match code c in the low one), the literals, and the match, of length 3 + c (code 15: 18 + extension).
+  Code 0 takes a one-byte offset (window 256). Every other code takes a flagged offset of 1 + (c > 2) bytes, one more
+  when its low bit, the flag, is set; the offset is the other bits: lengths 4-5 one byte (7 bits, window 128) or two
+  (15 bits, 32K), lengths 6 and up two bytes or three (23 bits, 8M). Literal runs from 15 and lengths from 18 take
+  an extension (one byte below 252, else 251+n and n bytes). A zero offset ends the block.
 
   WLZ.h only handle blocks, it can not generate Frames.
 
@@ -268,7 +269,7 @@ WLZLIB_API unsigned WLZ_Decompress_wDict(const char* src, char* destiny, unsigne
 /*! Trusted mode, opt-in: the same decoding without any check, for input known to come unmodified from a WLZ4 encoder
 	(e.g. data this program compressed, or verified by a cryptographic MAC). The stored size still sizes the output
 	(dstCapacity >= decoded size + WLZ_MEM_OVERHEAD); the input must stay readable WLZ_TRUSTED_SRC_PAD bytes past
-	compressedSize. A damaged stream can make it read or write out of bounds. On Silesia it decodes 6-10% faster than WLZ_Decompress; the paper's figures are this
+	compressedSize. A damaged stream can make it read or write out of bounds. On Silesia it decodes 9-15% faster than WLZ_Decompress; the paper's figures are this
 	mode's. */
 #define WLZ_TRUSTED_SRC_PAD       32
 WLZLIB_API unsigned WLZ_Decompress_Trusted(const char* src, char* dst, unsigned compressedSize, unsigned dstCapSize);

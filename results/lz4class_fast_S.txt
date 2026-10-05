@@ -1,0 +1,4 @@
+lz4       1  ratio 2.1009  comp   640.28 MB/s  dec   3250.1 MB/s  encmem     0.0 MB  fails 0
+lz4hc     4  ratio 2.6556  comp    73.72 MB/s  dec   3027.0 MB/s  encmem     0.3 MB  fails 0
+wlz4f     1  ratio 2.3728  comp   254.01 MB/s  dec   2433.0 MB/s  encmem     0.0 MB  fails 0
+wlz4l     0  ratio 2.4315  comp   214.42 MB/s  dec   2529.5 MB/s  encmem     0.0 MB  fails 0

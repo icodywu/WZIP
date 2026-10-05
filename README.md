@@ -5,8 +5,9 @@ distance, so short matches use short, cheap offsets while long matches reach the
 before offsets, so the decoder knows each match's window and no extra field is sent.
 
 - **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only).
-- **WLZ4** is a byte-aligned, LZ4-class codec: one-byte offsets for lengths 3 and 4, and flagged two- or three-byte
-  offsets (32 KB or 8 MB) for longer matches.
+- **WLZ4** is a byte-aligned, LZ4-class codec with one offset rule: a one-byte offset for length 3, and for longer
+  matches a flagged offset of 1 + (length >= 6) bytes, or one more when the flag is set: one or two bytes (128 B or
+  32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6.
 
 Each compressed block begins with its decoded length, from which WZIP derives its window schedule and a decoder sizes
 its output. Incompressible input grows by at most 2 bytes with WZIP and 15 with WLZ4.
@@ -20,14 +21,15 @@ or re-indexing it. See [Dictionary compression](#dictionary-compression).
 
 Single thread, Intel Core i7-8850H, GCC 14.2 `-O2`; each file compressed whole. Ratio is total input over total
 output; speeds in MB/s. Full tables, the harness and the raw outputs are in [`bench/`](bench) and [`results/`](results).
+LZ4 and WLZ4 were measured again together after WLZ4's 2026-10 format revision, in a later session than the others.
 WZIP and WLZ4 decode in their trusted mode here, as in the paper (see Usage); their default, bounds-checked decoders
-are 6-10% (WLZ4) and at most 8% (WZIP) slower on Silesia.
+are 9-13% (WLZ4) and at most 8% (WZIP) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
-| LZ4HC 12 | 2.743 | 8.95 | 2991 |
-| **WLZ4 2** | 2.748 | 44.9 | 2586 |
-| **WLZ4 12** | 3.179 | 1.16 | 2235 |
+| LZ4HC 12 | 2.743 | 10.9 | 3361 |
+| **WLZ4 2** | 2.758 | 45.0 | 2733 |
+| **WLZ4 12** | 3.186 | 1.08 | 2429 |
 | Zstandard 19 | 4.005 | 2.57 | 1006 |
 | Zstandard 22 | 4.045 | 1.93 | 967 |
 | **WZIP 11** | 4.080 | 1.40 | 812 |
@@ -46,14 +48,15 @@ are 6-10% (WLZ4) and at most 8% (WZIP) slower on Silesia.
 
 Storage pages and key-value stores compress small blocks independently. Here every Silesia file is cut into 4 KB
 or 8 KB blocks, each compressed and decompressed by its own call (`bench/bench_blocks.c`; results for
-Canterbury+Calgary are in [`results/blocks_C.txt`](results/blocks_C.txt)).
+Canterbury+Calgary are in [`results/blocks_C.txt`](results/blocks_C.txt) and, for the LZ4 class,
+[`results/blocks_lz4class_C.txt`](results/blocks_lz4class_C.txt)).
 
 | Silesia in blocks | 4 KB ratio | Compress | Decompress | 8 KB ratio | Compress | Decompress |
 |---|---:|---:|---:|---:|---:|---:|
-| LZ4 | 1.727 | 539 | 2564 | 1.824 | 505 | 2727 |
-| LZ4HC 12 | 1.856 | 33.6 | 2856 | 2.004 | 30.2 | 3107 |
-| **WLZ4 2** | 1.893 | 62.7 | 2347 | 2.020 | 71.1 | 2647 |
-| **WLZ4 10** | 1.940 | 20.6 | 1610 | 2.081 | 24.9 | 2376 |
+| LZ4 | 1.727 | 590 | 2719 | 1.824 | 581 | 2783 |
+| LZ4HC 12 | 1.856 | 36.2 | 2973 | 2.004 | 30.3 | 3061 |
+| **WLZ4 2** | 1.901 | 67.0 | 2495 | 2.027 | 67.2 | 2671 |
+| **WLZ4 10** | 1.945 | 24.5 | 2317 | 2.087 | 23.1 | 2462 |
 | Zstandard 1 | 2.315 | 210 | 571 | 2.476 | 251 | 699 |
 | Zstandard 9 | 2.424 | 33.3 | 599 | 2.619 | 28.4 | 693 |
 | Zstandard 19 | 2.522 | 3.88 | 530 | 2.737 | 3.80 | 636 |
@@ -64,7 +67,8 @@ Canterbury+Calgary are in [`results/blocks_C.txt`](results/blocks_C.txt)).
 
 WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at the same
 compression speed, but WZIP_S decodes at 55-61% of Zstandard's speed, and Zstandard 19 still compresses 1-2% more
-than WZIP_S 9. WLZ4 compresses 1-4.5% more than LZ4HC 12, decoding 15-44% slower. WZIP_M, reached through
+than WZIP_S 9. WLZ4 compresses 1-5% more than LZ4HC 12, decoding 13-22% slower (the LZ4 rows were measured again
+with WLZ4 after its format revision, in a later session than the others). WZIP_M, reached through
 `wzip_compress`, compresses slowly on small blocks because the one-call interface builds its tables on every call;
 WZIP_S keeps them in a reusable context.
 
@@ -133,7 +137,7 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 6-10% faster for WLZ4 and up to 8% faster for WZIP. Never use it on data that
+On Silesia the trusted mode decodes 9-15% faster for WLZ4 and up to 8% faster for WZIP. Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
 ## Limitations

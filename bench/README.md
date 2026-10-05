@@ -43,6 +43,14 @@ fast codecs (`runlist_fast.txt`), and the large inputs (`runlist.txt` on enwik8,
 Silesia trade-off figure. Timings need a quiet machine: AC power, a high-performance power plan, and no other load
 (sync clients and chat apps disturbed ours by up to 15%).
 
+WLZ4's format was revised in 2026-10 (flagged one- or two-byte offsets for lengths 4-5), after the other codecs
+were measured. `run_wlz4.sh` (same variables) re-runs the runlists' LZ4-class lines, LZ4 and WLZ4 in one session,
+into `results/lz4class_*.txt`, then (with `STREAMDIR` set) two more decompression-only passes from saved streams,
+the configurations interleaved, and regenerates the tables and figure with those results in place of the earlier
+ones of the same codecs (`gen_tables.py` SX/CX/E8X/E9X, `plots.py --replace`), each configuration keeping its best
+speeds. `COOL=62` waits before each configuration until the CPU has cooled to 62 C, as in the paper's run: our
+laptop otherwise slowed down by up to a third over a long session.
+
 Zstandard 1.5.7 check: `make ZSTD=path/to/zstd-1.5.7/lib bench_all.exe`, then levels 19 and 22 as above.
 
 WZIP ablation (the paper's "WZIP's parts"): `sh bench/ablation/run.sh path/to/silesia` from the repository root.
@@ -57,5 +65,7 @@ WLZ4 ablation (the paper's Table 5 and its "offset size by length alone" sentenc
 from the repository root (Windows, MSYS2; LZ4 from `make deps`, or `LZ4=path/to/lz4/lib`). It builds WLZ4 as of
 2026-09-29, before the flagged offset: `WLZ4_twowin.c`, the two-window format (Table 5, row 2), and
 `WLZ4_variants.c`, the same code with table-driven match codes, `-DWLZ_VARIANT=0` the far code (row 3) and `1`, `2`
-offset size by length alone. Levels 10 and 12 run on Silesia and on Canterbury+Calgary; the flagged format (row 4)
-is `wlz4hc` in the main benchmark. `wlz4/v3stat.c` counts the far-code parse's matches by length and offset class.
+offset size by length alone. Levels 10 and 12 run on Silesia and on Canterbury+Calgary. Row 4, the flagged format
+before its 2026-10 revision, is `wlz4hc` of the main benchmark at commit 7c1e25b (`results/final_*.txt`); row 5, the
+current format, is `wlz4hc` now (`results/lz4class_*.txt`). `wlz4/v3stat.c` counts the far-code parse's matches by length
+and offset class.

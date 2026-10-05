@@ -1,0 +1,12 @@
+lz4       1  block  4096  ratio 1.7267  comp   590.11 MB/s  dec  2719.2 MB/s  blocks 51746  fails 0
+lz4hc     9  block  4096  ratio 1.8526  comp   105.70 MB/s  dec  3018.1 MB/s  blocks 51746  fails 0
+lz4hc    12  block  4096  ratio 1.8555  comp    36.15 MB/s  dec  2973.4 MB/s  blocks 51746  fails 0
+wlz4f     1  block  4096  ratio 1.8240  comp   212.81 MB/s  dec  2299.0 MB/s  blocks 51746  fails 0
+wlz4hc    2  block  4096  ratio 1.9010  comp    66.98 MB/s  dec  2495.0 MB/s  blocks 51746  fails 0
+wlz4hc   10  block  4096  ratio 1.9453  comp    24.50 MB/s  dec  2317.0 MB/s  blocks 51746  fails 0
+lz4       1  block  8192  ratio 1.8237  comp   580.86 MB/s  dec  2783.2 MB/s  blocks 25877  fails 0
+lz4hc     9  block  8192  ratio 1.9989  comp    92.35 MB/s  dec  3099.2 MB/s  blocks 25877  fails 0
+lz4hc    12  block  8192  ratio 2.0035  comp    30.32 MB/s  dec  3060.7 MB/s  blocks 25877  fails 0
+wlz4f     1  block  8192  ratio 1.9277  comp   215.14 MB/s  dec  2430.8 MB/s  blocks 25877  fails 0
+wlz4hc    2  block  8192  ratio 2.0273  comp    67.17 MB/s  dec  2671.2 MB/s  blocks 25877  fails 0
+wlz4hc   10  block  8192  ratio 2.0869  comp    23.05 MB/s  dec  2462.1 MB/s  blocks 25877  fails 0
