@@ -1,5 +1,5 @@
 /*
- * Corrupt-input test for the WZIP, WZIP_S and WLZ4 decoders.
+ * Corrupt-input test for the WZIP, WZIP_S and WLZ4 decoders and the WZ frame decoder.
  * Copyright (c) 2018-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  *
  * usage: corrupt [iterations [seed]]
@@ -14,6 +14,7 @@
 #include <string.h>
 #include "WZIP.h"
 #include "WLZ4.h"
+#include "wzframe.h"
 
 #define GUARD 64
 static int failures, decodes;
@@ -197,12 +198,47 @@ static void fuzz_wlz4(const unsigned char* src, int n, const char* name, int ite
 	free(cmp); free(dec);
 }
 
+static void fuzz_frames(const unsigned char* src, int n, const char* name, int iters)
+{
+	static const int set[][3] = { { WZF_CODEC_WZIP, 1, 0 }, { WZF_CODEC_WZIP, 9, 13 }, { WZF_CODEC_WLZ4, -1, 12 }, { WZF_CODEC_WLZ4, 10, 0 } };
+	unsigned char* dec = guarded(n);
+	for (unsigned k = 0; k < sizeof set / sizeof set[0]; k++) {
+		const WZF_params p = { set[k][0], set[k][1], set[k][2], 0 };
+		const size_t bound = WZF_compressBound((size_t)n, &p);
+		unsigned char* f = (unsigned char*)malloc(bound);
+		const size_t fs = WZF_compress(f, bound, src, (size_t)n, &p);
+		if (WZF_isError(fs)) { printf("FAIL frame %u %s: %s\n", k, name, WZF_getErrorName(fs)); failures++; free(f); continue; }
+		{
+			unsigned char* e = exact_copy(f, (int)fs);
+			check_clean(WZF_decompress(dec, (size_t)n, e, fs) == (size_t)n && !memcmp(dec, src, n), "frame", (int)k, name);
+			free(e);
+		}
+		for (int it = 0; it < iters; it++) {
+			unsigned char* d;
+			const int len = damage(f, (int)fs, &d);
+			memset(dec + n, 0xA5, GUARD);
+			const size_t r = WZF_decompress(dec, (size_t)n, d, (size_t)len);
+			decodes++;
+			if (!guard_ok(dec, n)) report("frame", (int)k, name, it);
+			if (!WZF_isError(r) && (r != (size_t)n || memcmp(dec, src, n)) && p.noChecksum == 0 && len >= (int)fs) {
+				/* a damaged frame that decodes must still match: the checksum covers the content */
+				printf("FAIL frame %u %s iteration %d: damaged content passed the checksum\n", k, name, it);
+				failures++;
+			}
+			free(d);
+		}
+		free(f);
+	}
+	free(dec);
+}
+
 static void fuzz_all(const unsigned char* src, int n, const char* name, int iters)
 {
 	const int before = failures;
 	fuzz_wzip(src, n, name, iters);
 	fuzz_wzips(src, n, name, iters);
 	fuzz_wlz4(src, n, name, iters);
+	fuzz_frames(src, n, name, iters);
 	printf("%-24s %8d bytes  %s\n", name, n, failures == before ? "ok" : "FAILED");
 	fflush(stdout);
 }

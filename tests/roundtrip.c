@@ -12,6 +12,7 @@
 #include <string.h>
 #include "WZIP.h"
 #include "WLZ4.h"
+#include "wzframe.h"
 
 #define GUARD 64
 static int failures, checks;
@@ -146,12 +147,116 @@ static void test_wlz4(const unsigned char* src, int n, const char* name)
 	free(cmp); free(dec);
 }
 
+static unsigned rd32le(const unsigned char* p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
+
+/* decodes a frame block by block through the streaming functions; returns the content size or an error code */
+static size_t stream_decode(const unsigned char* f, size_t fs, unsigned char* out, size_t cap)
+{
+	WZF_DCtx* d = WZF_createDCtx();
+	size_t pos = 0, o = 0, r = WZF_decompressBegin(d, f, fs < WZF_HEADER_MIN ? fs : WZF_HEADER_MIN);
+	if (!WZF_isError(r) && r > WZF_HEADER_MIN) r = WZF_decompressBegin(d, f, r);
+	if (WZF_isError(r)) { WZF_freeDCtx(d); return r; }
+	pos = r;
+	for (;;) {
+		int raw;
+		const size_t c = WZF_nextBlock(d, f + pos, &raw);
+		if (WZF_isError(c)) { WZF_freeDCtx(d); return c; }
+		pos += WZF_BLOCK_HEADER;
+		if (c == 0) break;
+		r = WZF_decompressBlock(d, out + o, cap - o, f + pos, c);
+		if (WZF_isError(r)) { WZF_freeDCtx(d); return r; }
+		o += r; pos += c;
+	}
+	r = WZF_decompressEnd(d, f + pos, WZF_endSize(d));
+	WZF_freeDCtx(d);
+	return WZF_isError(r) ? r : o;
+}
+
+static void test_frames(const unsigned char* src, int n, const char* name)
+{
+	static const int wzipLevels[] = { 0, 1, 5, 11 }, wlz4Levels[] = { -2, -1, 2, 10 };
+	static const int blockLogs[] = { 0, 10, 16 };
+	for (int codec = 0; codec <= 1; codec++)
+	for (int li = 0; li < 4; li++)
+	for (int bi = 0; bi < 3; bi++) {
+		const int level = codec ? wlz4Levels[li] : wzipLevels[li];
+		if (bi && n > (1 << 18) && level > 5) continue;  /* small blocks at slow levels: enough on the smaller inputs */
+		WZF_params p = { codec, level, blockLogs[bi], (li & 1) };     /* checksum on some, off on others */
+		const size_t bound = WZF_compressBound((size_t)n, &p);
+		unsigned char* f = guarded(bound);
+		unsigned char* dec = guarded(n > 0 ? n : 1);
+		const char* what = codec ? "frame/wlz4" : "frame/wzip";
+		const size_t fs = WZF_compress(f, bound, src, (size_t)n, &p);
+		checks++;
+		if (WZF_isError(fs)) { fail(what, name, level, WZF_getErrorName(fs)); free(f); free(dec); continue; }
+		if (!guard_ok(f, bound)) fail(what, name, level, "encoder wrote past its capacity");
+		if (WZF_getContentSize(f, fs) != (unsigned long long)n) fail(what, name, level, "wrong content size");
+		size_t d = WZF_decompress(dec, (size_t)n, f, fs);
+		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, WZF_isError(d) ? WZF_getErrorName(d) : "decoded data differs");
+		if (!guard_ok(dec, n > 0 ? n : 1)) fail(what, name, level, "decoder wrote past the content size");
+		memset(dec, 0, n > 0 ? n : 1);
+		d = stream_decode(f, fs, dec, (size_t)n);
+		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, "block-by-block decoding differs");
+		if (!(li & 1) && rd32le(f + fs - 4) != WZF_XXH32(src, (size_t)n, 0)) fail(what, name, level, "checksum differs from XXH32");
+		if (n > 0) {
+			if (WZF_getErrorCode(WZF_decompress(dec, (size_t)n - 1, f, fs)) != WZF_error_dstSize_tooSmall)
+				fail(what, name, level, "accepted a too-small output buffer");
+			if (WZF_getErrorCode(WZF_decompress(dec, (size_t)n, f, fs - 1)) != WZF_error_srcSize_wrong)
+				fail(what, name, level, "accepted a truncated frame");
+			if (!(li & 1)) {                              /* a damaged checksum is caught */
+				f[fs - 1] ^= 1;
+				if (WZF_getErrorCode(WZF_decompress(dec, (size_t)n, f, fs)) != WZF_error_checksum)
+					fail(what, name, level, "accepted a wrong checksum");
+				f[fs - 1] ^= 1;
+			}
+		}
+		free(f); free(dec);
+	}
+
+	/* irregular blocks through the streaming compressor, two frames and a skippable frame in one stream */
+	if (n > 0) {
+		WZF_params p = { WZF_CODEC_WLZ4, -1, 12, 0 };
+		WZF_CCtx* c = WZF_createCCtx();
+		const size_t cap = 2 * WZF_compressBound((size_t)n, &p) + (size_t)n / 64 * WZF_BLOCK_HEADER + 64;
+		unsigned char* f = guarded(cap);
+		unsigned char* dec = guarded(2 * (size_t)n);
+		size_t pos = 0;
+		for (int frame = 0; frame < 2; frame++) {
+			p.codec = frame;                              /* a WZIP frame (level 1), then a WLZ4 frame (lazy) */
+			p.level = frame ? -1 : 1;
+			const size_t h = WZF_compressBegin(c, f + pos, cap - pos, &p, frame ? WZF_CONTENTSIZE_UNKNOWN : (unsigned long long)n);
+			if (WZF_isError(h)) { fail("frame/stream", name, frame, WZF_getErrorName(h)); break; }
+			pos += h;
+			for (int done = 0, k = 0; done < n; k++) {
+				const int len = n - done < 1 + (k * 977) % 4096 ? n - done : 1 + (k * 977) % 4096;
+				const size_t r = WZF_compressBlock(c, f + pos, cap - pos, src + done, len);
+				if (WZF_isError(r)) { fail("frame/stream", name, k, WZF_getErrorName(r)); break; }
+				pos += r; done += len;
+			}
+			pos += WZF_compressEnd(c, f + pos, cap - pos);
+			if (rd32le(f + pos - 4) != WZF_XXH32(src, (size_t)n, 0)) fail("frame/stream", name, frame, "checksum differs from XXH32");
+			if (!frame) {                                 /* a skippable frame between the two */
+				memcpy(f + pos, "\x5A\x2A\x4D\x18\x03\x00\x00\x00xyz", 11);
+				pos += 11;
+			}
+		}
+		checks++;
+		const size_t d = WZF_decompress(dec, 2 * (size_t)n, f, pos);
+		if (d != 2 * (size_t)n || memcmp(src, dec, n) || memcmp(src, dec + n, n))
+			fail("frame/stream", name, 0, WZF_isError(d) ? WZF_getErrorName(d) : "decoded data differs");
+		if (WZF_getContentSize(f, pos) != WZF_CONTENTSIZE_UNKNOWN) fail("frame/stream", name, 0, "content size should be unknown");
+		WZF_freeCCtx(c);
+		free(f); free(dec);
+	}
+}
+
 static void test_all(const unsigned char* src, int n, const char* name)
 {
 	const int before = failures;
 	test_wzip(src, n, name);
 	if (n > 0) test_wzips(src, n, name);
 	test_wlz4(src, n, name);
+	test_frames(src, n, name);
 	printf("%-28s %10d bytes  %s\n", name, n, failures == before ? "ok" : "FAILED");
 	fflush(stdout);
 }

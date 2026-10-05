@@ -12,7 +12,7 @@ override CFLAGS += -Wall -Isrc
 AR     ?= ar
 EXE    := $(if $(filter Windows_NT,$(OS)),.exe,)
 
-SRC := src/WZIP_L.c src/WZIP_M.c src/WZIP_S.c src/WZIP_wrapper.c src/Huffman_Compress.c src/Huffman_Decompress.c src/WLZ4.c
+SRC := src/WZIP_L.c src/WZIP_M.c src/WZIP_S.c src/WZIP_wrapper.c src/Huffman_Compress.c src/Huffman_Decompress.c src/WLZ4.c src/wzframe.c
 OBJ := $(SRC:src/%.c=build/%.o)
 HDR := $(wildcard src/*.h)
 

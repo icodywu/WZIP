@@ -16,7 +16,8 @@ payloads compressed with a dictionary, and of 12,753 WZIP_S blocks of 4K, 8K, 16
 with and without a dictionary, all identically to the input; that is how the specification was checked.
 
 Format version: October 2026. None of the formats carries a version field (WZIP_S reserves three header bits, which
-must be 0); store the format version alongside the data if it may change.
+must be 0). Files and other self-describing data should use the WZ frame ([`frame_format.md`](frame_format.md)),
+which records the codec and this format's version (1) and adds a checksum.
 
 ## 1. Overview
 

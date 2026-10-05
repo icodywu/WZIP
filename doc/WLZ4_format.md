@@ -9,8 +9,9 @@ encoder level of `src/WLZ4.c` (fast, lazy, hash-chain levels 0-7, optimal levels
 identically, which is how the specification was checked.
 
 Format version: the revision of October 2026 (repository commit `b974128`). A block carries no version field, and
-blocks of the earlier format (section 11) cannot be told apart from current ones: store the format version
-alongside the data if both may occur.
+blocks of the earlier format (section 11) cannot be told apart from current ones. Files and other self-describing
+data should use the WZ frame ([`frame_format.md`](frame_format.md)), which records the codec and this format's
+version (1) and adds a checksum.
 
 ## 1. Overview
 

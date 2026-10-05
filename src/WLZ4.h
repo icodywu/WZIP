@@ -34,7 +34,8 @@ extern "C" {
   (15 bits, 32K), lengths 6 and up two bytes or three (23 bits, 8M). Literal runs from 15 and lengths from 18 take
   an extension (one byte below 252, else 251+n and n bytes). A zero offset ends the block.
 
-  There is no frame format: a block holds one whole input, with no checksum and no version field.
+  A block holds one whole input, with no checksum and no version field; the WZ frame (wzframe.h,
+  doc/frame_format.md) adds them, and splits larger content into blocks.
 */
 
 /*^***************************************************************

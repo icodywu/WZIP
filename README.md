@@ -172,11 +172,13 @@ an independent decoder, together with the reference decoders' techniques and the
 with figures of every layout:
 
 - [`doc/WLZ4_format.md`](doc/WLZ4_format.md): the WLZ4 block, with a byte-by-byte worked example;
-- [`doc/WZIP_format.md`](doc/WZIP_format.md): the `wzip_compress` stream (WZIP_L, WZIP_M) and WZIP_S blocks.
+- [`doc/WZIP_format.md`](doc/WZIP_format.md): the `wzip_compress` stream (WZIP_L, WZIP_M) and WZIP_S blocks;
+- [`doc/frame_format.md`](doc/frame_format.md): the WZ frame, the container for files: magic number, codec and
+  format version, blocks of bounded size, content size and XXH32 checksum.
 
 Each comes with a small decoder written from the specification alone ([`doc/wlz4_decode.py`](doc/wlz4_decode.py),
-[`doc/wzip_decode.py`](doc/wzip_decode.py)), which checks every rule and decodes the output of every encoder level
-identically; they are slow, and meant as executable references.
+[`doc/wzip_decode.py`](doc/wzip_decode.py), [`doc/frame_decode.py`](doc/frame_decode.py)), which checks every
+rule and decodes the output of every encoder level identically; they are slow, and meant as executable references.
 
 ## Build and test
 
@@ -198,6 +200,25 @@ buffers of exactly their size, so that the sanitizers catch any stray access; it
 from such a buffer, and in trusted mode from a buffer with exactly the documented slack.
 
 ## Usage
+
+For files, or whenever the data must identify itself, use the WZ frame (`wzframe.h`): it records the codec and its
+format version, splits content of any size into blocks, and checks an XXH32 checksum. Its functions take `size_t`
+sizes and return error codes.
+
+```c
+#include "wzframe.h"
+
+WZF_params p = { WZF_CODEC_WLZ4, 10, 0, 0 };          /* codec, level, block size log (0: auto), noChecksum */
+size_t cap = WZF_compressBound(n, &p);
+size_t cSize = WZF_compress(dst, cap, src, n, &p);    /* check WZF_isError(cSize) */
+
+unsigned long long size = WZF_getContentSize(dst, cSize);
+size_t dSize = WZF_decompress(out, size, dst, cSize); /* the content size, or an error: WZF_getErrorName(dSize) */
+```
+
+`WZF_compressBegin`/`Block`/`End` and `WZF_decompressBegin`/`nextBlock`/`Block`/`End` do the same block by block,
+for content that does not fit in memory. The codecs' own one-call functions below produce bare streams, without
+identification or checksum, for applications that store sizes and codecs themselves:
 
 ```c
 #include "WZIP.h"
@@ -368,8 +389,8 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 
 | Path | Contents |
 |---|---|
-| `src/` | the codecs: `WZIP.h` (WZIP_L, WZIP_M, WZIP_S), `WLZ4.h`, and their sources |
-| `doc/` | format specifications and reference decoders (Python) |
+| `src/` | the codecs: `WZIP.h` (WZIP_L, WZIP_M, WZIP_S), `WLZ4.h`, the frame `wzframe.h`, and their sources |
+| `doc/` | format specifications (WZIP, WLZ4, the WZ frame) and reference decoders (Python) |
 | `tests/roundtrip.c` | round-trip test of every codec and level (`make test`) |
 | `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |

@@ -15,5 +15,6 @@ build() {   # source, names...
 }
 build concepts parsers indexes mwparse
 build wlz4 wlz4-block wlz4-offsets wlz4-windows wlz4-example
+build frame frame
 build wzip wzip-stream wzip-parse wzip-windows wzip-sequence wzip-literals wzip-codes wzip-offsets wzip-m wzip-s wzip-size
 ls ../*.svg
