@@ -1,7 +1,8 @@
 """Ratio vs compression speed and ratio vs decompression speed on Silesia, from bench_all output files.
-   usage: plots.py <out.pdf> <results>... [--dec <decompression-only results>...]
+   usage: plots.py <out.pdf> <results>... [--dec <decompression-only results>...] [--replace <results>...]
    A configuration measured in several passes keeps its best speeds; files after --dec (bench_all with STREAMS)
-   replace the decompression speeds of their configurations."""
+   replace the decompression speeds of their configurations; every codec in the files after --replace loses its
+   entries from the other files first (a codec whose format changed)."""
 import re, sys
 import matplotlib
 matplotlib.use('Agg')
@@ -21,10 +22,16 @@ def load(paths):
     return d
 
 out = sys.argv[1]
-files = sys.argv[2:]
-decFiles = files[files.index('--dec') + 1:] if '--dec' in files else []
-d = load(files[:files.index('--dec')] if '--dec' in files else files)
-for k, v in load(decFiles).items():
+groups, cur = {'': [], '--dec': [], '--replace': []}, ''
+for a in sys.argv[2:]:
+    if a in groups: cur = a
+    else: groups[cur].append(a)
+d = load(groups[''])
+if groups['--replace']:
+    r = load(groups['--replace'])
+    for k in [k for k in d if k[0] in {c for c, _ in r}]: del d[k]
+    d.update(r)
+for k, v in load(groups['--dec']).items():
     if k in d: d[k] = (d[k][0], d[k][1], v[2])
 
 # each family's points in level order (fast/lazy WLZ4 before its hash-chain levels)

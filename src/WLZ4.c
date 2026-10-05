@@ -266,23 +266,29 @@ ForceInlineTemplate Uint32 WLZ_Hash2(const Uint8* const stream, const Uint32 bit
 }
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
- *  Match codes (the low nibble of the token) and flagged offsets:
- *     0     : length 3, 1-byte offset (window 256)
- *     1     : length 4, 1-byte offset (window 256)
- *     2..14 : lengths 4..16, a flagged offset
- *     15    : length 17 + extension, a flagged offset
- *  A flagged offset is 2 or 3 bytes, little-endian, its low bit the flag: 0: two bytes, the offset in the other 15 bits
- *  (window 32K); 1: three bytes, the offset in the other 23 bits (window 8M). A far match thus needs no length
- *  extension below length 17, and the decoder takes the offset size from the flag (after the 4-byte read it does anyway).
- *  A block ends with code 0 and a zero offset.
+ *  Match codes (the low nibble of the token) and offsets: code c is length 3 + c, and code 15 length 18 + extension.
+ *     0     : length 3, a 1-byte offset (window 256)
+ *     1..2  : lengths 4..5, a flagged offset of 1 or 2 bytes
+ *     3..15 : lengths 6 and up, a flagged offset of 2 or 3 bytes
+ *  A flagged offset is little-endian with its low bit the flag, 0 for the short form and 1 for one more byte; the
+ *  offset is the other bits: 7 (window 128), 15 (32K) or 23 (8M). One rule gives every size: code 0 takes 1 byte,
+ *  any other code 1 + (code > 2) + flag. A far match needs no length extension below length 18, and the decoder takes
+ *  the offset size from the flag after the 4-byte read it does anyway. A block ends with code 0 and a zero offset.
  *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-#define WLZ_NEAR_WINDOW     (1u << 8)
-#define WLZ_SHORT_WINDOW    (1u << 15)              /* two-byte flagged offsets */
+#define WLZ_NEAR_WINDOW     (1u << 8)               /* length 3: one byte */
+#define WLZ_TINY_WINDOW     (1u << 7)               /* lengths 4-5: one flagged byte */
+#define WLZ_SHORT_WINDOW    (1u << 15)              /* two flagged bytes */
 #define WLZ_MID_WINDOW      (1u << 16)              /* the reach of the 64K chains */
-#define WLZ_FAR_WINDOW      (1u << 23)              /* three-byte flagged offsets */
-#define WLZ_FAR_MINLEN      5                       /* shorter matches never pay with a three-byte offset */
-#define WLZ_CODE_LONG       15                      /* length 17 + extension */
-static const Uint32 WLZ_OffMask[3] = { 0xFF, 0x7FFF, 0x7FFFFF };   /* one byte; two or three flagged bytes (flag shifted out) */
+#define WLZ_FAR_WINDOW      (1u << 23)              /* three flagged bytes, lengths 6 and up */
+#define WLZ_SHORT_MAXLEN    5                       /* lengths 4-5 take one or two flagged bytes */
+#define WLZ_FAR_MINLEN      6                       /* the shortest length with a three-byte offset */
+#define WLZ_CODE_LONG       15                      /* length 18 + extension */
+/* by match code, for the decoder: flagged offset, and offset bytes less one before the flag; table lookups keep
+   the per-sequence instruction count of the old format (two compares cost a tenth of the decoding speed) */
+static const Uint8 WLZ_CodeFlag[16] = { 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const Uint8 WLZ_CodeBase[16] = { 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+static const Uint32 WLZ_OffMask[4] = { 0xFF, 0x7F, 0x7FFF, 0x7FFFFF };   /* by (bytes + flagged - 1): one plain byte; one,
+                                                                            two or three flagged bytes (flag shifted out) */
 
 /* bytes of a length extension of value v */
 ForceInlineTemplate int WLZ_Ext_Size(const Uint32 v)
@@ -293,15 +299,19 @@ ForceInlineTemplate int WLZ_Ext_Size(const Uint32 v)
 /* bytes of the match part of a sequence (offset and length extension; not the token), or 0 if not codable */
 ForceInlineTemplate int WLZ_Match_Size(const Uint32 len, const Uint32 off)
 {
-	if (len <= 4 && off < WLZ_NEAR_WINDOW) return 1;
-	if (len < 4 || off >= WLZ_FAR_WINDOW) return 0;
-	return (off < WLZ_SHORT_WINDOW ? 2 : 3) + (len >= 17 ? WLZ_Ext_Size(len - 17) : 0);
+	if (len < MIN_MATCH_LEN || off == 0) return 0;
+	if (len == MIN_MATCH_LEN) return off < WLZ_NEAR_WINDOW ? 1 : 0;
+	if (len <= WLZ_SHORT_MAXLEN) return off < WLZ_TINY_WINDOW ? 1 : off < WLZ_SHORT_WINDOW ? 2 : 0;
+	if (off >= WLZ_FAR_WINDOW) return 0;
+	return (off < WLZ_SHORT_WINDOW ? 2 : 3) + (len >= 18 ? WLZ_Ext_Size(len - 18) : 0);
 }
 
-/* bytes of a sequence: token, literal run, match (codable: WLZ_Match_Size != 0) */
+/* bytes of a sequence: token, literal run, match; a match the format cannot code counts as too large to pay, so a
+   kernel that proposes one keeps its bytes as literals */
 ForceInlineTemplate int WLZ_Seq_Size(const Uint32 litLen, const Uint32 matchLen, const Uint32 off)
 {
-	return 1 + (int)litLen + (litLen >= RUN_MASK ? WLZ_Ext_Size(litLen - RUN_MASK) : 0) + WLZ_Match_Size(matchLen, off);
+	const int m = WLZ_Match_Size(matchLen, off);
+	return m ? 1 + (int)litLen + (litLen >= RUN_MASK ? WLZ_Ext_Size(litLen - RUN_MASK) : 0) + m : 1 << 28;
 }
 
 /* writes one sequence: the literals from anchor, then the match (which must be codable) */
@@ -318,20 +328,21 @@ ForceInlineTemplate Uint8* WLZ_Encode_Sequence(Uint8* destPtr, const Uint8* anch
 	memcpy(destPtr, anchor, 16);
 	destPtr += litLen;
 
-	if (matchLen <= 4 && off < WLZ_NEAR_WINDOW) {        /* one-byte offset */
-		*token += (Uint8)(matchLen - 3);
+	if (matchLen == MIN_MATCH_LEN) {                     /* code 0: a one-byte offset */
 		*destPtr++ = (Uint8)off;
 		return destPtr;
 	}
-	const Uint32 far = off >= WLZ_SHORT_WINDOW;
-	MemWriteLE4(destPtr, off << 1 | far);
-	destPtr += 2 + far;
-	if (matchLen >= 17) {
-		Uint32 ext = matchLen - 17;
+	/* a flagged offset: 1 + (length >= 6) bytes, or one more when the flag is set */
+	const Uint32 longer = matchLen > WLZ_SHORT_MAXLEN;
+	const Uint32 flag = off >= (longer ? WLZ_SHORT_WINDOW : WLZ_TINY_WINDOW);
+	MemWriteLE4(destPtr, off << 1 | flag);
+	destPtr += 1 + longer + flag;
+	if (matchLen >= MIN_MATCH_LEN + WLZ_CODE_LONG) {
+		Uint32 ext = matchLen - (MIN_MATCH_LEN + WLZ_CODE_LONG);
 		*token += WLZ_CODE_LONG;
 		WLZ_WRITE_ExtraLength(destPtr, ext);
 	}
-	else *token += (Uint8)(matchLen - 2);
+	else *token += (Uint8)(matchLen - MIN_MATCH_LEN);
 	return destPtr;
 }
 
@@ -494,7 +505,8 @@ ForceInlineTemplate Uint32 WLZ_Compress_Kernel(
 			matchPtr = (dictSize && match2Idx < 0) ? dictEnd + match2Idx : srcPtr - lazyMatchOffset;
 			if (MemRead4(srcPtr) == MemRead4(matchPtr)) {
 				lazyMatchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, dictLastMatch);
-				if (lazyMatchLen > matchLen && (lazyMatchLen >= MAX_HASH_LEN || lazyMatchOffset < 256)) {
+				if (lazyMatchLen > matchLen && (lazyMatchLen >= MAX_HASH_LEN || lazyMatchOffset < 256)
+				    && WLZ_Match_Size(lazyMatchLen, lazyMatchOffset)) {
 					matchLen = lazyMatchLen;
 					matchOffset = lazyMatchOffset;
 					lazyMatchFail = 0;
@@ -774,8 +786,15 @@ typedef struct wlz_match {
 	int off;                                        // LZ match offset/distance
 } WLZ_Match;
 
-/* the net gain of a match: its length less its offset bytes beyond two */
-#define WLZ_GAIN(len, off)  ((int)(len) - ((Uint32)(off) >= WLZ_SHORT_WINDOW))
+/* the net gain of a match: its length less its offset bytes beyond two (a one-byte offset gains one); a match the
+   format cannot code gains nothing. Below the shortest match (a search's starting bar) the gain is the length. */
+ForceInlineTemplate int WLZ_Gain(const int len, const Uint32 off)
+{
+	if (len < MIN_MATCH_LEN) return len;
+	const int m = WLZ_Match_Size((Uint32)len, off);
+	return m ? len - (m - 2 - (len >= MIN_MATCH_LEN + WLZ_CODE_LONG ? WLZ_Ext_Size((Uint32)len - (MIN_MATCH_LEN + WLZ_CODE_LONG)) : 0)) : -(1 << 20);
+}
+#define WLZ_GAIN(len, off)  WLZ_Gain((int)(len), (Uint32)(off))
 
 ForceInlineTemplate Uint32 WLZ_Hash8(const Uint8* const p, const Uint32 bits)
 {
@@ -1082,9 +1101,10 @@ _last_literals:
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  *  Optimal parsing (levels 8-12): the parse of least compressed size, a shortest path over byte-exact prices.
- *  At each position four candidates cover the codable matches: the longest match within 256 (lengths 3-4, a one-byte
- *  offset), within 32K (two flagged bytes), within 64K and beyond 64K within 8M (three flagged bytes); each length
- *  takes the cheapest candidate that reaches it. As in LZ4HC's optimal parser, each position keeps its cheapest path,
+ *  At each position five candidates cover the codable matches: the longest match within 128 and within 256 (lengths
+ *  3-5: one byte for length 3 within 256 and for lengths 4-5 within 128), within 32K (two flagged bytes), within 64K
+ *  and beyond 64K within 8M (three flagged bytes, lengths 6 and up); each length takes the cheapest candidate that
+ *  reaches it. As in LZ4HC's optimal parser, each position keeps its cheapest path,
  *  with the length of its pending literal run.
  *~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 #define WLZ_OPT_NUM         (1 << 12)
@@ -1173,34 +1193,37 @@ ForceInlineTemplate void WLZ_Opt_Insert(WLZhc_State_Str* const s, const Uint8* c
 	s->currIdx = idx;
 }
 
-/* the longest match at idx within 256 (lengths 3-4), within 32K and 64K (4 and up), and beyond 64K within the far
-   window (5 and up) */
+/* the longest match at idx within 128 and within 256 (lengths 3-5: one byte for length 3 within 256, for lengths 4-5
+   within 128), within 32K and 64K (4 and up), and beyond 64K within the far window (6 and up) */
 ForceInlineTemplate void WLZ_Opt_Find(WLZhc_State_Str* const s, const Uint8* const src, const int idx, const Uint8* const srcLastMatch,
 	const Uint8* const chain1, const WLZ_Far_Finder* const far, const WLZ_Opt_Params* const par,
-	WLZ_Match* const nearM, WLZ_Match* const shortM, WLZ_Match* const midM, WLZ_Match* const farM)
+	WLZ_Match* const tinyM, WLZ_Match* const nearM, WLZ_Match* const shortM, WLZ_Match* const midM, WLZ_Match* const farM)
 {
 	const Uint8* const ip = src + idx;
 	const Uint32 pattern4 = MemRead4(ip);
+	tinyM->len = 0; tinyM->off = 0;
 	nearM->len = 0; nearM->off = 0;
 	midM->len = 0; midM->off = 0;
 	shortM->len = 0; shortM->off = 0;
 	farM->len = 0; farM->off = 0;
 
-	/* 256 window, by the 3-byte chain */
+	/* 256 window, by the 3-byte chain, nearest first: the best within 128 is a snapshot on the way */
 	{   Uint32 dist = chain1[(Uint8)idx];
-		int n = par->nbShort;
+		int n = par->nbShort, tinyDone = 0;
 		while (dist && dist < WLZ_NEAR_WINDOW && n--) {
+			if (!tinyDone && dist >= WLZ_TINY_WINDOW) { *tinyM = *nearM; tinyDone = 1; }
 			const Uint8* const mp = ip - dist;
 			const reg_t diff = MemReadARCH(ip) ^ MemReadARCH(mp);
 			int len = diff ? (int)N_ZeroBytes(diff) : REG_SIZE + WLZ_Match_Count((Uint8*)ip + REG_SIZE, (Uint8*)mp + REG_SIZE, srcLastMatch, NULL);
 			if (len > nearM->len) {
 				nearM->len = len; nearM->off = (int)dist;
-				if (len >= 5) break;                       /* longer lengths take a flagged offset: the 64K search covers them */
+				if (len > WLZ_SHORT_MAXLEN) break;         /* longer lengths take two offset bytes: the 64K search covers them */
 			}
 			const Uint32 step = chain1[(Uint8)(idx - dist)];
 			if (!step) break;
 			dist += step;
 		}
+		if (!tinyDone && (Uint32)nearM->off < WLZ_TINY_WINDOW) *tinyM = *nearM;
 	}
 	/* 64K window, by the 4-byte chain */
 	{   Uint32 dist = s->chain2Table[(Uint16)idx];
@@ -1219,13 +1242,18 @@ ForceInlineTemplate void WLZ_Opt_Find(WLZhc_State_Str* const s, const Uint8* con
 			dist += s->chain2Table[(Uint16)(idx - dist)];
 		}
 	}
-	if (nearM->len >= 5 && nearM->len > midM->len) *midM = *nearM;   /* the 3-byte chain found the longer one */
-	if (nearM->len >= 5 && nearM->len > shortM->len) *shortM = *nearM;
-	if (nearM->len > 4) nearM->len = 4;
-	if (nearM->len < MIN_MATCH_LEN && midM->len && (Uint32)midM->off < WLZ_NEAR_WINDOW) {   /* a near long match: its short prefixes */
-		nearM->len = 4; nearM->off = midM->off;
+	if (nearM->len >= WLZ_FAR_MINLEN && nearM->len > midM->len) *midM = *nearM;   /* the 3-byte chain found the longer one */
+	if (nearM->len >= WLZ_FAR_MINLEN && nearM->len > shortM->len) *shortM = *nearM;
+	if (nearM->len > WLZ_SHORT_MAXLEN) nearM->len = WLZ_SHORT_MAXLEN;
+	if (tinyM->len > WLZ_SHORT_MAXLEN) tinyM->len = WLZ_SHORT_MAXLEN;
+	{   const WLZ_Match* const m = midM;                 /* a near long match: its short prefixes */
+		const int pl = m->len < WLZ_SHORT_MAXLEN ? m->len : WLZ_SHORT_MAXLEN;
+		if (pl > nearM->len && (Uint32)m->off < WLZ_NEAR_WINDOW) { nearM->len = pl; nearM->off = m->off; }
+		if (pl > tinyM->len && (Uint32)m->off < WLZ_TINY_WINDOW) { tinyM->len = pl; tinyM->off = m->off; }
 	}
 	if (nearM->len < MIN_MATCH_LEN) nearM->len = 0;
+	if (tinyM->len < MIN_MATCH_LEN) tinyM->len = 0;
+	if (midM->len <= WLZ_SHORT_MAXLEN && (Uint32)midM->off >= WLZ_SHORT_WINDOW) midM->len = 0;   /* not codable */
 
 	/* the far window beyond 64K, by the 6-byte chain: only worth it past what the 64K window reaches */
 	if (far->head && midM->len < par->sufficientLen) {
@@ -1246,11 +1274,12 @@ ForceInlineTemplate void WLZ_Opt_Find(WLZhc_State_Str* const s, const Uint8* con
 	}
 }
 
-/* the cheapest codable candidate reaching length ml (near, short, mid, far); returns its offset, or 0 if none */
-ForceInlineTemplate Uint32 WLZ_Opt_Offset(const int ml, const WLZ_Match* nearM, const WLZ_Match* shortM, const WLZ_Match* midM, const WLZ_Match* farM)
+/* the cheapest codable candidate reaching length ml (tiny, near, short, mid, far); returns its offset, or 0 if none */
+ForceInlineTemplate Uint32 WLZ_Opt_Offset(const int ml, const WLZ_Match* tinyM, const WLZ_Match* nearM, const WLZ_Match* shortM, const WLZ_Match* midM, const WLZ_Match* farM)
 {
 	Uint32 best = 0;
 	int bestSize = 1 << 30, sz;
+	if (ml <= tinyM->len && (sz = WLZ_Match_Size((Uint32)ml, (Uint32)tinyM->off)) && sz < bestSize) { bestSize = sz; best = (Uint32)tinyM->off; }
 	if (ml <= nearM->len && (sz = WLZ_Match_Size((Uint32)ml, (Uint32)nearM->off)) && sz < bestSize) { bestSize = sz; best = (Uint32)nearM->off; }
 	if (ml <= shortM->len && (sz = WLZ_Match_Size((Uint32)ml, (Uint32)shortM->off)) && sz < bestSize) { bestSize = sz; best = (Uint32)shortM->off; }
 	if (ml <= midM->len && (sz = WLZ_Match_Size((Uint32)ml, (Uint32)midM->off)) && sz < bestSize) { bestSize = sz; best = (Uint32)midM->off; }
@@ -1269,7 +1298,7 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 	Uint8 chain1[WLZ_NEAR_WINDOW] = { 0 };
 	WLZ_Opt_Node* const opt = (WLZ_Opt_Node*)malloc((WLZ_OPT_NUM + WLZ_OPT_TRAILING + 64) * sizeof(WLZ_Opt_Node));
 	WLZ_Far_Finder far = { NULL, NULL };
-	WLZ_Match nearM, shortM, midM, farM;
+	WLZ_Match tinyM, nearM, shortM, midM, farM;
 	const int sufficientLen = min(par->sufficientLen, WLZ_OPT_NUM - 1);
 	Uint32 litLen, extraLitLen;
 
@@ -1288,7 +1317,7 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 		int cur, lastPos, bestLen, bestOff, known;           /* known: positions up to here are initialized */
 
 		WLZ_Opt_Insert(wlzStr, src, (int)(ip - src), chain1, &far);
-		WLZ_Opt_Find(wlzStr, src, (int)(ip - src), srcLastMatch, chain1, &far, par, &nearM, &shortM, &midM, &farM);
+		WLZ_Opt_Find(wlzStr, src, (int)(ip - src), srcLastMatch, chain1, &far, par, &tinyM, &nearM, &shortM, &midM, &farM);
 		if (!nearM.len && !midM.len && !farM.len) { ip++; continue; }
 
 		{   const WLZ_Match* const lm = farM.len > midM.len ? &farM : &midM;
@@ -1309,7 +1338,7 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 		lastPos = max(max(nearM.len, midM.len), farM.len);
 		for (int r = MIN_MATCH_LEN; r <= lastPos + WLZ_OPT_TRAILING; r++) opt[r].price = WLZ_OPT_INF;
 		for (int ml = MIN_MATCH_LEN; ml <= lastPos; ml++) {
-			const Uint32 off = WLZ_Opt_Offset(ml, &nearM, &shortM, &midM, &farM);
+			const Uint32 off = WLZ_Opt_Offset(ml, &tinyM, &nearM, &shortM, &midM, &farM);
 			if (!off) continue;
 			opt[ml].price = WLZ_Seq_Price(llen, ml, off); opt[ml].mlen = ml; opt[ml].off = (int)off; opt[ml].litlen = llen;
 		}
@@ -1330,7 +1359,7 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 			else if (opt[cur + 1].price <= opt[cur].price) continue;
 
 			WLZ_Opt_Insert(wlzStr, src, (int)(curPtr - src), chain1, &far);
-			WLZ_Opt_Find(wlzStr, src, (int)(curPtr - src), srcLastMatch, chain1, &far, par, &nearM, &shortM, &midM, &farM);
+			WLZ_Opt_Find(wlzStr, src, (int)(curPtr - src), srcLastMatch, chain1, &far, par, &tinyM, &nearM, &shortM, &midM, &farM);
 			if (!nearM.len && !midM.len && !farM.len) continue;
 
 			{   const WLZ_Match* const lm = farM.len > midM.len ? &farM : &midM;
@@ -1355,7 +1384,7 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 				const int base = opt[cur].mlen == 1 ? (cur > ll ? opt[cur - ll].price : 0) : opt[cur].price;
 				const int maxLen = max(max(nearM.len, midM.len), farM.len);
 				for (int ml = MIN_MATCH_LEN; ml <= maxLen; ml++) {
-					const Uint32 off = WLZ_Opt_Offset(ml, &nearM, &shortM, &midM, &farM);
+					const Uint32 off = WLZ_Opt_Offset(ml, &tinyM, &nearM, &shortM, &midM, &farM);
 					if (!off) continue;
 					const int pos = cur + ml;
 					const int price = base + WLZ_Seq_Price(ll, ml, off);
@@ -1653,16 +1682,16 @@ static unsigned WLZ_Decode_Tail(const Uint8* srcPtr, const Uint8* const srcEnd, 
 		destPtr += litLen;
 
 		if (srcPtr >= srcEnd) return 0;
-		if (code < 2) {                                  /* a one-byte offset */
+		if (code == 0) {                                 /* length 3: a one-byte offset */
 			offset = *srcPtr++;
-			matchLen = MIN_MATCH_LEN + code;
+			matchLen = MIN_MATCH_LEN;
 		}
-		else {                                           /* a flagged offset: two bytes, or three */
-			const size_t nOff = 2 + (srcPtr[0] & 1);
+		else {                                           /* a flagged offset: 1 + (code > 2) bytes, or one more */
+			const size_t nOff = 1 + (code > 2) + (srcPtr[0] & 1);
 			if ((size_t)(srcEnd - srcPtr) < nOff) return 0;
-			offset = ((Uint32)srcPtr[0] | (Uint32)srcPtr[1] << 8 | (nOff == 3 ? (Uint32)srcPtr[2] << 16 : 0)) >> 1;
+			offset = ((Uint32)srcPtr[0] | (nOff >= 2 ? (Uint32)srcPtr[1] << 8 : 0) | (nOff == 3 ? (Uint32)srcPtr[2] << 16 : 0)) >> 1;
 			srcPtr += nOff;
-			matchLen = MIN_MATCH_LEN + code - 1;
+			matchLen = MIN_MATCH_LEN + code;
 			if (code == WLZ_CODE_LONG) {
 				if (!WLZ_Read_Ext_Exact(&srcPtr, srcEnd, &ext)) return 0;
 				matchLen += ext;
@@ -1681,7 +1710,7 @@ static unsigned WLZ_Decode_Tail(const Uint8* srcPtr, const Uint8* const srcEnd, 
 }
 
 #define WLZ_SRC_MARGIN    64      /* the main loop reads at most this far past a sequence's literal run */
-#define WLZ_DST_MARGIN    32      /* a short sequence (up to 14 literals, a 16-byte match) writes less than this */
+#define WLZ_DST_MARGIN    32      /* a short sequence (up to 14 literals, a 17-byte match) writes less than this */
 
 /* The decoder checks every sequence, as LZ4's safe decoder does, at little cost to the common short sequence. The main
    loop runs while WLZ_SRC_MARGIN bytes of input and WLZ_DST_MARGIN bytes of output remain: the input margin covers
@@ -1731,16 +1760,19 @@ WLZ_Decompress_Kernel(
 		srcPtr += litLen;
 		destPtr += litLen;
 
-		/* the offset: one byte for codes 0-1, else two or three by its flag (the low bit). The 4 bytes read for it
-		   also hold the next token, unless a length extension follows: taking it from there keeps a second load off
-		   the chain that each sequence waits on */
-		nb = code >= 2;
+		/* the offset: one byte for code 0, else 1 + (code > 2) bytes or, by its flag (the low bit), one more. The 4
+		   bytes read for it also hold the next token, unless a length extension follows: taking it from there keeps a
+		   second load off the chain that each sequence waits on */
+		/* adv: the offset bytes less one, (code > 2) + flag. It is on the chain to the next token, so it stays one add:
+		   a three-term sum here compiles to a slow three-operand lea and costs a tenth of the decoding speed */
+		nb = WLZ_CodeFlag[code];                         /* flagged */
+		adv = WLZ_CodeBase[code];
 		word = MemReadLE4(srcPtr);
-		adv = 1 + nb + (word & nb);
-		offset = (word >> nb) & WLZ_OffMask[adv - 1];
-		token = (word >> (8 * adv)) & 0xFF;
-		srcPtr += adv + 1;
-		matchLen = MIN_MATCH_LEN + code - nb;
+		adv += word & nb;
+		offset = (word >> nb) & WLZ_OffMask[adv + nb];
+		token = (word >> (8 * adv + 8)) & 0xFF;
+		srcPtr += adv + 2;
+		matchLen = MIN_MATCH_LEN + code;
 		if (unlikely(code == WLZ_CODE_LONG)) {           /* the extension, then the next token */
 			srcPtr--;
 			WLZ_READ_ExtraLength(srcPtr, litLen);
@@ -1761,10 +1793,11 @@ WLZ_Decompress_Kernel(
 		else if (unlikely((uintptr_t)destPtr - (uintptr_t)dest < offset)) return 0;     /* corrupt: before the output */
 		match = destPtr - offset;
 
-		if (likely(code != WLZ_CODE_LONG)) {             /* at most 16 bytes */
-			if (likely(offset >= 8)) {                   /* two copies, each from bytes already written */
+		if (likely(code != WLZ_CODE_LONG)) {             /* at most 17 bytes */
+			if (likely(offset >= 8)) {                   /* 8-byte copies, each from bytes already written */
 				memcpy(destPtr, match, 8);
 				memcpy(destPtr + 8, match + 8, 8);
+				if (unlikely(matchLen > 16)) memcpy(destPtr + 16, match + 16, 8);   /* length 17 */
 				destPtr += matchLen;
 				continue;
 			}
@@ -1845,16 +1878,18 @@ WLZ_Decompress_Kernel_Trusted(
 		srcPtr += litLen;
 		destPtr += litLen;
 
-		/* the offset: one byte for codes 0-1, else two or three by its flag (the low bit). The 4 bytes read for it
-		   also hold the next token, unless a length extension follows: taking it from there keeps a second load off
-		   the chain that each sequence waits on */
-		nb = code >= 2;
+		/* the offset: one byte for code 0, else 1 + (code > 2) bytes or, by its flag (the low bit), one more. The 4
+		   bytes read for it also hold the next token, unless a length extension follows: taking it from there keeps a
+		   second load off the chain that each sequence waits on */
+		/* adv: the offset bytes less one, kept to one add on the chain to the next token (see the checked decoder) */
+		nb = WLZ_CodeFlag[code];                         /* flagged */
+		adv = WLZ_CodeBase[code];
 		word = MemReadLE4(srcPtr);
-		adv = 1 + nb + (word & nb);
-		offset = (word >> nb) & WLZ_OffMask[adv - 1];
-		token = (word >> (8 * adv)) & 0xFF;
-		srcPtr += adv + 1;
-		matchLen = MIN_MATCH_LEN + code - nb;
+		adv += word & nb;
+		offset = (word >> nb) & WLZ_OffMask[adv + nb];
+		token = (word >> (8 * adv + 8)) & 0xFF;
+		srcPtr += adv + 2;
+		matchLen = MIN_MATCH_LEN + code;
 
 		if (dictSize && (ptrdiff_t)(destPtr - (const Uint8*)dest) < (ptrdiff_t)offset) {   /* in the dictionary, whole */
 			match = dictEnd + ((ptrdiff_t)(destPtr - (const Uint8*)dest) - (ptrdiff_t)offset);
@@ -1870,10 +1905,11 @@ WLZ_Decompress_Kernel_Trusted(
 		}
 		match = destPtr - offset;
 
-		if (likely(code != WLZ_CODE_LONG)) {             /* at most 16 bytes */
-			if (likely(offset >= 8)) {                   /* two copies, each from bytes already written */
+		if (likely(code != WLZ_CODE_LONG)) {             /* at most 17 bytes */
+			if (likely(offset >= 8)) {                   /* 8-byte copies, each from bytes already written */
 				memcpy(destPtr, match, 8);
 				memcpy(destPtr + 8, match + 8, 8);
+				if (unlikely(matchLen > 16)) memcpy(destPtr + 16, match + 16, 8);   /* length 17 */
 				destPtr += matchLen;
 				continue;
 			}

@@ -1,8 +1,11 @@
 """LaTeX tables of the paper from bench_all output.
    usage: gen_tables.py <outdir> S=<file>[,<file>...] C=<file>[,<file>...] [E8=... E9=...] [SD=... CD=... E8D=... E9D=...]
+                        [SX=... CX=... E8X=... E9X=...]
    A configuration measured more than once (several passes) keeps its best speeds; ratio and memory are the same.
    SD, CD, E8D, E9D: decompression-only runs (bench_all with STREAMS); their decompression speeds replace those of
-   the same configurations, whose other columns stay (the ratio is checked to match)."""
+   the same configurations, whose other columns stay (the ratio is checked to match).
+   SX, CX, E8X, E9X: replacement runs: every codec they contain loses all its entries from the other files first
+   (used when a codec's format changed, so that earlier measurements of that codec are left out)."""
 import re, sys, os
 
 def load(paths):
@@ -29,11 +32,21 @@ def override_dec(d, paths, tag):
             print('%s: %s %d ratio %.4f differs from %.4f' % (tag, k[0], k[1], v[0], d[k][0]))
         d[k] = (d[k][0], d[k][1], v[2], d[k][3])
 
+def replace_codecs(d, paths):
+    """drops every entry of the codecs in the replacement runs, then adds those runs"""
+    r = load(paths)
+    codecs = {k[0] for k in r}
+    for k in [k for k in d if k[0] in codecs]:
+        del d[k]
+    d.update(r)
+
 outdir = sys.argv[1]
 args = dict(a.split('=', 1) for a in sys.argv[2:])
 S, C = load(args['S']), load(args['C'])
 E8 = load(args['E8']) if 'E8' in args else {}
 E9 = load(args['E9']) if 'E9' in args else {}
+for tag, d in (('SX', S), ('CX', C), ('E8X', E8), ('E9X', E9)):
+    if tag in args: replace_codecs(d, args[tag])
 for tag, d in (('SD', S), ('CD', C), ('E8D', E8), ('E9D', E9)):
     if tag in args: override_dec(d, args[tag], tag)
 
