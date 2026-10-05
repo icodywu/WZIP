@@ -65,6 +65,12 @@
 
 #define   OffCasheSize          4                                   /* cashe size for the latest matching offsets */
 #define   WINDOW(w)            ( (1<<w) -OffCasheSize +1 )
+/* the format's two count limits: a literal run takes at most 24 raw bits (symbol 70), and a run's count is an offset
+   value of the widest window. Longer runs are split; a longer literal run (16 MiB without a match) makes the
+   compressor fail, so that the caller stores the input */
+#define   MaxRunCount          ((Uint32)WINDOW(OffWidth[8]) - 1)
+static int LitRunTooLong;
+#define   LIT_RUN_70(litRun)   (LitRunTooLong |= (litRun) >> 24 != 0, N_HufLitRun - 1)
 
 /* chain insertion runs L_InsertAhead positions ahead of the search, prefetching each inserted position's first
    candidate; hash slots are prefetched L_HashAhead positions ahead of insertion. A position's chain link is fixed
@@ -244,21 +250,26 @@ ForceInlineTemplate Uint32 Offset_Cashe(Uint32* lastOffset, Uint32 matchOffset)
 
 /* A run of `count` copies of the preceding byte (a distance-1 match not bound by the match-length cap): the run symbol,
    with count + OffCasheSize - 1 coded as an offset of the widest window. Runs leave the offset cache alone; a run
-   straight after another (no literals between them) extends it. Returns the next free sequence. */
+   straight after another (no literals between them) extends it, up to MaxRunCount (count <= MaxRunCount: the callers
+   cap it). Returns the next free sequence. */
 ForceInlineTemplate WLZ_Set* Store_Run(WLZ_Set* seq, const WLZ_Set* const seqStart, WLZ_Huffman_Set* const hs, Uint32 litRun, Uint32 count)
 {
 	const int group = OffGroupOf[RunSym];
+	Uint32 prev = 0;
 	if (litRun == 0 && seq > seqStart && (seq - 1)->mchLen == RunSym) {
+		const Uint32 idx = (seq - 1)->mchOff & BitMask[OFF_SymBits], nb = ExtHufMchOff[idx].lsBits;
+		prev = (((Uint32)ExtHufMchOff[idx].msValue << nb) | ((seq - 1)->mchOff >> OFF_SymBits)) - (OffCasheSize - 1);
+	}
+	if (prev && count <= MaxRunCount - prev) {
 		seq--;
-		const Uint32 idx = seq->mchOff & BitMask[OFF_SymBits], nb = ExtHufMchOff[idx].lsBits;
-		count += (((Uint32)ExtHufMchOff[idx].msValue << nb) | (seq->mchOff >> OFF_SymBits)) - (OffCasheSize - 1);
-		hs->mchOffHuf[group][idx].freq--;
+		count += prev;
+		hs->mchOffHuf[group][seq->mchOff & BitMask[OFF_SymBits]].freq--;
 	}
 	else if (litRun < LitRunDirect)                      /* a new run: its literal run as the other sequences code it */
 		seq->litRun = litRun;
 	else {
 		const int msb = High_Bit32(litRun);
-		const int lr = msb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
+		const int lr = msb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
 		seq->litRun = lr ^ (litRun & BitMask[ExtHufLitRun[lr].lsBits]) << 8;
 	}
 	const Uint32 v = count + OffCasheSize - 1;
@@ -764,14 +775,16 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 		}
 		else {
 			litRunMsb = High_Bit32(litRun);
-			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
 			huffmanSet.litRunHuf[litRunHufIdx].freq++;
 		}
 
 		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~   Fast Encode Match Pair  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-		if (matchOffset == 1)                    /* a run is not bound by the match-length cap */
+		if (matchOffset == 1) {                  /* a run is not bound by the match-length cap */
 			while (srcPtr + matchLen < srcLastMatch && srcPtr[matchLen] == srcPtr[matchLen - 1]) matchLen++;
+			if (matchLen > MaxRunCount) matchLen = MaxRunCount;
+		}
 		srcIdx += matchLen;
 		srcPtr += matchLen;
 
@@ -859,7 +872,7 @@ _last_literals:
 	}
 	else {
 		litRunMsb = High_Bit32(litRun);
-		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
 		huffmanSet.litRunHuf[litRunHufIdx].freq++;
 	}
@@ -906,7 +919,7 @@ ForceInlineTemplate void L0_Store_Sequence(WLZ_Set* const seq, WLZ_Huffman_Set* 
 	}
 	else {
 		const int litRunMsb = High_Bit32(litRun);
-		const int litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		const int litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 		seq->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits]) << 8;
 	}
 	int mchLenHufIdx;
@@ -1058,8 +1071,10 @@ static Uint32 WLZ2_Compress_Fast1(
 				mLen++;
 			}
 		}
-		if (mOff == 1)                           /* a run is not bound by the match-length cap */
+		if (mOff == 1) {                         /* a run is not bound by the match-length cap */
 			while (mStart + mLen < srcLastMatch && mStart[mLen] == mStart[mLen - 1]) mLen++;
+			if (mLen > MaxRunCount) mLen = MaxRunCount;
+		}
 		else if (mLen > MaxMatchLen) mLen = MaxMatchLen;
 		L0_EMIT_LITERALS(anchor, mStart);
 		L0_STORE_SEQUENCE((Uint32)(mStart - anchor), mLen, mOff);
@@ -1125,7 +1140,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	}
 	else {
 		litRunMsb = High_Bit32(litRun);
-		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
 		huffmanSet.litRunHuf[litRunHufIdx].freq++;
 	}
@@ -1537,7 +1552,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 			huffmanSet.litRunHuf[litRun].freq++;
 		} else {
 			litRunMsb = High_Bit32(litRun);
-			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+			litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
 			huffmanSet.litRunHuf[litRunHufIdx].freq++;
 		}
@@ -1546,6 +1561,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 		if (matchStr.off == 1) {                 /* a run is not bound by the match-length cap */
 			const Uint32 len0 = matchStr.len;
 			while (srcPtr + matchStr.len < srcLastMatch && srcPtr[matchStr.len] == srcPtr[matchStr.len - 1]) matchStr.len++;
+			if (matchStr.len > MaxRunCount) matchStr.len = MaxRunCount;
 			if (matchStr.len != len0) nextMatchDone = 0;    /* the looked-ahead match started inside the run */
 		}
 		srcIdx += matchStr.len;
@@ -1650,7 +1666,7 @@ _last_literals:
 	}
 	else {
 		litRunMsb = High_Bit32(litRun);
-		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
+		litRunHufIdx = litRunMsb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[litRunMsb].hufIdx + ((litRun ^ 1 << litRunMsb) >> LitRunHufMap[litRunMsb].lsBits);
 		wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[ExtHufLitRun[litRunHufIdx].lsBits])<<8;
 		huffmanSet.litRunHuf[litRunHufIdx].freq++;
 	}
@@ -1736,7 +1752,7 @@ ForceInlineTemplate int LitRun_Symbol(Uint32 litRun, int* extraBits)
 {
 	if (litRun < LitRunDirect) { *extraBits = 0; return (int)litRun; }
 	const int msb = High_Bit32(litRun);
-	const int sym = msb >= MaxLitRunMsb ? N_HufLitRun - 1 : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
+	const int sym = msb >= MaxLitRunMsb ? LIT_RUN_70(litRun) : LitRunHufMap[msb].hufIdx + ((litRun ^ 1 << msb) >> LitRunHufMap[msb].lsBits);
 	*extraBits = ExtHufLitRun[sym].lsBits;
 	return sym;
 }
@@ -2424,6 +2440,7 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 	Uint8* const stream = header + WIN_HeaderSize;
 	const int cap = wzipCapSize - WIN_HeaderSize;
 	Uint32 size;
+	LitRunTooLong = 0;
 	if (0 == wzipStr->compressLevel && 0 == wzipStr->dictSize)      /* the fast mode; with a dictionary, level 1's loop */
 		size = WLZ2_Compress_Fast1(wzipStr, (Uint8*)source, srcSize, stream, cap);
 	else if (wzipStr->compressLevel <= 1)
@@ -2433,6 +2450,7 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 		                         OPT_LevelPasses[wzipStr->compressLevel - 7], OPT_LevelStates[wzipStr->compressLevel - 7]);
 	else
 		size = WLZ2_Compress(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt);
+	if (LitRunTooLong) size = 0;                         /* a literal run the format cannot code: the caller stores */
 	return size ? (int)size + WIN_HeaderSize : 0;
 }
 
