@@ -37,18 +37,17 @@ void WZIP_State_Load_Dict(WZIP_State_Str* dictStr, WZIP_State_Str* dstStr) {
 	}
 }
 
+/* frees a state of WZIP_New_State_L or WZIP_New_State_M, and its tables */
 void WZIP_Free_State(WZIP_State_Str* wzipStr)
 {
+	if (NULL == wzipStr) return;
 	free(wzipStr->hash0Table);
 	free(wzipStr->hash1Table);
-	if(wzipStr->hash2Table != NULL)
-		free(wzipStr->hash2Table);
-
-	if (wzipStr->chain1Table != NULL)
-		free(wzipStr->chain1Table);
-
-	if (wzipStr->chain2Table != NULL)
-		free(wzipStr->chain2Table);
+	free(wzipStr->hash2Table);
+	free(wzipStr->chain1Table);
+	free(wzipStr->chain2Table);
+	free(wzipStr->sched);
+	free(wzipStr);
 }
 
 //It returns a safe compression buffer size without overflowing, even if the input data is uncompressible.

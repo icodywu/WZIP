@@ -257,12 +257,13 @@ unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD); 
 On Silesia the trusted mode decodes 9-15% faster for WLZ4 and up to 8% faster for WZIP. Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
+Every function is thread-safe when each thread uses its own contexts (`make test` runs several threads at once);
+a prepared WZIP_S dictionary may be shared.
+
 ## Limitations
 
-- WZIP_L and WZIP_M keep their window schedule in global state: use them from one thread at a time. WZIP_S and WLZ4
-  keep their state in contexts.
-- WZIP's optimal levels (7-13) need about 950 MB of encoder memory on a 50 MB input and about 2 GB on enwik9. Inputs
-  are limited to 2 GB, and windows to 128 MB.
+- WZIP's optimal levels (7-13) need about 950 MB of encoder memory on a 50 MB input and about 2 GB on enwik9. A
+  codec stream holds at most 2 GB, and windows reach 128 MB; the WZ frame stores larger content as several blocks.
 - A WZIP_L literal run holds at most 2^24 - 1 bytes: an input with about 16 MB in which no match is found (and data
   after it worth compressing) is stored rather than compressed.
 

@@ -7,8 +7,7 @@
  * Sizes are size_t, so content beyond a codec's 2 GB limit is stored as several blocks. Functions that return a
  * size_t return either a size or an error code: test it with WZF_isError(), name it with WZF_getErrorName(). The
  * frame decoders validate their input (they use the codecs' bounds-checked decoders) and verify the checksum.
- * WLZ4 frames may be used from several threads, each with its own contexts; WZIP frames from one thread at a time
- * (WZIP_L keeps its window schedule in global state).
+ * The functions are thread-safe when each thread uses its own contexts.
  */
 #ifndef WZFRAME_H_2026
 #define WZFRAME_H_2026

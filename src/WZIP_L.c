@@ -69,7 +69,6 @@
    value of the widest window. Longer runs are split; a longer literal run (16 MiB without a match) makes the
    compressor fail, so that the caller stores the input */
 #define   MaxRunCount          ((Uint32)WINDOW(OffWidth[8]) - 1)
-static int LitRunTooLong;
 #define   LIT_RUN_70(litRun)   (LitRunTooLong |= (litRun) >> 24 != 0, N_HufLitRun - 1)
 
 /* chain insertion runs L_InsertAhead positions ahead of the search, prefetching each inserted position's first
@@ -104,17 +103,30 @@ static int LitRunTooLong;
                                 srcPtr[(need) - 1] != matchPtr[(need) - 1])
 
 
-static int	OffWidth[9];
-static int	N_HufMchOff[MaxMchOffGroup];
-static int	MchOffGroup;
-static int	OffGroupsFine;                         /* 1: the eight-group layout (lengths 3, 4, 5, 6, 7, 8-9, 10-15, 16+) */
-static Uint8 OffGroupOf[N_HufMchLen];                  /* length symbol -> offset group */
+/* The window schedule and offset groups of one input, and the encoder's literal-run flag. Each compression state and
+   each decoding call holds its own (so that WZIP_L runs in several threads at once); the functions reach it through a
+   pointer S_, under the names below. */
+typedef struct {
+	int   offWidth[9];
+	int   nHufMchOff[MaxMchOffGroup];
+	int   mchOffGroup;
+	int   offGroupsFine;                               /* 1: the eight-group layout (lengths 3, 4, 5, 6, 7, 8-9, 10-15, 16+) */
+	Uint8 offGroupOf[N_HufMchLen];                     /* length symbol -> offset group */
+	int   litRunTooLong;                               /* set by the encoder: a literal run the format cannot code */
+} WZL_Sched;
+#define   OffWidth             (S_->offWidth)
+#define   N_HufMchOff          (S_->nHufMchOff)
+#define   MchOffGroup          (S_->mchOffGroup)
+#define   OffGroupsFine        (S_->offGroupsFine)
+#define   OffGroupOf           (S_->offGroupOf)
+#define   LitRunTooLong        (S_->litRunTooLong)
+#define   SCHED(wzipStr)       WZL_Sched* const S_ = (WZL_Sched*)(wzipStr)->sched
 
 /* Offset groups, contiguous ranges of length symbols: by default one per length below the widest window (natural) and
    one for the rest; the fine layout splits the long lengths further. Each group's offset alphabet covers the widest
    window among its lengths. The decoder computes the group as min(m, cap) + (m >= 7) + (m >= 13), the last two for
    the fine layout only. */
-static void Set_Offset_Groups(int natural, int fine)
+static void Set_Offset_Groups(WZL_Sched* const S_, int natural, int fine)
 {
 	static const int fineStart[8] = { 0, 1, 2, 3, 4, 5, 7, 13 };
 	int start[MaxMchOffGroup], k = 0;
@@ -252,7 +264,7 @@ ForceInlineTemplate Uint32 Offset_Cashe(Uint32* lastOffset, Uint32 matchOffset)
    with count + OffCasheSize - 1 coded as an offset of the widest window. Runs leave the offset cache alone; a run
    straight after another (no literals between them) extends it, up to MaxRunCount (count <= MaxRunCount: the callers
    cap it). Returns the next free sequence. */
-ForceInlineTemplate WLZ_Set* Store_Run(WLZ_Set* seq, const WLZ_Set* const seqStart, WLZ_Huffman_Set* const hs, Uint32 litRun, Uint32 count)
+ForceInlineTemplate WLZ_Set* Store_Run(WZL_Sched* const S_, WLZ_Set* seq, const WLZ_Set* const seqStart, WLZ_Huffman_Set* const hs, Uint32 litRun, Uint32 count)
 {
 	const int group = OffGroupOf[RunSym];
 	Uint32 prev = 0;
@@ -280,7 +292,7 @@ ForceInlineTemplate WLZ_Set* Store_Run(WLZ_Set* seq, const WLZ_Set* const seqSta
 	return seq + 1;
 }
 
-ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
 {
 	Uint32 litRunHufIdx, mchLenHufIdx, offHufIdx, offGroup;
 	register Bit_Stream bitStream = { 0, 0, zipBuffer };
@@ -353,10 +365,10 @@ ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WLZ_Set* wlzSeq, WLZ_Set* c
 }
 
 
-static Uint32 Huffman_Compress_Seq_Kernel(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+static Uint32 Huffman_Compress_Seq_Kernel(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
 {
-	return slotJoint ? Huffman_Compress_Seq_Body(wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 1)
-	                 : Huffman_Compress_Seq_Body(wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 0);
+	return slotJoint ? Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 1)
+	                 : Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 0);
 }
 
 /* coded size of a table's symbols in bits, with about 4 bits of table header per used symbol */
@@ -371,7 +383,7 @@ static Uint64 Table_Bits(const Huffman_Str* h, const Uint32 n, const Uint32 cap)
 }
 
 /* Second Pass:  Apply Huffman encoding on top of WLZ compression */
-ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd,
+ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd,
 	Uint8* wzipBuffer, Uint32 wzipBufSize,
 	WLZ_Huffman_Set* huffmanSet)
 {
@@ -467,7 +479,7 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WLZ_Set* wlzSeq, WLZ_Set* const 
 	totHufSeqLen += (int)(wzipBufPtr - wzipBuffer);
 	assert(totHufSeqLen <= wzipBufSize);          /* the callers make room for a whole block (SEQ_ENSURE_ROOM) */
 
-	wzipBufPtr += Huffman_Compress_Seq_Kernel(wlzSeq, wlzSeqEnd, wzipBufPtr, &hufCodeSet, slotJoint);
+	wzipBufPtr += Huffman_Compress_Seq_Kernel(S_, wlzSeq, wlzSeqEnd, wzipBufPtr, &hufCodeSet, slotJoint);
 
 	return (Uint32)(wzipBufPtr - wzipBuffer);
 }
@@ -527,6 +539,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	Uint8* wzipStream,
 	int wzipCapSize)
 {
+	SCHED(wzipStr);
 	Uint32 i;
 	const Uint8* srcPtr = (const Uint8*)source;
 	const Uint8* anchor = (const Uint8*)source;
@@ -788,7 +801,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 		srcIdx += matchLen;
 		srcPtr += matchLen;
 
-		if (matchOffset == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchLen);
+		if (matchOffset == 1) wlzSeqPtr = Store_Run(S_, wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchLen);
 		else {
 		matchOffset = Offset_Cashe((Uint32*)lastOffset, matchOffset);
 #ifdef WZIP_DEBUG
@@ -826,7 +839,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 
 		if (wlzSeqPtr == wlzSeqEnd) {
 			SEQ_ENSURE_ROOM();
-			wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+			wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
 			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
 			wlzSeqPtr = wlzSeq;
 		}
@@ -880,7 +893,7 @@ _last_literals:
 	wlzSeqPtr++;
 
 	SEQ_ENSURE_ROOM();
-	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
 	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
 		goto _lit_overflow;
 	}
@@ -912,7 +925,7 @@ static void Literal_Histogram(const Uint8* buf, Uint32 n, Huffman_Str* litHuf)
 }
 
 /* A sequence of level 0: literal-run, match-length and offset symbols with their raw low bits, and their counts */
-ForceInlineTemplate void L0_Store_Sequence(WLZ_Set* const seq, WLZ_Huffman_Set* const hs, const Uint32 litRun, const Uint32 matchLen, const Uint32 matchOffset)
+ForceInlineTemplate void L0_Store_Sequence(WZL_Sched* const S_, WLZ_Set* const seq, WLZ_Huffman_Set* const hs, const Uint32 litRun, const Uint32 matchLen, const Uint32 matchOffset)
 {
 	if (litRun < LitRunDirect) {
 		seq->litRun = litRun;
@@ -956,6 +969,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	Uint8* wzipStream,
 	int wzipCapSize)
 {
+	SCHED(wzipStr);
 	Uint32 i;
 	const Uint8* srcPtr = (const Uint8*)source;
 	const Uint8* anchor = (const Uint8*)source;
@@ -1020,10 +1034,10 @@ static Uint32 WLZ2_Compress_Fast1(
 		}                                                                                                \
 	}
 #define L0_STORE_SEQUENCE(litLen, mLen_, offset)   {                                                          \
-		if ((offset) == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, (litLen), (mLen_));      \
-		else L0_Store_Sequence(wlzSeqPtr++, &huffmanSet, (litLen), (mLen_), Offset_Cashe((Uint32*)lastOffset, (offset))); \
+		if ((offset) == 1) wlzSeqPtr = Store_Run(S_, wlzSeqPtr, wlzSeq, &huffmanSet, (litLen), (mLen_));      \
+		else L0_Store_Sequence(S_, wlzSeqPtr++, &huffmanSet, (litLen), (mLen_), Offset_Cashe((Uint32*)lastOffset, (offset))); \
 		if (wlzSeqPtr == wlzSeqEnd) {                                                                    \
-			SEQ_ENSURE_ROOM(); wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet); \
+			SEQ_ENSURE_ROOM(); wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet); \
 			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));                                             \
 			wlzSeqPtr = wlzSeq;                                                                          \
 		}                                                                                                \
@@ -1148,7 +1162,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	wlzSeqPtr++;
 
 	SEQ_ENSURE_ROOM();
-	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
 	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
 		goto _lit_overflow;
 	}
@@ -1176,6 +1190,7 @@ _lit_overflow:                 /* the output buffer is full: the caller stores t
 ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
 	                                            const Uint8* srcLastMatch, const Uint32* lastOffset, WLZ_Match* matchStr, int chainSearchCnt)
 {
+	SCHED(wzipStr);
 	Uint32* chain1Table = (Uint32 *)wzipStr->chain1Table;
 	int* hash1Table = (int *)wzipStr->hash1Table;
 	const Uint32 chain1Mask = wzipStr->chain1Mask;
@@ -1222,6 +1237,7 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
 	                       const Uint8* srcLastMatch, const Uint8* dictLastMatch, const Uint32* lastOffset, WLZ_Match* matchStr, int chainSearchCnt)
 {
+	SCHED(wzipStr);
 	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
 	const Uint32 chain2Mask = wzipStr->chain2Mask;
 	int* hash2Table = (int*)wzipStr->hash2Table;
@@ -1272,6 +1288,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr, const Uint8* const source, Uint32 currIdx,
 	int maxBack, const Uint32* lastOffset, const Uint8* srcLastMatch, const Uint8* dictLastMatch, WLZ_Match* matchStr, int chainSearchCnt)
 {
+	SCHED(wzipStr);
 	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
 	int* hash2Table = (int*)wzipStr->hash2Table;
 	const Uint32 chain2Mask = wzipStr->chain2Mask;
@@ -1387,6 +1404,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 	int wzipCapSize,
 	int maxSearchCnt)
 {
+	SCHED(wzipStr);
 	int* hash0Table = (int*)wzipStr->hash0Table;
 	const Uint8* srcPtr = (const Uint8*)source;
 	const Uint8* anchor = (const Uint8*)source;
@@ -1567,7 +1585,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 		srcIdx += matchStr.len;
 		srcPtr += matchStr.len;
 
-		if (matchStr.off == 1) wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchStr.len) - 1;
+		if (matchStr.off == 1) wlzSeqPtr = Store_Run(S_, wlzSeqPtr, wlzSeq, &huffmanSet, litRun, matchStr.len) - 1;
 		else {
 		matchStr.off = Offset_Cashe(lastOffset, matchStr.off);
 #ifdef WZIP_DEBUG
@@ -1608,7 +1626,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 
 		if (++wlzSeqPtr==wlzSeqEnd) {
 			SEQ_ENSURE_ROOM();
-			wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd-wlzStrPtr, &huffmanSet);
+			wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd-wlzStrPtr, &huffmanSet);
 			memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));		
 			wlzSeqPtr = wlzSeq;
 		}
@@ -1674,7 +1692,7 @@ _last_literals:
 	wlzSeqPtr++;
 
 	SEQ_ENSURE_ROOM();
-	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
+	wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, wlzStrEnd - wlzStrPtr, &huffmanSet);
 	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
 		goto _lit_overflow;
 	}
@@ -1748,7 +1766,7 @@ typedef struct {
 	int litPrice[N_HufLits], litRunPrice[N_HufLitRun], mchLenPrice[N_HufJoint], mchOffPrice[MaxMchOffGroup][N_HufMchOffMax];
 } Opt_Stats;
 
-ForceInlineTemplate int LitRun_Symbol(Uint32 litRun, int* extraBits)
+ForceInlineTemplate int LitRun_Symbol(WZL_Sched* const S_, Uint32 litRun, int* extraBits)
 {
 	if (litRun < LitRunDirect) { *extraBits = 0; return (int)litRun; }
 	const int msb = High_Bit32(litRun);
@@ -1781,7 +1799,7 @@ static void Opt_Set_Prices(const Uint32* freq, int n, int* price)
 	for (int i = 0; i < n; i++) price[i] = (int)(OPT_Unit * log2((double)total / (freq[i] + 1)));
 }
 
-static void Opt_Update_Prices(Opt_Stats* st)
+static void Opt_Update_Prices(WZL_Sched* const S_, Opt_Stats* st)
 {
 	Opt_Set_Prices(st->litFreq, N_HufLits, st->litPrice);
 	Opt_Set_Prices(st->litRunFreq, N_HufLitRun, st->litRunPrice);
@@ -1791,7 +1809,7 @@ static void Opt_Update_Prices(Opt_Stats* st)
 }
 
 /* halves the counts so that the prices follow the data */
-static void Opt_Age_Stats(Opt_Stats* st)
+static void Opt_Age_Stats(WZL_Sched* const S_, Opt_Stats* st)
 {
 	for (int i = 0; i < N_HufLits; i++) st->litFreq[i] >>= 1;
 	for (int i = 0; i < N_HufLitRun; i++) st->litRunFreq[i] >>= 1;
@@ -1800,7 +1818,7 @@ static void Opt_Age_Stats(Opt_Stats* st)
 		for (int i = 0; i < N_HufMchOffMax; i++) st->mchOffFreq[g][i] >>= 1;
 }
 
-static void Opt_Init_Stats(Opt_Stats* st, const Uint8* source, Uint32 srcSize)
+static void Opt_Init_Stats(WZL_Sched* const S_, Opt_Stats* st, const Uint8* source, Uint32 srcSize)
 {
 	memset(st, 0, sizeof(*st));
 	Uint32 hist[256] = { 0 };
@@ -1817,20 +1835,20 @@ static void Opt_Init_Stats(Opt_Stats* st, const Uint8* source, Uint32 srcSize)
 		for (int i = 0; i < N_HufMchOff[g]; i++) st->mchOffFreq[g][i] = 4;
 		st->mchOffFreq[g][0] = st->mchOffFreq[g][1] = st->mchOffFreq[g][2] = st->mchOffFreq[g][3] = 0;   /* slots: in the joint symbol */
 	}
-	Opt_Update_Prices(st);
+	Opt_Update_Prices(S_, st);
 }
 
 /* the literal-run code: none for runs of 0 and 1 (their class is in the joint symbol) */
-ForceInlineTemplate int LitRun_Price(const Opt_Stats* st, Uint32 litRun)
+ForceInlineTemplate int LitRun_Price(WZL_Sched* const S_, const Opt_Stats* st, Uint32 litRun)
 {
 	int extra;
 	if (litRun < 2) return 0;
-	const int sym = LitRun_Symbol(litRun, &extra);
+	const int sym = LitRun_Symbol(S_, litRun, &extra);
 	return st->litRunPrice[sym] + extra * OPT_Unit;
 }
 
 /* price of a match of length len with raw offset off from a path whose offset cache is rep; OPT_Inf if not codable */
-ForceInlineTemplate int Match_Price(const Opt_Stats* st, Uint32 len, Uint32 off, const Uint32* rep, Uint32 litLen)
+ForceInlineTemplate int Match_Price(WZL_Sched* const S_, const Opt_Stats* st, Uint32 len, Uint32 off, const Uint32* rep, Uint32 litLen)
 {
 	if (off == 1) {       /* a run: the run symbol, and its count as an offset of the widest window */
 		const Uint32 v = len + OffCasheSize - 1;
@@ -1885,7 +1903,7 @@ typedef struct {
 	Uint32 nextA, nextB, nextC;                        /* next input position to insert */
 } Opt_Finder;
 
-static int Opt_Finder_Init(Opt_Finder* f, const Uint8* dict, int dictSize)
+static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize)
 {
 	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
 	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
@@ -1964,7 +1982,7 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 
 /* Collects match candidates at currIdx: for each length, the nearest offset found for it (lengths and offsets both
    increase along the list), limited to offsets that the window of the length admits. */
-ForceInlineTemplate int Opt_Candidates(Opt_Finder* const f, const Uint8* const source, Uint32 currIdx, const int dictSize,
+ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f, const Uint8* const source, Uint32 currIdx, const int dictSize,
 	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, int searchCnt,
 	Opt_Cand* const cand, Opt_Cand* const tmp)
 {
@@ -2091,6 +2109,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	const Opt_Stats* const regionIn,       /* symbol counts per region from a previous pass, which price each region */
 	Opt_Stats* const regionOut)            /* receives the symbol counts per region of this pass (zeroed by the caller) */
 {
+	SCHED(wzipStr);
 	const Uint8* const srcEnd = source + srcSize;
 	const Uint8* const srcLastMatch = srcEnd - REG_SIZE * 2;
 	const Uint32 lastMatchIdx = srcSize > REG_SIZE * 2 ? srcSize - REG_SIZE * 2 : 0;
@@ -2115,7 +2134,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	Opt_Cand* const cand = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Cand* const tmp = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Finder finder;
-	const int finderOk = Opt_Finder_Init(&finder, dictSize ? dictEnd - dictSize : NULL, dictSize);
+	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize);
 	Opt_Stats* const st = (Opt_Stats*)malloc(sizeof(Opt_Stats));
 	Opt_LenTab* const lenTab = (Opt_LenTab*)malloc(sizeof(Opt_LenTab));
 	Opt_Path* const path = (Opt_Path*)malloc(((OPT_Num + MaxMatchLen) / MinMatchLen + 2) * sizeof(Opt_Path));
@@ -2130,7 +2149,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
 	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
-	Opt_Init_Stats(st, source, srcSize);
+	Opt_Init_Stats(S_, st, source, srcSize);
 	Opt_Init_LenTab(lenTab);
 	Uint32 nextUpdate = regionIn ? 0 : OPT_UpdateBytes, seqCount = 0;
 
@@ -2143,12 +2162,12 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 				memcpy(st->litRunFreq, r->litRunFreq, sizeof(st->litRunFreq));
 				memcpy(st->mchLenFreq, r->mchLenFreq, sizeof(st->mchLenFreq));
 				memcpy(st->mchOffFreq, r->mchOffFreq, sizeof(st->mchOffFreq));
-				Opt_Update_Prices(st);
+				Opt_Update_Prices(S_, st);
 				nextUpdate = ((pos >> OPT_RegionLog) + 1) << OPT_RegionLog;
 			}
 			else {
-				if (seqCount > (1u << 16)) { Opt_Age_Stats(st); seqCount >>= 1; }
-				Opt_Update_Prices(st);
+				if (seqCount > (1u << 16)) { Opt_Age_Stats(S_, st); seqCount >>= 1; }
+				Opt_Update_Prices(S_, st);
 				nextUpdate = pos + OPT_UpdateBytes;
 			}
 		}
@@ -2161,12 +2180,12 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 			opt[0].price = opt[1].price = opt[2].price = OPT_Inf;
 			Opt_Node* const n0 = opt + c0;
 			n0->litLen = litLen0;
-			n0->price = LitRun_Price(st, litLen0);
+			n0->price = LitRun_Price(S_, st, litLen0);
 			n0->mLen = 0;
 			n0->prevC = c0;
 			memcpy(n0->rep, lastOffset, sizeof(lastOffset));
 		}
-		const int newRunPrice = LitRun_Price(st, 0);
+		const int newRunPrice = LitRun_Price(S_, st, 0);
 
 		for (int cur = 0; ; cur++) {
 			if (cur > 0) {                                           /* literal steps into cur */
@@ -2179,7 +2198,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 					const Opt_Node* const prev = opt + (cur - 1) * OPT_C + pc;
 					if (prev->price >= OPT_Inf) continue;
 					const int litLen = prev->litLen + 1, c = OPT_CLS(litLen);
-					const int price = prev->price + litPrice + LitRun_Price(st, litLen) - LitRun_Price(st, litLen - 1);
+					const int price = prev->price + litPrice + LitRun_Price(S_, st, litLen) - LitRun_Price(S_, st, litLen - 1);
 					Opt_Node* const node = opt + cur * OPT_C + c;
 					if (price < node->price) {
 						node->price = price;
@@ -2195,7 +2214,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 			if ((cur > 0 && cur >= lastPos) || cur >= OPT_Num || idx >= lastMatchIdx) { endCur = cur; break; }
 
 			/* searched matches, shared by the states */
-			const int nCand = Opt_Candidates(&finder, source, idx, dictSize, dictEnd, srcLastMatch, dictLastMatch, maxSearchCnt, cand, tmp);
+			const int nCand = Opt_Candidates(S_, &finder, source, idx, dictSize, dictEnd, srcLastMatch, dictLastMatch, maxSearchCnt, cand, tmp);
 			Uint32 longest = nCand ? cand[nCand - 1].len : 0, longestOff = nCand ? cand[nCand - 1].off : 0;
 			int bestC = 0;
 			for (int c = 1; c < nStates; c++)
@@ -2217,7 +2236,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 					if (len >= (Uint32)sufficientLen) continue;
 					if (off == 1)                                /* a run (never cached; kept for exactness) */
 						for (Uint32 l = MinMatchLen; l <= len; l++)
-							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(st, l, off, node->rep, node->litLen));
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(S_, st, l, off, node->rep, node->litLen));
 					else {                                       /* slot k: its joint symbol only, no window */
 						const int* const lp = st->mchLenPrice + JointIdx(k, lc, 0);
 						for (Uint32 l = MinMatchLen; l <= len; l++)
@@ -2226,7 +2245,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 				}
 				if (longest >= (Uint32)sufficientLen) continue;
 				if (idx >= 1 && source[idx] == source[idx - 1] && source[idx + 1] == source[idx - 1])    /* a run of two */
-					Opt_Relax(opt, &lastPos, cur, c, 2, 1, base + Match_Price(st, 2, 1, node->rep, node->litLen));
+					Opt_Relax(opt, &lastPos, cur, c, 2, 1, base + Match_Price(S_, st, 2, 1, node->rep, node->litLen));
 				Uint32 l = MinMatchLen;
 				for (int ci = 0; ci < nCand; ci++) {
 					const Uint32 off = cand[ci].off, clen = cand[ci].len;
@@ -2234,7 +2253,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 					const int k = off == node->rep[0] ? 0 : off == node->rep[1] ? 1 : off == node->rep[2] ? 2 : off == node->rep[3] ? 3 : OffCasheSize;
 					if (off == 1) {                              /* a run */
 						for (; l <= clen; l++)
-							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(st, l, off, node->rep, node->litLen));
+							Opt_Relax(opt, &lastPos, cur, c, l, off, base + Match_Price(S_, st, l, off, node->rep, node->litLen));
 					}
 					else if (k < OffCasheSize) {                 /* in the cache: its slot code only */
 						const int* const lp = st->mchLenPrice + JointIdx(k, lc, 0);
@@ -2308,7 +2327,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 				}
 			}
 			const Uint32 litRun = start - anchor;
-			litRunHufIdx = LitRun_Symbol(litRun, &extra);
+			litRunHufIdx = LitRun_Symbol(S_, litRun, &extra);
 			wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[extra]) << 8;
 			if (litRunHufIdx >= 2) { st->litRunFreq[litRunHufIdx]++; if (ro) ro->litRunFreq[litRunHufIdx]++; }
 
@@ -2318,7 +2337,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 				st->mchLenFreq[jc]++;
 				st->mchOffFreq[group][os]++;
 				if (ro) { ro->mchLenFreq[jc]++; ro->mchOffFreq[group][os]++; }
-				wlzSeqPtr = Store_Run(wlzSeqPtr, wlzSeq, &huffmanSet, litRun, len) - 1;
+				wlzSeqPtr = Store_Run(S_, wlzSeqPtr, wlzSeq, &huffmanSet, litRun, len) - 1;
 			}
 			else {
 			const Uint32 v = Offset_Cashe(lastOffset, rawOff);
@@ -2341,7 +2360,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 			anchor = start + len;
 			if (++wlzSeqPtr == wlzSeqEnd) {
 				SEQ_ENSURE_ROOM();
-				wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
+				wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
 				memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
 				wlzSeqPtr = wlzSeq;
 			}
@@ -2376,13 +2395,13 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	if (srcSize >> 16) MemWriteLE4(wzipStream, nLzLits);
 	else               MemWriteLE2(wzipStream, (Uint16)nLzLits);
 
-	litRunHufIdx = LitRun_Symbol(litRun, &extra);
+	litRunHufIdx = LitRun_Symbol(S_, litRun, &extra);
 	wlzSeqPtr->litRun = litRunHufIdx ^ (litRun & BitMask[extra]) << 8;
 	huffmanSet.litRunHuf[litRunHufIdx].freq++;
 	wlzSeqPtr->mchLen = 255;    /* protocal for ending */
 	wlzSeqPtr++;
 	SEQ_ENSURE_ROOM();
-	wlzStrPtr += Huffman_Compress_WLZ(wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
+	wlzStrPtr += Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStrPtr, (Uint32)(wlzStrEnd - wlzStrPtr), &huffmanSet);
 	if ((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream) > wzipCapSize) {
 		goto _lit_overflow;
 	}
@@ -2433,6 +2452,7 @@ static const int WideWinGap[3] = { 7, 3, 1 };
 
 int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSize, void* const wzipStream, int wzipCapSize)
 {
+	SCHED(wzipStr);
 	Uint8* const header = (Uint8*)wzipStream;
 	header[0] = (Uint8)((OffWidth[8] - OffWidth[3]) | (OffWidth[8] - OffWidth[4]) << 4);
 	header[1] = (Uint8)((OffWidth[8] - OffWidth[5]) | (OffWidth[8] - OffWidth[6]) << 4);
@@ -2456,10 +2476,13 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 
 WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int dictSize)
 {
-	static WZIP_State_Str wzipStr;
-	wzipStr.compressLevel = level;
-	wzipStr.dictSize = dictSize;
-	wzipStr.dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
+	WZIP_State_Str* const wzipStr = (WZIP_State_Str*)calloc(1, sizeof(WZIP_State_Str));
+	WZL_Sched* const S_ = (WZL_Sched*)calloc(1, sizeof(WZL_Sched));
+	if (NULL == wzipStr || NULL == S_) { free(wzipStr); free(S_); return NULL; }
+	wzipStr->sched = S_;
+	wzipStr->compressLevel = level;
+	wzipStr->dictSize = dictSize;
+	wzipStr->dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
 	WZIP_Set_OffWidth(srcSize, OffWidth);
 	/* wider short windows for optimal parsing, measured from the widest window of the short lengths (2^26 at most; on
@@ -2476,71 +2499,76 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	int n = 8;
 	while (n > 0 && OffWidth[n] == OffWidth[n - 1]) 
 		n--;
-	wzipStr.hash2Len = n;
+	wzipStr->hash2Len = n;
 	
 
-	if (wzipStr.hash2Len>=7) {
-		wzipStr.hash1Len = 5;
+	if (wzipStr->hash2Len>=7) {
+		wzipStr->hash1Len = 5;
 	} else {
-		wzipStr.hash1Len = 4;
+		wzipStr->hash1Len = 4;
 	}
 
 	OffGroupsFine = level == 13;
-	Set_Offset_Groups(wzipStr.hash2Len - MinMatchLen + 1, OffGroupsFine);
+	Set_Offset_Groups(S_, wzipStr->hash2Len - MinMatchLen + 1, OffGroupsFine);
 	
 
-	wzipStr.hash0Mask = BitMask[OffWidth[3] + 4];
-	wzipStr.hash1Mask = BitMask[level > 1 ? OffWidth[wzipStr.hash2Len-1] : min(OffWidth[wzipStr.hash2Len-1], L0_HashLog)];
-	wzipStr.hash2Mask = BitMask[level > 1 ? OffWidth[8] : min(OffWidth[8], L0_HashLog)];
+	wzipStr->hash0Mask = BitMask[OffWidth[3] + 4];
+	wzipStr->hash1Mask = BitMask[level > 1 ? OffWidth[wzipStr->hash2Len-1] : min(OffWidth[wzipStr->hash2Len-1], L0_HashLog)];
+	wzipStr->hash2Mask = BitMask[level > 1 ? OffWidth[8] : min(OffWidth[8], L0_HashLog)];
 	if (level <= 1 && level >= 0) {		
-		wzipStr.chain1Mask = 0;
-		wzipStr.chain2Mask = 0;
+		wzipStr->chain1Mask = 0;
+		wzipStr->chain2Mask = 0;
 	}
 	else if (level > 1 && level <= 13) {
 		/* chain search depth: levels 2-3 greedy, 4-6 lazy, 7-13 optimal parsing (lazy searches deeper than 64 lose to the
 		   optimal parser at equal speed) */
 		static const int lazyDepth[7] = { 0, 0, 4, 16, 8, 16, 64 };
-		wzipStr.maxSearchCnt = level >= 7 ? OPT_LevelDepth[level - 7] : lazyDepth[level];
-		wzipStr.chain1Mask = level > 3 ? BitMask[OffWidth[wzipStr.hash2Len - 1]] : 0;
-		wzipStr.chain2Mask = BitMask[OffWidth[8]];
+		wzipStr->maxSearchCnt = level >= 7 ? OPT_LevelDepth[level - 7] : lazyDepth[level];
+		wzipStr->chain1Mask = level > 3 ? BitMask[OffWidth[wzipStr->hash2Len - 1]] : 0;
+		wzipStr->chain2Mask = BitMask[OffWidth[8]];
 	}
 	else {
 		fprintf(stderr, "compression level must be in [0, 13]\n");
 		return NULL;
 	}
-	wzipStr.hash0Table = malloc((1 + wzipStr.hash0Mask) * sizeof(int));
-	wzipStr.hash1Table = malloc((1 + wzipStr.hash1Mask) * sizeof(int));
-	wzipStr.hash2Table = malloc((1 + wzipStr.hash2Mask) * sizeof(int));
+	wzipStr->hash0Table = malloc((1 + wzipStr->hash0Mask) * sizeof(int));
+	wzipStr->hash1Table = malloc((1 + wzipStr->hash1Mask) * sizeof(int));
+	wzipStr->hash2Table = malloc((1 + wzipStr->hash2Mask) * sizeof(int));
 
-	if (0 == wzipStr.chain1Mask) wzipStr.chain1Table = NULL;
-	else wzipStr.chain1Table = malloc((1 + wzipStr.chain1Mask) * sizeof(Uint32));
+	if (0 == wzipStr->chain1Mask) wzipStr->chain1Table = NULL;
+	else wzipStr->chain1Table = malloc((1 + wzipStr->chain1Mask) * sizeof(Uint32));
 		
-	if (0 == wzipStr.chain2Mask) wzipStr.chain2Table = NULL;
-	else wzipStr.chain2Table = malloc((1 + wzipStr.chain2Mask) * sizeof(Uint32));
+	if (0 == wzipStr->chain2Mask) wzipStr->chain2Table = NULL;
+	else wzipStr->chain2Table = malloc((1 + wzipStr->chain2Mask) * sizeof(Uint32));
 	
+	if (NULL == wzipStr->hash0Table || NULL == wzipStr->hash1Table || NULL == wzipStr->hash2Table
+	    || (wzipStr->chain1Mask && NULL == wzipStr->chain1Table) || (wzipStr->chain2Mask && NULL == wzipStr->chain2Table)) {
+		WZIP_Free_State(wzipStr);
+		return NULL;
+	}
 	if (dictSize == 0 || dict == NULL)
-		return &wzipStr;
+		return wzipStr;
 
 	// pre-build dictionary 
-	int* hash0Table = (int*)wzipStr.hash0Table;
-	int* hash1Table = (int*)wzipStr.hash1Table;
-	int* hash2Table = (int*)wzipStr.hash2Table;
-	Uint32* chain1Table = (Uint32*)wzipStr.chain1Table;
-	Uint32* chain2Table = (Uint32*)wzipStr.chain2Table;
-	const Uint32 chain1Mask = wzipStr.chain1Mask;
-	const Uint32 chain2Mask = wzipStr.chain2Mask;
-	const int hash1Len = wzipStr.hash1Len;
-	const int hash2Len = wzipStr.hash2Len;
+	int* hash0Table = (int*)wzipStr->hash0Table;
+	int* hash1Table = (int*)wzipStr->hash1Table;
+	int* hash2Table = (int*)wzipStr->hash2Table;
+	Uint32* chain1Table = (Uint32*)wzipStr->chain1Table;
+	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
+	const Uint32 chain1Mask = wzipStr->chain1Mask;
+	const Uint32 chain2Mask = wzipStr->chain2Mask;
+	const int hash1Len = wzipStr->hash1Len;
+	const int hash2Len = wzipStr->hash2Len;
 
 	int hashV, dist, matchIdx;
 	const Uint8* dictPtr = (Uint8*)dict;
 	/* positions up to -16 only: 8-byte compares and match extension then stay inside the dictionary */
 	for (int i = -dictSize; i <= -16; i++, dictPtr++) {
-		hashV = WLZ_Hash0(dictPtr) & wzipStr.hash0Mask;
+		hashV = WLZ_Hash0(dictPtr) & wzipStr->hash0Mask;
 		matchIdx = hash0Table[hashV];
 		hash0Table[hashV] = i;
 
-		hashV = WLZ_Hash1(dictPtr) & wzipStr.hash1Mask;
+		hashV = WLZ_Hash1(dictPtr) & wzipStr->hash1Mask;
 		matchIdx = hash1Table[hashV];
 		hash1Table[hashV] = i;
 		if (chain1Mask) {
@@ -2548,7 +2576,7 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
 		}
 
-		hashV = WLZ_Hash2(dictPtr) & wzipStr.hash2Mask;
+		hashV = WLZ_Hash2(dictPtr) & wzipStr->hash2Mask;
 		matchIdx = hash2Table[hashV];
 		hash2Table[hashV] = i;
 		if (chain2Mask) {
@@ -2556,7 +2584,7 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 			chain2Table[(Uint32)i & chain2Mask] = (dist > 0 && dist < chain2Mask) ? dist : chain2Mask;
 		}
 	}
-	return &wzipStr;
+	return wzipStr;
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -2597,7 +2625,7 @@ static void Copy_Dict_Match(Uint8* destPtr, const Uint8* dest, const Uint32 prod
    match length are checked against the output, and the offset against the bytes decoded and the dictionary, for
    every sequence. The input needs no check here, as the caller guarantees that the block's longest possible read
    stays inside it, nor does the literal buffer, which spans the output: each literal read becomes an output byte. */
-ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
+ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
 	Huffman_DemapX1* const mchOff_HufDemapX1,
 	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
 {
@@ -2820,10 +2848,10 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(Uint8** wzipSeqStart, Uint8
 }
 
 #define SEQ_BODY_CALL(body, fine)   (hufWtSet->slotJoint                                                                                                    \
-    ? body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 1)                                  \
-    : body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 0))
+    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 1)                                  \
+    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 0))
 
-#define SEQ_DEC_PARAMS  Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize,  \
+#define SEQ_DEC_PARAMS  WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize,  \
     WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize], Huffman_DemapX1* const offTables
 
 #define DECOMPRESS_SEQUENCE_GEN(fun)                                                                                                                  \
@@ -2867,6 +2895,8 @@ int WZIP_Decompress_L(
 	void* const dest, int const destSize,
 	void* const dict, int const dictSize)
 {
+	WZL_Sched sched_;
+	WZL_Sched* const S_ = &sched_;
 	int i;
 	Uint32 nLzLits;
 	Uint8* srcPtr = (Uint8*)source;
@@ -2890,7 +2920,7 @@ int WZIP_Decompress_L(
 	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
 		i--;
 
-	Set_Offset_Groups(i - MinMatchLen + 1, OffGroupsFine);
+	Set_Offset_Groups(S_, i - MinMatchLen + 1, OffGroupsFine);
 
 	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
 		nLzLits = MemReadLE4(srcPtr);
@@ -2956,10 +2986,10 @@ int WZIP_Decompress_L(
 
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Bmi2(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
+			decSize = Decompress_WLZ_Sequence_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
+		decSize = Decompress_WLZ_Sequence(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
 		if (decSize < 0 || bitStream.streamPtr > srcEnd) { decSize = -1; break; }    /* corrupt: read past the input */
 	}
 
@@ -2975,7 +3005,7 @@ int WZIP_Decompress_L(
    the input must stay readable WZIP_TRUSTED_SRC_PAD bytes past its end. A damaged stream can make it read or write
    out of bounds. */
 
-ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
+ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
 	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
 {
 	register Uint32 i, n, lsValue, mchLenHufIdx;
@@ -3190,9 +3220,9 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(Uint8** wzipSeqStar
 
 
 #define SEQ_TRUSTED_CALL(body, fine)   (hufWtSet->slotJoint                                                                                            \
-    ? body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 1)                                     \
-    : body(wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 0))
-#define SEQ_TRUSTED_PARAMS  Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, \
+    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 1)                                     \
+    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 0))
+#define SEQ_TRUSTED_PARAMS  WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, \
     const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize]
 
 static int Decompress_WLZ_Sequence_Trusted(SEQ_TRUSTED_PARAMS)
@@ -3212,6 +3242,8 @@ int WZIP_Decompress_L_Trusted(
 	void* const dest, int const destSize,
 	void* const dict, int const dictSize)
 {
+	WZL_Sched sched_;
+	WZL_Sched* const S_ = &sched_;
 	int i;
 	Uint32 nLzLits, zipLitSize;
 	Uint8* srcPtr = (Uint8*)source;
@@ -3232,7 +3264,7 @@ int WZIP_Decompress_L_Trusted(
 	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
 		i--;
 
-	Set_Offset_Groups(i - MinMatchLen + 1, OffGroupsFine);
+	Set_Offset_Groups(S_, i - MinMatchLen + 1, OffGroupsFine);
 
 	if ( destSize >> 16 ) {                            /* Read the length of LZ literal sequence */
 		nLzLits = MemReadLE4(srcPtr);
@@ -3276,10 +3308,10 @@ int WZIP_Decompress_L_Trusted(
 		
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence_Trusted(&(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		decSize = Decompress_WLZ_Sequence_Trusted(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
 		bitStream.container = MemReadBE8(bitStream.streamPtr);
 		bitStream.nUsedBits = 0;
 	}

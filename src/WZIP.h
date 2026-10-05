@@ -35,6 +35,7 @@ typedef struct  {
 	void *chain1Table, *chain2Table, *chain3Table;
 	int dictSize;
 	unsigned char* dictEnd;
+	void* sched;                  /* WZIP_L: the input's window schedule (private) */
 } WZIP_State_Str;
 
 void WZIP_Set_OffWidth(int srcSize, int* offWidth);
@@ -70,8 +71,7 @@ int wzip_compress(const void* const source, int srcSize, void* const wzipStream,
 
 /* Decompresses a stream of wzip_compress into decmp, whose capacity *decCapSize must hold the decoded size (which
    WZIP_Read_DecSize reports); nothing is written past it. Returns the decoded size, or 0 if the buffer is too small
-   or the stream is corrupt or truncated: the input is validated, and no read leaves source[0, srcSize). Not
-   thread-safe (WZIP_L and WZIP_M keep their window schedule in global state). */
+   or the stream is corrupt or truncated: the input is validated, and no read leaves source[0, srcSize). */
 int wzip_decompress(const void* const source, int srcSize, void* decmp, int *decCapSize);
 
 /* Trusted mode, opt-in: the same decoding without any check, for input known to come unmodified from wzip_compress

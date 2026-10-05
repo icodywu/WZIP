@@ -416,7 +416,7 @@ static Uint32 S_Encode_Lits(const Uint8* lits, Uint32 n, const HufCode_Str* litC
 
 static Uint32 S_Encode(WZIPS_CCtx* cctx, const Uint8* source, Uint32 nSeq, S_Window win, Uint8* dest)
 {
-	static S_Freq freqZero;
+	static const S_Freq freqZero;
 	S_Freq freq = freqZero;
 	S_Code code;
 	Uint32 i, n, sym, nExtra, extra;

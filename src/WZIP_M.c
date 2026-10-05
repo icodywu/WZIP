@@ -1402,56 +1402,61 @@ int WZIP_Compress_M(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 
 WZIP_State_Str* WZIP_New_State_M(int level, const void* dict, int dictSize)
 {
-	static WZIP_State_Str wzipStr;
-	wzipStr.compressLevel = level;
-	wzipStr.dictSize = dictSize;
-	wzipStr.dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
-	wzipStr.hash0Mask = BitMask[14];
-	wzipStr.hash1Mask = BitMask[15];
-	wzipStr.hash2Mask = 0;
-	wzipStr.chain2Mask = 0;
+	WZIP_State_Str* const wzipStr = (WZIP_State_Str*)calloc(1, sizeof(WZIP_State_Str));
+	if (NULL == wzipStr) return NULL;
+	wzipStr->compressLevel = level;
+	wzipStr->dictSize = dictSize;
+	wzipStr->dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
+	wzipStr->hash0Mask = BitMask[14];
+	wzipStr->hash1Mask = BitMask[15];
+	wzipStr->hash2Mask = 0;
+	wzipStr->chain2Mask = 0;
 	if (0 == level) {		
-		wzipStr.chain1Mask = 0;		
+		wzipStr->chain1Mask = 0;		
 	}
 	else if (level <= 12) {
 		static const int optDepth[3] = { OPT_Depth10, OPT_Depth11, OPT_Depth12 };
 		if (level >= 10)
-			wzipStr.maxSearchCnt = optDepth[level - 10];         /* optimal parsing */
+			wzipStr->maxSearchCnt = optDepth[level - 10];         /* optimal parsing */
 		else if(level<=4)
-			wzipStr.maxSearchCnt = 1<<(2*level);
-		else wzipStr.maxSearchCnt = 1 << (4+level);
-		wzipStr.chain1Mask = BitMask[OffWidth4];
+			wzipStr->maxSearchCnt = 1<<(2*level);
+		else wzipStr->maxSearchCnt = 1 << (4+level);
+		wzipStr->chain1Mask = BitMask[OffWidth4];
 	}
 	else {
 		fprintf(stderr, "compression level must be in [0, 12]\n");
 		return NULL;
 	}
 
-	wzipStr.hash0Table = malloc((1 + wzipStr.hash0Mask) * sizeof(Sint16));
-	wzipStr.hash1Table = malloc((1 + wzipStr.hash1Mask) * sizeof(Sint16));
-	wzipStr.hash2Table = NULL;
+	wzipStr->hash0Table = malloc((1 + wzipStr->hash0Mask) * sizeof(Sint16));
+	wzipStr->hash1Table = malloc((1 + wzipStr->hash1Mask) * sizeof(Sint16));
+	wzipStr->hash2Table = NULL;
 
-	if (0 == wzipStr.chain1Mask) wzipStr.chain1Table = NULL;
-	else wzipStr.chain1Table = malloc((1 + wzipStr.chain1Mask) * sizeof(Uint16));
+	if (0 == wzipStr->chain1Mask) wzipStr->chain1Table = NULL;
+	else wzipStr->chain1Table = malloc((1 + wzipStr->chain1Mask) * sizeof(Uint16));
 	
+	if (NULL == wzipStr->hash0Table || NULL == wzipStr->hash1Table || (wzipStr->chain1Mask && NULL == wzipStr->chain1Table)) {
+		WZIP_Free_State(wzipStr);
+		return NULL;
+	}
 	if (dictSize == 0 || dict == NULL)
-		return &wzipStr;
+		return wzipStr;
 
 	// pre-build dictionary 
-	Sint16* hash0Table = (Sint16*)wzipStr.hash0Table;
-	Sint16* hash1Table = (Sint16*)wzipStr.hash1Table;
-	Uint16* chain1Table = (Uint16*)wzipStr.chain1Table;
-	const Uint32 chain1Mask = wzipStr.chain1Mask;
+	Sint16* hash0Table = (Sint16*)wzipStr->hash0Table;
+	Sint16* hash1Table = (Sint16*)wzipStr->hash1Table;
+	Uint16* chain1Table = (Uint16*)wzipStr->chain1Table;
+	const Uint32 chain1Mask = wzipStr->chain1Mask;
 
 	int hashV, dist, matchIdx;
 	const Uint8* dictPtr = (Uint8 *)dict;
 	/* positions up to -16 only: 8-byte compares and match extension then stay inside the dictionary */
 	for (int i = -dictSize; i <= -16; i++, dictPtr++) {
-		hashV = WLZ_Hash0(dictPtr) & wzipStr.hash0Mask;
+		hashV = WLZ_Hash0(dictPtr) & wzipStr->hash0Mask;
 		matchIdx = hash0Table[hashV];
 		hash0Table[hashV] = i;
 
-		hashV = WLZ_Hash1(dictPtr) & wzipStr.hash1Mask;
+		hashV = WLZ_Hash1(dictPtr) & wzipStr->hash1Mask;
 		matchIdx = hash1Table[hashV];
 		hash1Table[hashV] = i;
 		if (chain1Mask) {
@@ -1459,7 +1464,7 @@ WZIP_State_Str* WZIP_New_State_M(int level, const void* dict, int dictSize)
 			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
 		}
 	}
-	return &wzipStr;
+	return wzipStr;
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
