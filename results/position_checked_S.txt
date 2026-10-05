@@ -1,0 +1,16 @@
+wlz4f     1  ratio 2.3728  comp     0.00 MB/s  dec   2253.8 MB/s  encmem     0.0 MB  fails 0
+wlz4l     0  ratio 2.4315  comp     0.00 MB/s  dec   2426.2 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    2  ratio 2.7578  comp     0.00 MB/s  dec   2376.0 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    4  ratio 2.8053  comp     0.00 MB/s  dec   2448.2 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    6  ratio 2.8297  comp     0.00 MB/s  dec   2432.9 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    8  ratio 2.9838  comp     0.00 MB/s  dec   2145.9 MB/s  encmem     0.0 MB  fails 0
+wlz4hc   10  ratio 3.1013  comp     0.00 MB/s  dec   2126.5 MB/s  encmem     0.0 MB  fails 0
+wlz4hc   12  ratio 3.1855  comp     0.00 MB/s  dec   2151.3 MB/s  encmem     0.0 MB  fails 0
+wlz4f     1  ratio 2.3728  comp     0.00 MB/s  dec   2246.4 MB/s  encmem     0.0 MB  fails 0
+wlz4l     0  ratio 2.4315  comp     0.00 MB/s  dec   2424.2 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    2  ratio 2.7578  comp     0.00 MB/s  dec   2384.1 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    4  ratio 2.8053  comp     0.00 MB/s  dec   2427.4 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    6  ratio 2.8297  comp     0.00 MB/s  dec   2390.0 MB/s  encmem     0.0 MB  fails 0
+wlz4hc    8  ratio 2.9838  comp     0.00 MB/s  dec   2146.4 MB/s  encmem     0.0 MB  fails 0
+wlz4hc   10  ratio 3.1013  comp     0.00 MB/s  dec   2114.1 MB/s  encmem     0.0 MB  fails 0
+wlz4hc   12  ratio 3.1855  comp     0.00 MB/s  dec   2121.4 MB/s  encmem     0.0 MB  fails 0

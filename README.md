@@ -7,7 +7,9 @@ before offsets, so the decoder knows each match's window and no extra field is s
 - **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only).
 - **WLZ4** is a byte-aligned, LZ4-class codec with one offset rule: a one-byte offset for length 3, and for longer
   matches a flagged offset of 1 + (length >= 6) bytes, or one more when the flag is set: one or two bytes (128 B or
-  32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6.
+  32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6. It sits between LZ4 and Zstandard, nearer
+  LZ4: on Silesia it reaches Zstandard 3's ratio and decodes twice as fast, at 71-83% of LZ4's speed, but compresses
+  more slowly than Zstandard ([where WLZ4 sits](#where-wlz4-sits-between-lz4-and-zstandard)).
 
 <img src="doc/figures/wlz4-windows.svg" alt="How far back a WLZ4 match can reach, by length and offset bytes" width="560">
 
@@ -48,6 +50,61 @@ are 9-13% (WLZ4) and at most 8% (WZIP) slower on Silesia.
 | xz -9e | 4.722 | 1.34 | 136 |
 | **WZIP 11** | 4.745 | 0.92 | 492 |
 | **WZIP 13** | 4.759 | 0.42 | 484 |
+
+### Where WLZ4 sits between LZ4 and Zstandard
+
+<img src="doc/figures/wlz4-position.svg" alt="Silesia: compression ratio against decompression speed and against compression speed for LZ4, WLZ4 and Zstandard levels -7 to 9" width="760">
+
+*Silesia, LZ4, WLZ4 and Zstandard measured in one session (`bench/run_position.sh`). Labels are levels, with f
+and l for WLZ4's fast and lazy modes; Zstandard's negative levels are its `--fast` modes. Hollow squares: WLZ4's
+default, bounds-checked decoder. Arrows join configurations of equal ratio, labeled with the speed ratio.*
+
+In ratio and decompression speed WLZ4 lies between LZ4 and Zstandard, nearer LZ4; in compression speed it does not.
+
+- **Decompression.** WLZ4 decodes at 2.3-2.7 GB/s in trusted mode, 71-83% of LZ4HC 12's 3.3 GB/s, and at
+  2.1-2.4 GB/s with its default, bounds-checked decoder (LZ4 and Zstandard are measured with their checked
+  decoders); Zstandard's levels -7 to 9 decode at 1.1-1.9 GB/s. At equal ratio WLZ4 decodes 1.7-2.1 times as fast
+  as Zstandard (checked decoder: 1.5-2.0): the lazy mode against Zstandard -1 (ratio 2.43), level 12 against
+  Zstandard 3 (3.19).
+- **Ratio.** WLZ4's levels span 2.37-3.19, from 13% above LZ4's default mode to Zstandard 3's ratio, 16% above
+  LZ4HC 12's. Zstandard's higher levels go further (3.57 at level 9, 4.05 at 22), as does WZIP.
+- **Compression speed.** At a given ratio WLZ4 compresses more slowly than Zstandard. Its fast and lazy modes run at
+  230-260 MB/s, against 630 MB/s for LZ4 and 440 MB/s for Zstandard -1, which matches the lazy mode's ratio;
+  Zstandard 3 reaches level 12's ratio 200 times as fast. Against LZ4HC, WLZ4 compares well: level 2 exceeds
+  LZ4HC 12's ratio at 4.3 times its compression speed.
+
+WLZ4 therefore suits data compressed once and decompressed many times (read-mostly storage, software packages,
+game and web assets), where decoding near LZ4's speed matters more than encoding speed. For data compressed on the
+fly, LZ4 and Zstandard's fast levels are the better choice. Configurations measured earlier (the tables above and
+`results/`) have the same ratios here; their speeds, from a separate session, differ by up to 4% in decompression
+and 7% in compression.
+
+<details><summary>All points of the figure</summary>
+
+| Codec, level | Ratio | Compress | Decompress (checked) |
+|---|---:|---:|---:|
+| LZ4 1 | 2.101 | 632 | 3285 |
+| LZ4HC 4 | 2.656 | 72.4 | 3095 |
+| LZ4HC 9 | 2.721 | 31.8 | 3226 |
+| LZ4HC 12 | 2.743 | 10.7 | 3301 |
+| **WLZ4 fast** | 2.373 | 257 | 2539 (2254) |
+| **WLZ4 lazy** | 2.432 | 228 | 2700 (2426) |
+| **WLZ4 2** | 2.758 | 45.7 | 2658 (2384) |
+| **WLZ4 4** | 2.805 | 36.1 | 2705 (2448) |
+| **WLZ4 6** | 2.830 | 26.3 | 2728 (2433) |
+| **WLZ4 8** | 2.984 | 7.8 | 2396 (2146) |
+| **WLZ4 10** | 3.101 | 3.9 | 2378 (2126) |
+| **WLZ4 12** | 3.186 | 1.1 | 2330 (2151) |
+| Zstandard -7 | 1.937 | 600 | 1858 |
+| Zstandard -5 | 2.056 | 555 | 1784 |
+| Zstandard -3 | 2.239 | 498 | 1666 |
+| Zstandard -1 | 2.437 | 440 | 1570 |
+| Zstandard 1 | 2.887 | 400 | 1240 |
+| Zstandard 3 | 3.186 | 230 | 1103 |
+| Zstandard 6 | 3.444 | 88.6 | 1153 |
+| Zstandard 9 | 3.570 | 49.5 | 1177 |
+
+</details>
 
 ### Independent 4 KB and 8 KB blocks
 

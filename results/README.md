@@ -30,6 +30,7 @@ python gen_tables.py OUT S=../results/final_S.txt,../results/final2_S.txt,../res
 | `blocks_S.txt`, `blocks_C.txt` | `bench/bench_blocks` on Silesia and on Canterbury+Calgary cut into 4 KB and 8 KB blocks (README); `wzips-L2` is WZIP_S with length-2 matches within 16 bytes |
 | `ablation_wzip.txt` | `bench/ablation/run.sh`: WZIP level 11 on Silesia under each ablation switch, every file verified (the paper's "WZIP's parts") |
 | `ablation_wlz4.txt` | `bench/ablation/wlz4/run.sh`: the WLZ4 format variants of Table 5 (two-window, far code) and the "offset size by length alone" variants at levels 10 and 12, the original runs and a rerun from the repository sources (identical ratios), and the far-code parse's match mix |
+| `position_S.txt`, `position_dec_S.txt`, `position_checked_S.txt` | not in the paper: LZ4, WLZ4 and Zstandard levels -7 to 9 on Silesia in one session (`bench/run_position.sh`, `COOL=62`), two more decompression-only passes, and WLZ4's bounds-checked decoder in the same passes; the README's "Where WLZ4 sits" figure and table |
 | `zstd157.txt` | Zstandard 1.5.7 at levels 19 and 22, the paper's check that 1.5.7 changes the ratios by at most 0.06% |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.

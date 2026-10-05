@@ -3,8 +3,8 @@
    <crounds>, decompression best of <drounds>; every file is verified. Encoder memory = peak working set during
    compression minus the working set before it (all buffers allocated and touched beforehand).
    Usage: bench_all <codec> <level> <crounds> <drounds> file...
-   codecs: wzip (0-13), zstd (1-22), brotli (0-11, window 2^24), xz (0-9, add 100 for extreme), lz4 (acceleration),
-           lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy; level ignored), wlz4hc (0-12)
+   codecs: wzip (0-13), zstd (1-22; negative: --fast), brotli (0-11, window 2^24), xz (0-9, add 100 for extreme),
+           lz4 (acceleration), lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy; level ignored), wlz4hc (0-12)
    WZIP and WLZ4 decode in their trusted mode, as in the paper (the compressed buffers have the required slack); env
    CHECKED=1 selects their default, bounds-checked decoders. LZ4 decodes with LZ4_decompress_safe.
    Env PERFILE=1 prints each file's compressed size.
