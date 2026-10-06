@@ -1,6 +1,7 @@
 /*
- * libFuzzer target: compress the input with a codec and level chosen by its first two bytes, decode it, and require
- * the original back; the encoders must stay inside their buffers and their stated bounds.
+ * libFuzzer target: compress the input with a codec and level chosen by its first two bytes (WZIP_L also with the
+ * input's first part as its dictionary), decode it, and require the original back; the encoders must stay inside
+ * their buffers and their stated bounds.
  * Copyright (c) 2026-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  * Build and run: tests/fuzz/run.sh (clang -fsanitize=fuzzer,address,undefined, with the sources)
  */
@@ -26,7 +27,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 	const size_t n = size - 2;
 	unsigned char* in = exact(data + 2, n);
 	unsigned char* out = (unsigned char*)malloc(n ? n : 1);
-	switch (sel % 5) {
+	switch (sel % 6) {
 	case 0: {                                           /* wzip_compress, levels 0-13 (the optimal ones on small inputs) */
 		const int level = (int)(lv % 14);
 		if (level >= 7 && n > 65536) break;
@@ -86,6 +87,26 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 		unsigned char* e = exact(f, fs);
 		if (WZF_decompress(out, n, e, fs) != n || memcmp(in, out, n)) abort();
 		free(e); free(f);
+		break;
+	}
+	case 5: {                                           /* WZIP_L with a dictionary: the input's first part, own buffer */
+		const size_t dn = n / 4 + (lv & 15) * 977 % (n / 4 + 1);
+		if (n - dn < 32768 || n > 262144) break;
+		const int level = (int)(lv % 14), len = (int)(n - dn);
+		unsigned char* dict = exact(in, dn);
+		unsigned char* body = exact(in + dn, len);
+		const int cap = WZIP_Cap_CmprSize(len);
+		unsigned char* c = (unsigned char*)malloc(cap);
+		WZIP_State_Str* s = WZIP_New_State_L(level, len, dict, (int)dn);
+		const int cs = s ? WZIP_Compress_L(s, body, len, c, cap) : -1;
+		WZIP_Free_State(s);
+		if (cs < 0 || cs > cap) abort();
+		if (cs > 0) {                                   /* 0: did not fit, a caller stores the input */
+			unsigned char* e = exact(c, cs);
+			if (WZIP_Decompress_L(e, cs, out, len, dict, (int)dn) != len || memcmp(body, out, len)) abort();
+			free(e);
+		}
+		free(c); free(dict); free(body);
 		break;
 	}
 	}

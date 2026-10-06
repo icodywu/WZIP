@@ -1,7 +1,8 @@
 /*
  * Seed corpora for the fuzz targets: make_seeds <work directory> <file>...
  * Writes, for pieces of each file, a bare stream of every codec at a few levels into the corpus of the matching
- * decoder target, WZ frames into the frame target's, and inputs into the round-trip target's.
+ * decoder target, WZ frames into the frame target's, and inputs into the round-trip target's (with, from all the files
+ * together, inputs for its WZIP_L dictionary case).
  * Copyright (c) 2026-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  */
 #include <stdio.h>
@@ -80,6 +81,28 @@ int main(int argc, char** argv)
 			free(rt);
 		}
 		free(data); free(c);
+	}
+	{   /* round trips of WZIP_L with a dictionary (selector 5) need 64 KiB and more: all the files, repeated to 96 KiB */
+		const size_t n = 96 << 10;
+		unsigned char* rt = (unsigned char*)malloc(n + 2);
+		size_t got = 0;
+		while (got < n) {
+			const size_t before = got;
+			for (int a = 2; a < argc && got < n; a++) {
+				FILE* f = fopen(argv[a], "rb");
+				if (!f) continue;
+				got += fread(rt + 2 + got, 1, n - got, f);
+				fclose(f);
+			}
+			if (got == before) break;
+		}
+		for (int level = 1; got == n && level <= 13; level += 4) {
+			char tag[64];
+			rt[0] = 5; rt[1] = (unsigned char)level;
+			snprintf(tag, sizeof tag, "dict.L%d.rt", level);
+			put("roundtrip", "all", tag, rt, n + 2);
+		}
+		free(rt);
 	}
 	return 0;
 }
