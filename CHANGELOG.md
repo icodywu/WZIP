@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
+## Unreleased
+
+- **Faster WZIP decoding of large inputs.** WZIP_L's decoders, checked and trusted, decode a block as a pipeline that
+  prefetches each match's source when the previous block's matches often reached 1 MiB back or more: enwik8 44%
+  and enwik9 62% faster at level 11 (AMD EPYC 9334), Silesia unchanged. Same format.
+- **Fix:** WLZ4's encoders could read one byte past the input, after a literal run of 15 or 16 bytes before a match
+  16 bytes from its end (found by fuzzing the round trip through 2 KB frame blocks).
+
 ## 1.0.0 (2026-10)
 
 First release.

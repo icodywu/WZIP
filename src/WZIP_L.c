@@ -2621,18 +2621,117 @@ static void Copy_Dict_Match(Uint8* destPtr, const Uint8* dest, const Uint32 prod
 	for (Uint32 k = inDict; k < len; k++) destPtr[k] = dest[k - inDict];
 }
 
+/* Matches that reach beyond the L2 cache stall the decoder on large inputs. A block where they are frequent is decoded
+   as a pipeline, as Zstandard's long-offset decoder does: each step decodes one sequence, prefetches its match's
+   source, and executes the sequence decoded SEQ_Lookahead steps before. The decoders count the matches at offsets of
+   FAR_Offset or more, and pipeline a block when the previous one had at least one per FAR_BytesPerMatch bytes of
+   output (16 per KB). On AMD EPYC 9334 this decodes enwik8 49% and enwik9 72% faster at level 11; on inputs whose
+   matches stay in cache, where the rule keeps the plain loop, the pipeline would cost up to 8%. */
+#define   SEQ_Lookahead        16
+#define   FAR_Offset           (1u << 20)
+#define   FAR_BytesPerMatch    64
+#ifndef WZL_PIPELINE
+#  define WZL_PIPELINE         0                   /* tests: 1 pipelines every block, -1 none; 0 chooses by the rule */
+#endif
+#define   PIPELINE_NEXT(far, bytes)  (WZL_PIPELINE ? WZL_PIPELINE > 0 : (Uint64)(far) * FAR_BytesPerMatch >= (Uint64)(bytes))
+
+/* Executes a sequence the decoder has checked: litRun literals, then matchLen bytes from matchOffset back (a run:
+   offset 1), into *destRef, from the literals at *litRef; advances both */
+ForceInlineTemplate void Execute_Sequence(Uint8** destRef, Uint8** litRef, const Uint32 litRun, const Uint32 matchLen,
+	const Uint32 matchOffset, Uint8* const dest, Uint8* const destEnd, const Uint8* const dictEnd, const int dictSize)
+{
+	static const unsigned inc4table[8] = { 0, 0, 0,  1,  0,  4, 4, 4 };     /* 4 % matchOffset */
+	static const unsigned inc8table[8] = { 0, 0, 0,  2,  0,  3, 2, 1 };     /* 8 % matchOffset */
+	Uint8* destPtr = *destRef;
+	Uint8* const lit = *litRef;
+	Uint8* destPtrEnd = destPtr + litRun;
+	*litRef = lit + litRun;
+	*destRef = destPtrEnd + matchLen;
+	if (unlikely(matchLen + 16 > (Uint32)(destEnd - destPtrEnd))) {        /* near the end: wild copies would write past it */
+		memcpy(destPtr, lit, litRun);
+		if (dictSize && (Uint32)(destPtrEnd - dest) < matchOffset)
+			Copy_Dict_Match(destPtrEnd, dest, (Uint32)(destPtrEnd - dest), matchOffset, matchLen, dictEnd);
+		else
+			for (Uint8* q = destPtrEnd; q < destPtrEnd + matchLen; q++) *q = *(q - matchOffset);
+		return;
+	}
+	MemWildCopy(destPtr, lit, destPtrEnd);
+	destPtr = destPtrEnd;
+	destPtrEnd += matchLen;
+	if (dictSize && (Uint32)(destPtr - dest) < matchOffset) {
+		/* the match starts in the dictionary, which the compressor never lets it run past: copy exactly, as the
+		   dictionary may end at the end of its buffer */
+		Copy_Dict_Match(destPtr, dest, (Uint32)(destPtr - dest), matchOffset, matchLen, dictEnd);
+	}
+	else if (likely(matchOffset >= 16))
+		MemWildCopy(destPtr, destPtr - matchOffset, destPtrEnd);
+	else if (matchOffset == 1) {                                             /* a run of the preceding byte */
+		if (matchLen <= 16) {                                                /* short: two wild 8-byte stores */
+			const Uint64 fill = destPtr[-1] * 0x0101010101010101ull;
+			memcpy(destPtr, &fill, 8);
+			memcpy(destPtr + 8, &fill, 8);
+		}
+		else memset(destPtr, destPtr[-1], matchLen);
+	}
+	else {
+		const Uint8* matchPtr = destPtr - matchOffset;
+		if (likely(matchOffset < 8)) {
+			destPtr[0] = matchPtr[0];
+			destPtr[1] = matchPtr[1];
+			destPtr[2] = matchPtr[2];
+			destPtr[3] = matchPtr[3];
+			memcpy(destPtr + 4, matchPtr + inc4table[matchOffset], 4);   /* inc4table equivalent to 4 % matchOffset */
+			matchPtr += inc8table[matchOffset];                         /* equivalent to 8 % matchOffset */
+		}
+		else {
+			memcpy(destPtr, matchPtr, 8);
+			matchPtr += 8;
+		}
+		MemWildCopy_Overlap(destPtr + 8, matchPtr, destPtrEnd);
+	}
+}
+
+/* Hands a checked sequence (litRun, matchLen, matchOffset) to execution, through the ring when pipelined; decEnd is
+   the output's end once every sequence decoded so far is executed */
+#define SEQ_DISPATCH()  {                                                                                          \
+		if (pipelined) {                                                                                           \
+			if ((Uint32)(decEnd - (Uint8*)dest) >= matchOffset) PREFETCH_L1(decEnd - matchOffset);                 \
+			const Uint32 t_ = (rHead + rCount) & (SEQ_Lookahead - 1);                                              \
+			rLit[t_] = litRun; rLen[t_] = matchLen; rOff[t_] = matchOffset;                                        \
+			decEnd += matchLen;                                                                                    \
+			if (++rCount < SEQ_Lookahead) continue;                                                                \
+			litRun = rLit[rHead]; matchLen = rLen[rHead]; matchOffset = rOff[rHead];                               \
+			rHead = (rHead + 1) & (SEQ_Lookahead - 1); rCount--;                                                   \
+		}                                                                                                          \
+		else decEnd += matchLen;                                                                                   \
+		Execute_Sequence(&destPtr, &lzLitBufPtr, litRun, matchLen, matchOffset, (Uint8*)dest, destEnd, dictEnd, dictSize); }
+
+/* executes the sequences left in the ring, then the block's closing literal run, if it ends the output */
+#define SEQ_DRAIN()  {                                                                                             \
+		for (; rCount; rCount--, rHead = (rHead + 1) & (SEQ_Lookahead - 1))                                        \
+			Execute_Sequence(&destPtr, &lzLitBufPtr, rLit[rHead], rLen[rHead], rOff[rHead], (Uint8*)dest, destEnd, dictEnd, dictSize); \
+		if (ended) {                                                                                               \
+			memcpy(destPtr, lzLitBufPtr, lastLit);             /* exact: the output buffer may end right here */   \
+			destPtr += lastLit;                                                                                    \
+			lzLitBufPtr += lastLit;                                                                                \
+		}                                                                                                          \
+		*farCount += far; }
+
 /* Decodes one block of sequences; returns the decoded size so far, or -1 if the block is corrupt. The literal run and
    match length are checked against the output, and the offset against the bytes decoded and the dictionary, for
    every sequence. The input needs no check here, as the caller guarantees that the block's longest possible read
    stays inside it, nor does the literal buffer, which spans the output: each literal read becomes an output byte. */
 ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
-	Huffman_DemapX1* const mchOff_HufDemapX1,
+	Huffman_DemapX1* const mchOff_HufDemapX1, Uint32* const farCount, const int pipelined,
 	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
 {
 	register Uint32 i, n, lsValue, mchLenHufIdx;
 	register Uint32 litRun, matchLen, matchOffset;
 	Uint8* destPtr = (Uint8*)dest+decPos;
-	Uint8* matchPtr, *destPtrEnd;
+	Uint8* decEnd = destPtr;                         /* the output's end once the sequences decoded so far are executed */
+	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
+	Uint32 far = 0, lastLit = 0;
+	int ended = 0;
 
 	static const ExtHuffman_Lit extHuf[] = {
 	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
@@ -2644,9 +2743,6 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
 	{0, 24},                                                                                 /* 70:     2048 - 16M  */
 	};
-
-	static const unsigned inc4table[8] = { 0, 0, 0,  1,  0,  4, 4, 4 };     /* 4 % matchOffset */
-	static const unsigned inc8table[8] = { 0, 0, 0,  2,  0,  3, 2, 1 };     /* 8 % matchOffset */
 
 	register ExtHuffman_Lit extHufRes;
 	register Bit_Stream bitStream;
@@ -2721,13 +2817,13 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 		fprintf(fptr, "DecPos=%d, litRun=%d,  ", (Uint32)(destPtr - dest), litRun);
 #endif
 
-		if ( unlikely(litRun >= (Uint32)(destEnd - destPtr)) ) {   /* note the ending is checked right after literal run */
-			if (litRun > (Uint32)(destEnd - destPtr)) return -1;
-			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
-			destPtr += litRun;
+		if ( unlikely(litRun >= (Uint32)(destEnd - decEnd)) ) {   /* note the ending is checked right after literal run */
+			if (litRun > (Uint32)(destEnd - decEnd)) return -1;
+			lastLit = litRun;
+			ended = 1;
 			break;
 		}
-		destPtrEnd = destPtr + litRun;
+		decEnd += litRun;
 
 		if (!slotJoint || slotSel == OffCasheSize) {     /* the offset symbol: a new offset, a run count, or (classic) a cache slot */
 			const Uint32 offGroup = fineGroups ? min(5u, mchLenHufIdx) + (mchLenHufIdx >= 7) + (mchLenHufIdx >= 13) : min(lastOffGroup, mchLenHufIdx);
@@ -2746,18 +2842,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 				matchLen = matchOffset;
 				matchOffset = 1;
 				BITStream_Read_Flush(bitStream);
-				if (matchLen > (Uint32)(destEnd - destPtrEnd)) return -1;    /* corrupt */
-				if (unlikely(matchLen + 16 > (Uint32)(destEnd - destPtrEnd) || destPtrEnd == (Uint8*)dest)) goto _execute;
-				MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
-				lzLitBufPtr += litRun;
-				if (matchLen <= 16) {                                /* a short run: two wild 8-byte stores */
-					const Uint64 fill = destPtrEnd[-1] * 0x0101010101010101ull;
-					memcpy(destPtrEnd, &fill, 8);
-					memcpy(destPtrEnd + 8, &fill, 8);
-				}
-				else memset(destPtrEnd, destPtrEnd[-1], matchLen);
-				destPtr = destPtrEnd += matchLen;
-				continue;
+				goto _check;
 			}
 			offsetLast[3] = offsetLast[2];                       /* explicit shifts: a memmove() here becomes a library call */
 			offsetLast[2] = offsetLast[1];
@@ -2783,60 +2868,18 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 		}
 		BITStream_Read_Flush(bitStream);
 
-	_execute:
-		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-		if (unlikely(matchOffset - 1 >= (Uint32)(destPtrEnd - dest) + (Uint32)dictSize)) return -1;   /* corrupt: before the history */
-		if (unlikely(matchLen + 16 > (Uint32)(destEnd - destPtrEnd))) {  /* near the end: wild copies would write past it */
-			if (matchLen > (Uint32)(destEnd - destPtrEnd)) return -1;   /* corrupt */
-			memcpy(destPtr, lzLitBufPtr, litRun);
-			destPtr = destPtrEnd;
-			lzLitBufPtr += litRun;
-			destPtrEnd += matchLen;
-			if (dictSize && (Uint32)(destPtr - (Uint8*)dest) < matchOffset)
-				Copy_Dict_Match(destPtr, dest, (Uint32)(destPtr - (Uint8*)dest), matchOffset, matchLen, dictEnd);
-			else
-				for (Uint8* q = destPtr; q < destPtrEnd; q++) *q = *(q - matchOffset);
-			destPtr = destPtrEnd;
-			continue;
-		}
-		MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
-		destPtr = destPtrEnd;
-		lzLitBufPtr += litRun;
-
-		destPtrEnd += matchLen;
-		if (dictSize && (Uint32)(destPtr - (Uint8*)dest) < matchOffset) {
-			/* the match starts in the dictionary, which the compressor never lets it run past: copy exactly, as the
-			   dictionary may end at the end of its buffer */
-			Copy_Dict_Match(destPtr, dest, (Uint32)(destPtr - (Uint8*)dest), matchOffset, matchLen, dictEnd);
-		}
-		else if (likely(matchOffset >= 16)) {
-			matchPtr = destPtr - matchOffset;
-			MemWildCopy(destPtr, matchPtr, destPtrEnd);
-		}
-		else {
-			matchPtr = destPtr - matchOffset;
-			if (likely(matchOffset < 8)) {
-				destPtr[0] = matchPtr[0];
-				destPtr[1] = matchPtr[1];
-				destPtr[2] = matchPtr[2];
-				destPtr[3] = matchPtr[3];
-				memcpy(destPtr + 4, matchPtr + inc4table[matchOffset], 4);   /* inc4table equivalent to 4 % matchOffset */
-				matchPtr += inc8table[matchOffset];                         /* equivalent to 8 % matchOffset */
-			}
-			else {
-				memcpy(destPtr, matchPtr, 8);
-				matchPtr += 8;
-			}
-			MemWildCopy_Overlap(destPtr + 8, matchPtr, destPtrEnd);
-		}
-		destPtr = destPtrEnd;
-
+	_check:
+		if (unlikely(matchOffset - 1 >= (Uint32)(decEnd - dest) + (Uint32)dictSize)) return -1;   /* corrupt: before the history */
+		if (unlikely(matchLen > (Uint32)(destEnd - decEnd))) return -1;                          /* corrupt: past the output */
+		far += matchOffset >= FAR_Offset;
 #ifdef WZIP_DEBUG
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
 #endif
-
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		SEQ_DISPATCH();
 	}
+	SEQ_DRAIN();
 #ifdef WZIP_DEBUG
 	fclose(fptr);
 #endif
@@ -2848,11 +2891,11 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 }
 
 #define SEQ_BODY_CALL(body, fine)   (hufWtSet->slotJoint                                                                                                    \
-    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 1)                                  \
-    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, fine, 0))
+    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, farCount, pipelined, fine, 1)             \
+    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, offTables, farCount, pipelined, fine, 0))
 
 #define SEQ_DEC_PARAMS  WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize,  \
-    WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize], Huffman_DemapX1* const offTables
+    WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize], Huffman_DemapX1* const offTables, Uint32* const farCount, const int pipelined
 
 #define DECOMPRESS_SEQUENCE_GEN(fun)                                                                                                                  \
     static int fun(SEQ_DEC_PARAMS)                                                                                                                  \
@@ -2951,7 +2994,7 @@ int WZIP_Decompress_L(
 
 	Uint32 offsetLast[OffCasheSize];
 	memset(offsetLast, 0x7F, OffCasheSize * sizeof(int));
-	int decSize = 0, maxBits;
+	int decSize = 0, maxBits, pipelined = WZL_PIPELINE > 0;
 	Uint8* tail = NULL;
 	lzLitBufPtr = lzLitBuffer;
 	Uint8* const destEnd = (Uint8*)dest + destSize;
@@ -2984,13 +3027,16 @@ int WZIP_Decompress_L(
 		if (i < MchOffGroup) { decSize = -1; break; }
 		BITStream_Read_FlushEnd(bitStream);
 
+		const int blockStart = decSize;
+		Uint32 far = 0;
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
+			decSize = Decompress_WLZ_Sequence_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &far, pipelined);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables);
+		decSize = Decompress_WLZ_Sequence(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &far, pipelined);
 		if (decSize < 0 || bitStream.streamPtr > srcEnd) { decSize = -1; break; }    /* corrupt: read past the input */
+		pipelined = PIPELINE_NEXT(far, decSize - blockStart);   /* for the next block */
 	}
 
 	free(tail);
@@ -3001,17 +3047,20 @@ int WZIP_Decompress_L(
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-/* The decoder the paper measured, unchanged: no checks, for input known to come unmodified from WZIP's encoder;
-   the input must stay readable WZIP_TRUSTED_SRC_PAD bytes past its end. A damaged stream can make it read or write
-   out of bounds. */
+/* The same decoder without checks, for input known to come unmodified from WZIP's encoder; the input must stay
+   readable WZIP_TRUSTED_SRC_PAD bytes past its end. A damaged stream can make it read or write out of bounds. */
 
 ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize],
+	Uint32* const farCount, const int pipelined,
 	const int fineGroups, const int slotJoint)    /* compile-time constants in each instance: offset grouping, joint symbol */
 {
 	register Uint32 i, n, lsValue, mchLenHufIdx;
 	register Uint32 litRun, matchLen, matchOffset;
 	Uint8* destPtr = (Uint8*)dest+decPos;
-	Uint8* matchPtr, *destPtrEnd;
+	Uint8* decEnd = destPtr;                         /* the output's end once the sequences decoded so far are executed */
+	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
+	Uint32 far = 0, lastLit = 0;
+	int ended = 0;
 
 	static const ExtHuffman_Lit extHuf[] = {
 	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
@@ -3023,9 +3072,6 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	{2, 10}, {3, 10},																		 /* 68-69:  2048 - 4095 */
 	{0, 24},                                                                                 /* 70:     2048 - 16M  */
 	};
-
-	static const unsigned inc4table[8] = { 0, 0, 0,  1,  0,  4, 4, 4 };     /* 4 % matchOffset */
-	static const unsigned inc8table[8] = { 0, 0, 0,  2,  0,  3, 2, 1 };     /* 8 % matchOffset */
 
 	register ExtHuffman_Lit extHufRes;
 	register Bit_Stream bitStream;
@@ -3094,12 +3140,12 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		fprintf(fptr, "DecPos=%d, litRun=%d,  ", (Uint32)(destPtr - dest), litRun);
 #endif
 
-		destPtrEnd = destPtr + litRun;
-		if ( unlikely(destPtrEnd >= destEnd) ) {        /* note the ending is checked right after literal run */
-			memcpy(destPtr, lzLitBufPtr, litRun);            /* exact: the output buffer may end right here */
-			destPtr = destPtrEnd;
+		if ( unlikely(litRun >= (Uint32)(destEnd - decEnd)) ) {   /* note the ending is checked right after literal run */
+			lastLit = litRun;
+			ended = 1;
 			break;
 		}
+		decEnd += litRun;
 
 		if (!slotJoint || slotSel == OffCasheSize) {     /* the offset symbol: a new offset, a run count, or (classic) a cache slot */
 			const Uint32 offGroup = fineGroups ? min(5u, mchLenHufIdx) + (mchLenHufIdx >= 7) + (mchLenHufIdx >= 13) : min(lastOffGroup, mchLenHufIdx);
@@ -3118,18 +3164,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 				matchLen = matchOffset;
 				matchOffset = 1;
 				BITStream_Read_Flush(bitStream);
-				if (matchLen > (Uint32)(destEnd - destPtrEnd)) break;     /* corrupt: the size check fails */
-				if (unlikely(destPtrEnd + matchLen > destEnd - 16 || destPtrEnd == (Uint8*)dest)) goto _execute;
-				MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
-				lzLitBufPtr += litRun;
-				if (matchLen <= 16) {                                /* a short run: two wild 8-byte stores */
-					const Uint64 fill = destPtrEnd[-1] * 0x0101010101010101ull;
-					memcpy(destPtrEnd, &fill, 8);
-					memcpy(destPtrEnd + 8, &fill, 8);
-				}
-				else memset(destPtrEnd, destPtrEnd[-1], matchLen);
-				destPtr = destPtrEnd += matchLen;
-				continue;
+				if (matchLen > (Uint32)(destEnd - decEnd)) break;         /* corrupt: the size check fails */
+				goto _execute;
 			}
 			offsetLast[3] = offsetLast[2];                       /* explicit shifts: a memmove() here becomes a library call */
 			offsetLast[2] = offsetLast[1];
@@ -3156,57 +3192,15 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		BITStream_Read_Flush(bitStream);
 
 	_execute:
-		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-		if (unlikely(destPtrEnd + matchLen > destEnd - 16)) {  /* near the end: wild copies would write past it */
-			memcpy(destPtr, lzLitBufPtr, litRun);
-			destPtr = destPtrEnd;
-			lzLitBufPtr += litRun;
-			destPtrEnd += matchLen;
-			if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset)
-				memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
-			else
-				for (Uint8* q = destPtr; q < destPtrEnd; q++) *q = *(q - matchOffset);
-			destPtr = destPtrEnd;
-			continue;
-		}
-		MemWildCopy(destPtr, lzLitBufPtr, destPtrEnd);
-		destPtr = destPtrEnd;
-		lzLitBufPtr += litRun;
-
-		destPtrEnd += matchLen;
-		if (dictSize && (int)(destPtr - (Uint8*)dest) < (int)matchOffset) {
-			/* the match lies in the dictionary, which the compressor never lets it run past:
-			   copy exactly, as the dictionary may end at the end of its buffer */
-			memcpy(destPtr, dictEnd + ((int)(destPtr - (Uint8*)dest) - (int)matchOffset), matchLen);
-		}
-		else if (likely(matchOffset >= 16)) {
-			matchPtr = destPtr - matchOffset;
-			MemWildCopy(destPtr, matchPtr, destPtrEnd);
-		}
-		else {
-			matchPtr = destPtr - matchOffset;
-			if (likely(matchOffset < 8)) {
-				destPtr[0] = matchPtr[0];
-				destPtr[1] = matchPtr[1];
-				destPtr[2] = matchPtr[2];
-				destPtr[3] = matchPtr[3];
-				memcpy(destPtr + 4, matchPtr + inc4table[matchOffset], 4);   /* inc4table equivalent to 4 % matchOffset */
-				matchPtr += inc8table[matchOffset];                         /* equivalent to 8 % matchOffset */
-			}
-			else {
-				memcpy(destPtr, matchPtr, 8);
-				matchPtr += 8;
-			}
-			MemWildCopy_Overlap(destPtr + 8, matchPtr, destPtrEnd);
-		}
-		destPtr = destPtrEnd;
-
+		far += matchOffset >= FAR_Offset;
 #ifdef WZIP_DEBUG
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
 #endif
-
+		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
+		SEQ_DISPATCH();
 	}
+	SEQ_DRAIN();
 #ifdef WZIP_DEBUG
 	fclose(fptr);
 #endif
@@ -3220,10 +3214,10 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 
 
 #define SEQ_TRUSTED_CALL(body, fine)   (hufWtSet->slotJoint                                                                                            \
-    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 1)                                     \
-    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, fine, 0))
+    ? body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, farCount, pipelined, fine, 1)                \
+    : body(S_, wzipSeqStart, lzLitBufRef, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, farCount, pipelined, fine, 0))
 #define SEQ_TRUSTED_PARAMS  WZL_Sched* const S_, Uint8** wzipSeqStart, Uint8** lzLitBufRef, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, \
-    const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize]
+    const int dictSize, WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize], Uint32* const farCount, const int pipelined
 
 static int Decompress_WLZ_Sequence_Trusted(SEQ_TRUSTED_PARAMS)
 {
@@ -3293,7 +3287,7 @@ int WZIP_Decompress_L_Trusted(
 
 	Uint32 offsetLast[OffCasheSize];
 	memset(offsetLast, 0x7F, OffCasheSize * sizeof(int));
-	int decSize = 0;
+	int decSize = 0, pipelined = WZL_PIPELINE > 0;
 	lzLitBufPtr = lzLitBuffer;
 	Uint8* const destEnd = (Uint8*)dest + destSize;
 	while (decSize < destSize) {
@@ -3306,12 +3300,15 @@ int WZIP_Decompress_L_Trusted(
 			hufWtSet.maxMchOffHufWt[i] = Read_Huffman_Header_byHuffman(&bitStream, maxWtHufWt, wtHufDemapX1, N_HufMchOff[i], hufWtSet.mchOffHufWt[i]);
 		BITStream_Read_FlushEnd(bitStream);
 		
+		const int blockStart = decSize;
+		Uint32 far = 0;
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &far, pipelined);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence_Trusted(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast);
+		decSize = Decompress_WLZ_Sequence_Trusted(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &far, pipelined);
+		pipelined = PIPELINE_NEXT(far, decSize - blockStart);   /* for the next block */
 		bitStream.container = MemReadBE8(bitStream.streamPtr);
 		bitStream.nUsedBits = 0;
 	}

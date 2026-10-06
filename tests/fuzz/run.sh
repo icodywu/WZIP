@@ -3,12 +3,13 @@
 # usage (from the repository root): sh tests/fuzz/run.sh <work directory> [seconds per target] [jobs per target]
 # Needs a clang with libFuzzer (CC, default clang). The seven targets run at once, each with its jobs in libFuzzer's
 # fork mode; corpora grow in <work>/<target>/corpus, and findings are left as <work>/<target>/crash-* (reproduce one
-# with <work>/fuzz_<target> <file>).
+# with <work>/fuzz_<target> <file>). FUZZ_CFLAGS adds compiler flags, e.g. -DWZL_PIPELINE=1 to decode every WZIP_L
+# block as a pipeline.
 set -e
 W=$1; T=${2:-600}; J=${3:-4}; CC=${CC:-clang}
 # ASan's global instrumentation is off (-asan-globals=0): with ROCm's clang 18 it misplaced some static const tables
 # and aborted at start-up; UBSan's bounds checks still cover indexing into those tables.
-FLAGS="-g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -mllvm -asan-globals=0 -Isrc"
+FLAGS="-g -O1 -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -mllvm -asan-globals=0 -Isrc $FUZZ_CFLAGS"
 SRC="src/WZIP_L.c src/WZIP_M.c src/WZIP_S.c src/WZIP_wrapper.c src/Huffman_Compress.c src/Huffman_Decompress.c src/WLZ4.c src/wzframe.c"
 NAMES="frame wzip wlz4 wlz4dict wzips wzipsdict"
 mkdir -p "$W"

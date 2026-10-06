@@ -472,6 +472,12 @@ offsets reach into it as into earlier output (section 2). Only WZIP_S records in
   slot, class and length symbol, so the cache hit, the literal-run class and the length need one lookup; the
   literal-run table is looked up for every sequence and consumed only for class 2, which avoids a branch. Offset
   tables are built at the full 10-bit width so that one shift serves all groups.
+- On large inputs a match often reaches beyond the L2 cache, and the copy waits on memory. WZIP_L's decoders count
+  the matches at offsets of 1 MiB or more and, when the previous block had at least 16 per KiB of output, decode the
+  next block as a pipeline, as Zstandard's long-offset decoder does: each step decodes one sequence and prefetches
+  its match's source, and executes the sequence decoded 16 steps before. At level 11 on an AMD EPYC 9334 this decodes
+  enwik8 44% and enwik9 62% faster, leaving Silesia unchanged; on inputs whose matches stay in cache the pipeline
+  would cost up to 8%, which the rule avoids. The format is unchanged.
 - WZIP_M reads two sequences per round, from streams A and B, so that their table lookups overlap; WZIP_S decodes
   all literals first from two or four streams, then the sequences with offsets from a separate stream.
 

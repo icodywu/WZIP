@@ -30,6 +30,10 @@ build/libwzip.a: $(OBJ)
 build/roundtrip$(EXE): tests/roundtrip.c build/libwzip.a
 	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@
 
+# the same, with every WZIP_L block decoded as a pipeline (these inputs are too small for the decoder to choose it)
+build/roundtrip_pipe$(EXE): tests/roundtrip.c $(SRC) $(HDR) | build
+	$(CC) $(CFLAGS) -DWZL_PIPELINE=1 tests/roundtrip.c $(SRC) -lm -o $@
+
 build/wzip$(EXE): programs/wzip.c build/libwzip.a
 	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@
 
@@ -39,8 +43,9 @@ build/wlz4$(EXE): build/wzip$(EXE)
 build/threads$(EXE): tests/threads.c build/libwzip.a
 	$(CC) $(CFLAGS) -pthread $< build/libwzip.a -lm -o $@
 
-test: build/roundtrip$(EXE) build/threads$(EXE) build/wzip$(EXE) build/wlz4$(EXE)
+test: build/roundtrip$(EXE) build/roundtrip_pipe$(EXE) build/threads$(EXE) build/wzip$(EXE) build/wlz4$(EXE)
 	./build/roundtrip$(EXE)
+	./build/roundtrip_pipe$(EXE)
 	./build/threads$(EXE)
 	sh tests/cli.sh build
 	sh tests/golden.sh build
@@ -52,9 +57,12 @@ check: build/roundtrip$(EXE)
 FUZZFLAGS := -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -Wall -Isrc
 build/corrupt$(EXE): tests/corrupt.c $(SRC) $(HDR) | build
 	$(CC) $(FUZZFLAGS) tests/corrupt.c $(SRC) -lm -o $@
+build/corrupt_pipe$(EXE): tests/corrupt.c $(SRC) $(HDR) | build
+	$(CC) $(FUZZFLAGS) -DWZL_PIPELINE=1 tests/corrupt.c $(SRC) -lm -o $@
 
-fuzz: build/corrupt$(EXE)
+fuzz: build/corrupt$(EXE) build/corrupt_pipe$(EXE)
 	./build/corrupt$(EXE) $(ITERS)
+	./build/corrupt_pipe$(EXE) $(ITERS)
 
 clean:
 	rm -rf build
