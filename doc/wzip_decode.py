@@ -431,8 +431,8 @@ def decode_m(data, n, dictionary=b''):
 
 # --------------------------------------------------------------------------------------------- wrapper (4.1)
 
-def decode(stream):
-    """a wzip_compress stream"""
+def decode(stream, dictionary=b''):
+    """a wzip_compress stream; a WZIP_L one with the dictionary, if any (wzip_compress_usingDict, linked blocks)"""
     if len(stream) < 2:
         raise ValueError('truncated size field')
     h = int.from_bytes(stream[0:2], 'little')
@@ -442,7 +442,7 @@ def decode(stream):
         n, pos = h, 2
     if n == 0:
         return bytes(stream[2:])                         # stored
-    return decode_l(stream[pos:], n) if n >= 32768 else decode_m(stream[pos:], n)
+    return decode_l(stream[pos:], n, dictionary) if n >= 32768 else decode_m(stream[pos:], n)
 
 # ------------------------------------------------------------------------------------------------- WZIP_S (7)
 

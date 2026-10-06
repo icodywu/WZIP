@@ -19,13 +19,13 @@ static PyObject* frame_error(size_t code)
 	return NULL;
 }
 
-/* compress(data, codec, level, block_log, checksum) -> bytes: one WZ frame */
+/* compress(data, codec, level, block_log, checksum, threads, window_log) -> bytes: one WZ frame */
 static PyObject* py_compress(PyObject* self, PyObject* args)
 {
 	Py_buffer in;
-	int codec, level, blockLog, checksum;
-	if (!PyArg_ParseTuple(args, "y*iiip", &in, &codec, &level, &blockLog, &checksum)) return NULL;
-	const WZF_params p = { codec, level, blockLog, !checksum };
+	int codec, level, blockLog, checksum, threads = 1, windowLog = 0;
+	if (!PyArg_ParseTuple(args, "y*iiip|ii", &in, &codec, &level, &blockLog, &checksum, &threads, &windowLog)) return NULL;
+	const WZF_params p = { codec, level, blockLog, !checksum, threads, windowLog };
 	const size_t bound = WZF_compressBound((size_t)in.len, &p);
 	PyObject* out = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)bound);
 	if (!out) { PyBuffer_Release(&in); return NULL; }

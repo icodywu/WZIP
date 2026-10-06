@@ -196,7 +196,8 @@ wzip -d file.wz        # back to file (-o name, -c to standard output)
 tar cf - dir | wlz4 > dir.tar.wlz4
 wzip -t file.wz        # test; -l lists frames, blocks, codec, sizes and ratio
 wzip -b9 -e11 file     # benchmark levels 9 to 11 in memory
-wzip -11 -T4 file      # 4 threads: about 2.3 times as fast at levels 7-13, the same output
+wzip -11 -T6 file      # 6 threads: about 2.8 times as fast at levels 7-13, the same output
+wzip -11 -T64 big      # over 64 MiB: linked blocks, compressed at once (below)
 ```
 
 As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are not overwritten without `-f`.
@@ -205,10 +206,28 @@ As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are 
 **Threads.** At its optimal levels (7-13) WZIP spends most of its time finding matches, in three indexes, one per
 class of lengths, each with its own window: a 3-byte chain for lengths 3-4, a 5-byte chain for lengths 5-6 and a
 binary tree for lengths 7 and up. They depend only on the input, not on the parse, so with `-T` each runs in a thread
-of its own, ahead of the parser, which takes their candidates in order: the input is not cut, and the output is
-byte for byte that of one thread. On AMD EPYC 9334, level 11 compresses Silesia 2.08 times as fast with 3 threads and
-2.34 times with 4 (enwik8: 2.08, 2.17); level 13 2.16 times, level 7 2.15 times. The tree is the slowest stage, so more
-threads do not help further.
+of its own, ahead of the parser, which takes their candidates in order; the tree, the slowest, is one tree per hash
+bucket, and splits further among up to four threads by bucket. The input is not cut, and the output is byte for byte
+that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.27 times as
+fast with 4 threads and 2.79 times with 6, and enwik8 2.17 and 3.54 times with 4 and 7; level 7 Silesia 2.53 times,
+level 13 2.36 times. With 5 threads or more the parser is the slowest stage.
+
+More threads than one block can use (at levels 0-6, more than one) go to blocks: WZIP content of more than 64 MiB
+becomes **linked blocks** of 64 MiB, compressed at once, each referring to the 128 MiB of content before it as a
+dictionary that its threads index first ([frame format](doc/frame_format.md), section 5.1). Little is lost to the
+cuts, and the frame is the same for any number of threads:
+
+| level 11, whole node (2 x EPYC 9334) | threads | compression | ratio |
+|---|---|---|---|
+| enwik9, one stream | 1 | 0.96 MB/s | 4.7442 |
+| enwik9, linked blocks | 16 | 6.37 MB/s | 4.7440 |
+| enwik9, linked blocks | 105 (15 blocks x 7) | 11.0 MB/s | 4.7440 |
+| Silesia (211 MB), one stream | 1 | 1.49 MB/s | 4.0852 |
+| Silesia (211 MB), linked blocks | 28 (4 blocks x 7) | 6.07 MB/s | 4.0839 |
+
+At level 13 the 105 threads compress enwik9 at 6.04 MB/s (one stream with 7 threads: 0.98 MB/s). A frame of linked
+blocks decodes in one thread, about 5% slower than one stream, with the 128 MiB window and a block in memory; wzip
+1.0.0 cannot decode it, and `--no-linked` keeps independent blocks (`results/epyc_linked.txt`).
 
 ## Python
 
@@ -229,7 +248,8 @@ Calls release the GIL, so threads compress in parallel; [`python/README.md`](pyt
 
 ```sh
 make          # build/libwzip.a, the tool build/wzip (and build/wlz4), and the tests; with threads (make MT=0: none)
-make test     # round trips of every codec and level on synthetic inputs, with guard checks on every buffer;
+make test     # round trips of every codec and level on synthetic inputs, with guard checks on every buffer, also
+              # with windows narrowed to 128 KiB (a test format) so that they wrap the encoders' indexes;
               # 8 threads at once against single-threaded outputs; the tool on files, pipes and damaged files;
               # the golden frames of tests/golden, which every version must keep decoding
 make check FILES="file1 file2"

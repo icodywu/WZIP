@@ -9,11 +9,13 @@
 #include "wzframe.h"
 #include "WZIP.h"
 #include "WLZ4.h"
+#include "wz_threads.h"
 
 #define WZF_FRAME_VERSION   0
 #define WZF_CODEC_VERSION   1           /* the WZIP and WLZ4 formats of October 2026 */
 #define WZF_FLAG_CHECKSUM   0x04
 #define WZF_FLAG_SIZE       0x08
+#define WZF_FLAG_LINKED     0x10        /* linked blocks: a window log follows the block size log; WZIP only, b <= 30 */
 
 unsigned WZF_versionNumber(void) { return WZF_VERSION_NUMBER; }
 const char* WZF_versionString(void) { return WZF_VERSION_STRING; }
@@ -94,6 +96,30 @@ unsigned WZF_XXH32(const void* src, size_t srcSize, unsigned seed)
 	return xxh_digest(&s);
 }
 
+/*------   Linked blocks: the window   ------
+   A buffer holds the last *len bytes of a frame's content; the next n bytes refer to the last min(*len, D) of them.
+   win_room makes room for those n bytes right after them, by moving them to the front or by allocating a larger
+   buffer (with room for D more bytes, up to limit, the content size), and returns where the n bytes go. */
+static unsigned char* win_room(unsigned char** buf, size_t* cap, size_t* len, size_t D, size_t n, unsigned long long limit)
+{
+	const size_t keep = *len < D ? *len : D;
+	if (*len + n <= *cap) return *buf + *len;
+	if (keep + n <= *cap) {
+		memmove(*buf, *buf + *len - keep, keep);
+		*len = keep;
+		return *buf + keep;
+	}
+	size_t want = keep + n + D;
+	if (want > limit) want = (size_t)limit;
+	if (want < keep + n) want = keep + n;
+	unsigned char* const q = (unsigned char*)malloc(want);
+	if (!q) return NULL;
+	if (keep) memcpy(q, *buf + *len - keep, keep);
+	free(*buf);
+	*buf = q; *cap = want; *len = keep;
+	return q + keep;
+}
+
 /*------   Compression   ------*/
 struct WZF_CCtx_s {
 	WZF_params p;
@@ -104,13 +130,16 @@ struct WZF_CCtx_s {
 	WLZhc_State_Str* hs;
 	unsigned char* scratch;
 	size_t scratchCap;
+	unsigned char* win;                 /* linked blocks: the window, then the input being compressed */
+	size_t winCap, winLen;
 };
 
-static int auto_blockLog(int codec, unsigned long long contentSize)
+static int auto_blockLog(int codec, int windowLog, unsigned long long contentSize)
 {
-	if (contentSize == WZF_CONTENTSIZE_UNKNOWN) return codec == WZF_CODEC_WZIP ? 27 : 23;
+	if (contentSize == WZF_CONTENTSIZE_UNKNOWN) return windowLog ? 26 : codec == WZF_CODEC_WZIP ? 27 : 23;
+	const int top = windowLog ? 26 : 30;
 	int b = 16;
-	while (b < 30 && (1ULL << b) < contentSize) b++;
+	while (b < top && (1ULL << b) < contentSize) b++;
 	return b;
 }
 
@@ -121,6 +150,9 @@ static int params_ok(const WZF_params* p)
 	if (p->codec == WZF_CODEC_WZIP) { if (p->level < 0 || p->level > 13) return 0; }
 	else if (p->codec == WZF_CODEC_WLZ4) { if (p->level < -2 || p->level > 12) return 0; }
 	else return 0;
+	if (p->windowLog && (p->codec != WZF_CODEC_WZIP || p->windowLog < WZF_WINDOWLOG_MIN || p->windowLog > WZF_WINDOWLOG_MAX
+	                     || p->blockLog > 30))
+		return 0;
 	return p->blockLog == 0 || (p->blockLog >= WZF_BLOCKLOG_MIN && p->blockLog <= WZF_BLOCKLOG_MAX);
 }
 
@@ -132,6 +164,7 @@ void WZF_freeCCtx(WZF_CCtx* c)
 	if (c->ws) WLZ_Free_State(c->ws);
 	if (c->hs) WLZhc_Free_State(c->hs);
 	free(c->scratch);
+	free(c->win);
 	free(c);
 }
 
@@ -143,14 +176,15 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
                          unsigned long long contentSize)
 {
 	if (!c || !dst || !params || !params_ok(params)) return ERR(parameter);
-	const int hasSize = contentSize != WZF_CONTENTSIZE_UNKNOWN;
-	const size_t hdr = WZF_HEADER_MIN + (hasSize ? 8 : 0);
+	const int hasSize = contentSize != WZF_CONTENTSIZE_UNKNOWN, linked = params->windowLog != 0;
+	const size_t hdr = WZF_HEADER_MIN + linked + (hasSize ? 8 : 0);
 	if (dstCapacity < hdr) return ERR(dstSize_tooSmall);
 	c->p = *params;
-	c->blockLog = params->blockLog ? params->blockLog : auto_blockLog(params->codec, contentSize);
+	c->blockLog = params->blockLog ? params->blockLog : auto_blockLog(params->codec, params->windowLog, contentSize);
 	c->checksum = !params->noChecksum;
 	c->contentSize = contentSize;
 	c->consumed = 0;
+	c->winLen = 0;
 	xxh_reset(&c->xxh, 0);
 	if (params->codec == WZF_CODEC_WLZ4) {
 		if (params->level < 0 && !c->ws && !(c->ws = WLZ_New_State())) return ERR(memory);
@@ -158,26 +192,31 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
 	}
 	unsigned char* o = (unsigned char*)dst;
 	wr32(o, WZF_MAGIC);
-	o[4] = (unsigned char)(params->codec | (c->checksum ? WZF_FLAG_CHECKSUM : 0) | (hasSize ? WZF_FLAG_SIZE : 0));
+	o[4] = (unsigned char)(params->codec | (c->checksum ? WZF_FLAG_CHECKSUM : 0) | (hasSize ? WZF_FLAG_SIZE : 0)
+	                       | (linked ? WZF_FLAG_LINKED : 0));
 	o[5] = (unsigned char)(WZF_FRAME_VERSION << 4 | WZF_CODEC_VERSION);
 	o[6] = (unsigned char)c->blockLog;
-	if (hasSize) wr64(o + 7, contentSize);
+	if (linked) o[7] = (unsigned char)params->windowLog;
+	if (hasSize) wr64(o + 7 + linked, contentSize);
 	c->stage = 1;
 	return hdr;
 }
 
-/* compresses n bytes with the frame's codec into out (capacity cap); returns the stream's size, 0 if it failed */
-static size_t codec_compress(WZF_CCtx* c, unsigned char* out, size_t cap, const unsigned char* src, size_t n)
+/* compresses n bytes with the frame's codec into out (capacity cap), with the dictSize bytes before src as the
+   dictionary (linked blocks) and up to `workers` threads (WZIP); returns the stream's size, 0 if it failed */
+static size_t codec_compress(const WZF_params* p, WLZ_State_Str* ws, WLZhc_State_Str* hs, unsigned char* out,
+                             size_t cap, const unsigned char* src, size_t n, size_t dictSize, int workers)
 {
-	if (c->p.codec == WZF_CODEC_WZIP) {
+	if (p->codec == WZF_CODEC_WZIP) {
 		int icap = cap > 0x7FFFFFFF ? 0x7FFFFFFF : (int)cap;
-		const int r = wzip_compress_mt(src, (int)n, out, &icap, c->p.level, c->p.nbWorkers);
+		const int r = wzip_compress_usingDict(src, (int)n, out, &icap, p->level, workers,
+		                                      dictSize ? src - dictSize : NULL, (int)dictSize);
 		return r > 0 ? (size_t)r : 0;
 	}
 	const unsigned ucap = cap > 0xFFFFFFFFu ? 0xFFFFFFFFu : (unsigned)cap;
-	if (c->p.level == -2) return WLZ_Compress_Fast(c->ws, (const char*)src, (char*)out, (unsigned)n, ucap, 1);
-	if (c->p.level == -1) return WLZ_Compress(c->ws, (const char*)src, (char*)out, (unsigned)n, ucap);
-	return WLZhc_Compress(c->hs, (const char*)src, (char*)out, (unsigned)n, ucap, c->p.level);
+	if (p->level == -2) return WLZ_Compress_Fast(ws, (const char*)src, (char*)out, (unsigned)n, ucap, 1);
+	if (p->level == -1) return WLZ_Compress(ws, (const char*)src, (char*)out, (unsigned)n, ucap);
+	return WLZhc_Compress(hs, (const char*)src, (char*)out, (unsigned)n, ucap, p->level);
 }
 
 static size_t codec_bound(int codec, size_t n)
@@ -185,38 +224,169 @@ static size_t codec_bound(int codec, size_t n)
 	return codec == WZF_CODEC_WZIP ? n + WZIP_MEM_OVERHEAD : WLZ_COMPRESSBOUND(n);
 }
 
-size_t WZF_compressBlock(WZF_CCtx* c, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
+static size_t max_block(const WZF_CCtx* c)
 {
-	if (!c || c->stage != 1 || (!src && srcSize)) return ERR(parameter);
-	if (srcSize == 0) return 0;
-	if (srcSize > ((size_t)1 << c->blockLog) || srcSize > codec_max(c->p.codec)) return ERR(parameter);
-	if (c->contentSize != WZF_CONTENTSIZE_UNKNOWN && srcSize > c->contentSize - c->consumed) return ERR(contentSize);
-	if (dstCapacity < WZF_BLOCK_HEADER + srcSize) return ERR(dstSize_tooSmall);
-	unsigned char* const o = (unsigned char*)dst;
-	const unsigned char* const s = (const unsigned char*)src;
-	const size_t bound = codec_bound(c->p.codec, srcSize);
-	size_t cs;
-	if (dstCapacity - WZF_BLOCK_HEADER >= bound)        /* room for the codec's worst case: compress in place */
-		cs = codec_compress(c, o + WZF_BLOCK_HEADER, bound, s, srcSize);
-	else {
+	const size_t b = (size_t)1 << c->blockLog;
+	return b < codec_max(c->p.codec) ? b : codec_max(c->p.codec);
+}
+
+/* writes the block of n bytes at s into o (room for WZF_BLOCK_HEADER + n bytes), given its codec stream of cs bytes
+   (0: none), raw if the stream does not shrink it; returns the bytes written */
+static size_t put_block(unsigned char* o, const unsigned char* s, size_t n, const unsigned char* stream, size_t cs)
+{
+	if (cs == 0 || cs >= n) {
+		memcpy(o + WZF_BLOCK_HEADER, s, n);
+		wr32(o, (uint32_t)n | 0x80000000u);
+		return WZF_BLOCK_HEADER + n;
+	}
+	if (stream != o + WZF_BLOCK_HEADER) memcpy(o + WZF_BLOCK_HEADER, stream, cs);
+	wr32(o, (uint32_t)cs);
+	return WZF_BLOCK_HEADER + cs;
+}
+
+/* compresses one block in this thread, in place in o if it has room for the codec's worst case */
+static size_t compress_one(WZF_CCtx* c, unsigned char* o, size_t cap, const unsigned char* s, size_t n,
+                           size_t dictSize, int workers)
+{
+	const size_t bound = codec_bound(c->p.codec, n);
+	unsigned char* stream = o + WZF_BLOCK_HEADER;
+	if (cap - WZF_BLOCK_HEADER < bound) {
 		if (c->scratchCap < bound) {
 			free(c->scratch);
 			c->scratchCap = 0;
 			if (!(c->scratch = (unsigned char*)malloc(bound))) return ERR(memory);
 			c->scratchCap = bound;
 		}
-		cs = codec_compress(c, c->scratch, bound, s, srcSize);
-		if (cs && cs < srcSize) memcpy(o + WZF_BLOCK_HEADER, c->scratch, cs);
+		stream = c->scratch;
 	}
-	if (cs == 0 || cs >= srcSize) {                     /* failed or did not shrink: a raw block */
-		memcpy(o + WZF_BLOCK_HEADER, s, srcSize);
-		wr32(o, (uint32_t)srcSize | 0x80000000u);
-		cs = srcSize;
+	return put_block(o, s, n, stream, codec_compress(&c->p, c->ws, c->hs, stream, bound, s, n, dictSize, workers));
+}
+
+#if WZIP_MULTITHREAD
+/* Blocks compressed at once: each thread takes the next block until none is left, and keeps its stream */
+typedef struct {
+	const WZF_params* p;
+	const unsigned char* buf;           /* the blocks: n bytes at buf + h, cut every maxBlk */
+	size_t h, n, maxBlk, D;             /* D: the window of linked blocks (0: independent) */
+	long nbBlocks, next, failed;
+	int workers;                        /* threads of each WZIP block (its match finder's indexes) */
+	unsigned char** out;                /* each block's stream (NULL: none), and its size */
+	size_t* outSize;
+} WZF_Jobs;
+
+static void jobs_run(WZF_Jobs* j, WLZ_State_Str* ws, WLZhc_State_Str* hs)
+{
+	for (;;) {
+		const long i = WZ_FETCH_ADD(&j->next, 1);
+		if (i >= j->nbBlocks) return;
+		const size_t at = j->h + (size_t)i * j->maxBlk, n = j->h + j->n - at < j->maxBlk ? j->h + j->n - at : j->maxBlk;
+		const size_t bound = codec_bound(j->p->codec, n);
+		unsigned char* const q = (unsigned char*)malloc(bound);
+		if (!q) { WZ_STORE(&j->failed, 1); continue; }
+		const size_t cs = codec_compress(j->p, ws, hs, q, bound, j->buf + at, n, at < j->D ? at : j->D, j->workers);
+		if (cs == 0 || cs >= n) { free(q); continue; }
+		unsigned char* const r = (unsigned char*)realloc(q, cs);
+		j->out[i] = r ? r : q;
+		j->outSize[i] = cs;
 	}
-	else wr32(o, (uint32_t)cs);
-	if (c->checksum) xxh_update(&c->xxh, s, srcSize);
-	c->consumed += srcSize;
-	return WZF_BLOCK_HEADER + cs;
+}
+
+WZ_THREAD_FN(jobs_main, arg)
+{
+	WZF_Jobs* const j = (WZF_Jobs*)arg;
+	WLZ_State_Str* ws = NULL;
+	WLZhc_State_Str* hs = NULL;
+	if (j->p->codec == WZF_CODEC_WLZ4 && !(j->p->level < 0 ? (void*)(ws = WLZ_New_State()) : (void*)(hs = WLZhc_New_State())))
+		return 0;                                       /* the other threads take the blocks */
+	jobs_run(j, ws, hs);
+	if (ws) WLZ_Free_State(ws);
+	if (hs) WLZhc_Free_State(hs);
+	return 0;
+}
+#endif
+
+/* compresses the n bytes at buf + h as blocks into o; for linked blocks the bytes before them in buf are the frame's
+   content before them, up to the window at least. Up to nbWorkers blocks at a time, each with nbWorkers / blocks
+   threads of its own (at most WZIP_WORKERS_MAX, what its match finder uses); the same blocks in any case. */
+static size_t compress_run(WZF_CCtx* c, unsigned char* o, size_t cap, const unsigned char* buf, size_t h, size_t n)
+{
+	const size_t maxBlk = max_block(c);
+	const size_t D = c->p.windowLog ? (size_t)1 << c->p.windowLog : 0;
+	const int threads = c->p.nbWorkers > 1 ? c->p.nbWorkers : 1;
+	size_t pos = 0;
+#if WZIP_MULTITHREAD
+	const size_t blocks = (n - 1) / maxBlk + 1, jobs = blocks < (size_t)threads ? blocks : (size_t)threads;
+	if (jobs > 1) {
+		WZF_Jobs j;
+		memset(&j, 0, sizeof j);
+		j.p = &c->p; j.buf = buf; j.h = h; j.n = n; j.maxBlk = maxBlk; j.D = D;
+		j.nbBlocks = (long)blocks;
+		j.workers = threads / (int)jobs < WZIP_WORKERS_MAX ? threads / (int)jobs : WZIP_WORKERS_MAX;
+		j.out = (unsigned char**)calloc(blocks, sizeof *j.out);
+		j.outSize = (size_t*)calloc(blocks, sizeof *j.outSize);
+		WZ_Thread* const t = (WZ_Thread*)malloc((jobs - 1) * sizeof *t);
+		size_t started = 0;
+		if (j.out && j.outSize && t) {
+			while (started < jobs - 1 && WZ_THREAD_START(&t[started], jobs_main, &j)) started++;
+			jobs_run(&j, c->ws, c->hs);                 /* this thread takes blocks too */
+			for (size_t i = 0; i < started; i++) WZ_THREAD_JOIN(t[i]);
+			if (j.failed) pos = ERR(memory);
+			else for (size_t i = 0, at = h; i < blocks; i++, at += maxBlk) {
+				const size_t k = h + n - at < maxBlk ? h + n - at : maxBlk;
+				if (cap - pos < WZF_BLOCK_HEADER + k) { pos = ERR(dstSize_tooSmall); break; }   /* as one by one */
+				pos += put_block(o + pos, buf + at, k, j.out[i], j.out[i] ? j.outSize[i] : 0);
+			}
+		}
+		else pos = ERR(memory);
+		if (j.out) for (size_t i = 0; i < blocks; i++) free(j.out[i]);
+		free(j.out); free(j.outSize); free(t);
+		return pos;
+	}
+#endif
+	for (size_t at = h; at < h + n; ) {
+		const size_t k = h + n - at < maxBlk ? h + n - at : maxBlk;
+		if (cap - pos < WZF_BLOCK_HEADER + k) return ERR(dstSize_tooSmall);
+		const size_t r = compress_one(c, o + pos, cap - pos, buf + at, k, at < D ? at : D, threads);
+		if (WZF_isError(r)) return r;
+		pos += r; at += k;
+	}
+	return pos;
+}
+
+/* compresses n bytes of content at s as blocks; linked blocks refer to the content before s: the window, or, if
+   inPlace (the one-shot compressor), the bytes before s */
+static size_t compress_src(WZF_CCtx* c, unsigned char* o, size_t cap, const unsigned char* s, size_t n, int inPlace)
+{
+	if (c->contentSize != WZF_CONTENTSIZE_UNKNOWN && n > c->contentSize - c->consumed) return ERR(contentSize);
+	if (cap < WZF_BLOCK_HEADER + (n < max_block(c) ? n : max_block(c))) return ERR(dstSize_tooSmall);   /* the first */
+	size_t r;
+	if (c->p.windowLog && !inPlace) {
+		unsigned char* const at = win_room(&c->win, &c->winCap, &c->winLen, (size_t)1 << c->p.windowLog, n, c->contentSize);
+		if (!at) return ERR(memory);
+		memcpy(at, s, n);
+		r = compress_run(c, o, cap, c->win, (size_t)(at - c->win), n);
+		if (!WZF_isError(r)) c->winLen = (size_t)(at - c->win) + n;
+	}
+	else r = compress_run(c, o, cap, s, 0, n);
+	if (WZF_isError(r)) return r;
+	if (c->checksum) xxh_update(&c->xxh, s, n);
+	c->consumed += n;
+	return r;
+}
+
+size_t WZF_compressBlock(WZF_CCtx* c, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
+{
+	if (!c || c->stage != 1 || (!src && srcSize) || (!dst && dstCapacity)) return ERR(parameter);
+	if (srcSize == 0) return 0;
+	if (srcSize > max_block(c)) return ERR(parameter);
+	return compress_src(c, (unsigned char*)dst, dstCapacity, (const unsigned char*)src, srcSize, 0);
+}
+
+size_t WZF_compressBlocks(WZF_CCtx* c, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
+{
+	if (!c || c->stage != 1 || (!src && srcSize) || (!dst && dstCapacity)) return ERR(parameter);
+	if (srcSize == 0) return 0;
+	return compress_src(c, (unsigned char*)dst, dstCapacity, (const unsigned char*)src, srcSize, 0);
 }
 
 size_t WZF_compressEnd(WZF_CCtx* c, void* dst, size_t dstCapacity)
@@ -234,7 +404,7 @@ size_t WZF_compressEnd(WZF_CCtx* c, void* dst, size_t dstCapacity)
 size_t WZF_compressBound(size_t srcSize, const WZF_params* params)
 {
 	const int codec = params ? params->codec : WZF_CODEC_WZIP;
-	const int b = params && params->blockLog ? params->blockLog : auto_blockLog(codec, srcSize);
+	const int b = params && params->blockLog ? params->blockLog : auto_blockLog(codec, params ? params->windowLog : 0, srcSize);
 	const size_t blk = (size_t)1 << b, maxBlk = blk < codec_max(codec) ? blk : codec_max(codec);
 	const size_t blocks = srcSize ? (srcSize - 1) / maxBlk + 1 : 0;
 	return WZF_HEADER_MAX + blocks * WZF_BLOCK_HEADER + srcSize + WZF_BLOCK_HEADER + 4;
@@ -246,16 +416,10 @@ size_t WZF_compress(void* dst, size_t dstCapacity, const void* src, size_t srcSi
 	WZF_CCtx* c = WZF_createCCtx();
 	if (!c) return ERR(memory);
 	unsigned char* const o = (unsigned char*)dst;
-	const unsigned char* const s = (const unsigned char*)src;
 	size_t pos = WZF_compressBegin(c, o, dstCapacity, params, srcSize);
-	if (!WZF_isError(pos)) {
-		const size_t blk = (size_t)1 << c->blockLog, maxBlk = blk < codec_max(params->codec) ? blk : codec_max(params->codec);
-		for (size_t done = 0; done < srcSize; ) {
-			const size_t n = srcSize - done < maxBlk ? srcSize - done : maxBlk;
-			const size_t r = WZF_compressBlock(c, o + pos, dstCapacity - pos, s + done, n);
-			if (WZF_isError(r)) { pos = r; break; }
-			pos += r; done += n;
-		}
+	if (!WZF_isError(pos) && srcSize) {                 /* all blocks at once; linked ones refer to src in place */
+		const size_t r = compress_src(c, o + pos, dstCapacity - pos, (const unsigned char*)src, srcSize, 1);
+		pos = WZF_isError(r) ? r : pos + r;
 	}
 	if (!WZF_isError(pos)) {
 		const size_t r = WZF_compressEnd(c, o + pos, dstCapacity - pos);
@@ -273,10 +437,12 @@ struct WZF_DCtx_s {
 	size_t pendingSize;
 	unsigned long long decoded;
 	XXH32_state xxh;
+	unsigned char* win;                 /* linked blocks: the window, then the block being decoded */
+	size_t winCap, winLen;
 };
 
 WZF_DCtx* WZF_createDCtx(void) { return (WZF_DCtx*)calloc(1, sizeof(WZF_DCtx)); }
-void WZF_freeDCtx(WZF_DCtx* d) { free(d); }
+void WZF_freeDCtx(WZF_DCtx* d) { if (d) free(d->win); free(d); }
 const WZF_FrameHeader* WZF_frameHeader(const WZF_DCtx* d) { return &d->h; }
 size_t WZF_frameBlockSize(const WZF_DCtx* d) { return (size_t)1 << d->h.blockLog; }
 
@@ -297,20 +463,24 @@ size_t WZF_decompressBegin(WZF_DCtx* d, const void* src, size_t srcSize)
 	if (magic != WZF_MAGIC) return ERR(unknown_frame);
 	if (srcSize < WZF_HEADER_MIN) return ERR(srcSize_wrong);
 	const unsigned flg = s[4], ver = s[5], bs = s[6];
-	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xF0) || (ver >> 4) != WZF_FRAME_VERSION || (ver & 15) != WZF_CODEC_VERSION
-	    || bs < WZF_BLOCKLOG_MIN || bs > WZF_BLOCKLOG_MAX)
+	const int linked = (flg & WZF_FLAG_LINKED) != 0;
+	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xE0) || (ver >> 4) != WZF_FRAME_VERSION || (ver & 15) != WZF_CODEC_VERSION
+	    || bs < WZF_BLOCKLOG_MIN || bs > WZF_BLOCKLOG_MAX || (linked && ((flg & 3) != WZF_CODEC_WZIP || bs > 30)))
 		return ERR(unsupported);
-	const size_t hdr = WZF_HEADER_MIN + ((flg & WZF_FLAG_SIZE) ? 8 : 0);
+	const size_t hdr = WZF_HEADER_MIN + linked + ((flg & WZF_FLAG_SIZE) ? 8 : 0);
 	if (srcSize < hdr) return hdr;
+	if (linked && (s[7] < WZF_WINDOWLOG_MIN || s[7] > WZF_WINDOWLOG_MAX)) return ERR(unsupported);
 	d->h.codec = (int)(flg & 3);
 	d->h.codecVersion = (int)(ver & 15);
 	d->h.blockLog = (int)bs;
 	d->h.checksum = (flg & WZF_FLAG_CHECKSUM) != 0;
 	d->h.skippable = 0;
-	d->h.contentSize = (flg & WZF_FLAG_SIZE) ? rd64(s + 7) : WZF_CONTENTSIZE_UNKNOWN;
+	d->h.windowLog = linked ? s[7] : 0;
+	d->h.contentSize = (flg & WZF_FLAG_SIZE) ? rd64(s + 7 + linked) : WZF_CONTENTSIZE_UNKNOWN;
 	if (d->h.contentSize == WZF_CONTENTSIZE_UNKNOWN && (flg & WZF_FLAG_SIZE)) return ERR(corrupted);
 	d->stage = 1;
 	d->decoded = 0;
+	d->winLen = 0;
 	xxh_reset(&d->xxh, 0);
 	return hdr;
 }
@@ -331,8 +501,9 @@ size_t WZF_nextBlock(WZF_DCtx* d, const void* blockHeader, int* isRaw)
 	return c;
 }
 
-/* decodes one compressed block of n bytes into dst; returns its decoded size or an error */
-static size_t decode_block(WZF_DCtx* d, unsigned char* dst, size_t cap, const unsigned char* s, size_t n)
+/* decodes one compressed block of n bytes into dst, with the dictSize bytes before dst as the dictionary (linked
+   blocks); returns its decoded size or an error */
+static size_t decode_block(WZF_DCtx* d, unsigned char* dst, size_t cap, const unsigned char* s, size_t n, size_t dictSize)
 {
 	const size_t maxBlk = (size_t)1 << d->h.blockLog;
 	if (d->h.codec == WZF_CODEC_WZIP) {
@@ -343,7 +514,8 @@ static size_t decode_block(WZF_DCtx* d, unsigned char* dst, size_t cap, const un
 		if (size == 0 || size > maxBlk) return ERR(corrupted);
 		if (cap < size) return ERR(dstSize_tooSmall);
 		int dcap = (int)size;
-		if (wzip_decompress(s, (int)n, dst, &dcap) != (int)size) return ERR(corrupted);
+		if (wzip_decompress_usingDict(s, (int)n, dst, &dcap, dictSize ? dst - dictSize : NULL, (int)dictSize) != (int)size)
+			return ERR(corrupted);
 		return size;
 	}
 	if (n > 0xFFFFFFFFu) return ERR(corrupted);
@@ -380,22 +552,44 @@ size_t WZF_blockDecodedSize(const WZF_DCtx* d, const void* src, size_t srcSize)
 	return size == 0 || size > maxBlk ? ERR(corrupted) : size;
 }
 
-size_t WZF_decompressBlock(WZF_DCtx* d, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
+/* decodes the pending block into dst; linked blocks refer to the content before it: the window, or, if inPlace (the
+   one-shot decoder), the bytes before dst */
+static size_t decompress_block(WZF_DCtx* d, unsigned char* dst, size_t dstCapacity, const unsigned char* src,
+                               size_t srcSize, int inPlace)
 {
 	if (!d || d->stage != 2 || !src || (!dst && dstCapacity) || srcSize != d->pendingSize) return ERR(parameter);
+	const size_t D = d->h.windowLog ? (size_t)1 << d->h.windowLog : 0;
+	const size_t dictSize = d->decoded < D ? (size_t)d->decoded : D;
 	size_t r;
-	if (d->pendingRaw) {
+	if (D && !inPlace) {                                /* decoded in the window, after the content it refers to */
+		const size_t size = WZF_blockDecodedSize(d, src, srcSize);
+		if (WZF_isError(size)) return size;
+		if (dstCapacity < size) return ERR(dstSize_tooSmall);
+		unsigned char* const at = win_room(&d->win, &d->winCap, &d->winLen, D, size, d->h.contentSize);
+		if (!at) return ERR(memory);
+		if (d->pendingRaw) { memcpy(at, src, srcSize); r = srcSize; }
+		else r = decode_block(d, at, size, src, srcSize, dictSize);
+		if (WZF_isError(r)) return r;
+		memcpy(dst, at, r);
+		d->winLen = (size_t)(at - d->win) + r;
+	}
+	else if (d->pendingRaw) {
 		if (dstCapacity < srcSize) return ERR(dstSize_tooSmall);
 		memcpy(dst, src, srcSize);
 		r = srcSize;
 	}
-	else r = decode_block(d, (unsigned char*)dst, dstCapacity, (const unsigned char*)src, srcSize);
+	else r = decode_block(d, dst, dstCapacity, src, srcSize, dictSize);
 	if (WZF_isError(r)) return r;
 	d->decoded += r;
 	if (d->h.contentSize != WZF_CONTENTSIZE_UNKNOWN && d->decoded > d->h.contentSize) return ERR(contentSize);
 	if (d->h.checksum) xxh_update(&d->xxh, (const unsigned char*)dst, r);
 	d->stage = 1;
 	return r;
+}
+
+size_t WZF_decompressBlock(WZF_DCtx* d, void* dst, size_t dstCapacity, const void* src, size_t srcSize)
+{
+	return decompress_block(d, (unsigned char*)dst, dstCapacity, (const unsigned char*)src, srcSize, 0);
 }
 
 size_t WZF_endSize(const WZF_DCtx* d) { return d->stage == 3 && d->h.checksum ? 4 : 0; }
@@ -432,7 +626,7 @@ size_t WZF_decompress(void* dst, size_t dstCapacity, const void* src, size_t src
 			pos += WZF_BLOCK_HEADER;
 			if (c == 0) break;
 			if (srcSize - pos < c) { r = ERR(srcSize_wrong); break; }
-			r = WZF_decompressBlock(d, o ? o + out : NULL, dstCapacity - out, s + pos, c);
+			r = decompress_block(d, o ? o + out : NULL, dstCapacity - out, s + pos, c, 1);   /* after the content */
 			if (WZF_isError(r)) break;
 			out += r; pos += c;
 		}

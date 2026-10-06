@@ -101,6 +101,19 @@ int main(int argc, char** argv)
 			rt[0] = 5; rt[1] = (unsigned char)level;
 			snprintf(tag, sizeof tag, "dict.L%d.rt", level);
 			put("roundtrip", "all", tag, rt, n + 2);
+			rt[0] = (unsigned char)(6 + 7 * (level + 5));   /* linked frames (selector 6), windows of 2^10 to 2^24 */
+			snprintf(tag, sizeof tag, "linked.L%d.rt", level);
+			put("roundtrip", "all", tag, rt, n + 2);
+		}
+		for (int w = 10; got == n && w <= 27; w += 17) {  /* frames of linked blocks of 32 KiB, for the frame decoder */
+			const WZF_params p = { WZF_CODEC_WZIP, 5, 15, 0, 1, w };
+			const size_t cap = WZF_compressBound(n, &p);
+			unsigned char* c = (unsigned char*)malloc(cap);
+			const size_t cs = WZF_compress(c, cap, rt + 2, n, &p);
+			char tag[64];
+			snprintf(tag, sizeof tag, "linked.w%d.wz", w);
+			if (!WZF_isError(cs)) put("frame", "all", tag, c, cs);
+			free(c);
 		}
 		free(rt);
 	}

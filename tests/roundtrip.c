@@ -76,7 +76,8 @@ static void test_wzip(const unsigned char* src, int n, const char* name)
 		for (int k = 0; k < 3; k++) {
 			int cap1 = bound;
 			const int c1 = wzip_compress(src, n, one, &cap1, mtLevels[k]);
-			for (int w = 2; w <= 4; w += 2) {
+			for (int w = 2; w <= 7; w += w < 4 ? 2 : 1) {      /* 2, 4, 5, 6, 7: the tree in 1 to 4 parts */
+				if (w > 4 && w != 4 + k + 1 && n > (1 << 18)) continue;
 				int capm = bound;
 				const int cm = wzip_compress_mt(src, n, cmp, &capm, mtLevels[k], w);
 				checks++;
@@ -128,7 +129,7 @@ static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
 			if (c == 0) continue;                         /* did not fit: a caller would store the input */
 			if (level == 7 || level == 11) {              /* with threads, the same stream */
 				WZIP_State_Str* sm = WZIP_New_State_L(level, len, dict, dictSize);
-				WZIP_Set_Workers(sm, 4);
+				WZIP_Set_Workers(sm, level == 7 ? 4 : 6);   /* 6: the tree in 3 parts */
 				const int cm = sm ? WZIP_Compress_L(sm, src + dictSize, len, t, bound) : -1;
 				WZIP_Free_State(sm);
 				if (cm != c || memcmp(t, cmp, c)) fail(what, name, level, "threads changed the stream");
@@ -267,6 +268,14 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 		checks++;
 		if (WZF_isError(fs)) { fail(what, name, level, WZF_getErrorName(fs)); free(f); free(dec); continue; }
 		if (!guard_ok(f, bound)) fail(what, name, level, "encoder wrote past its capacity");
+		if (bi && n > 0) {                                /* blocks compressed 4 at a time: the same frame */
+			WZF_params q = p;
+			q.nbWorkers = 4;
+			unsigned char* g = (unsigned char*)malloc(bound);
+			const size_t gs = WZF_compress(g, bound, src, (size_t)n, &q);
+			if (gs != fs || memcmp(f, g, fs)) fail(what, name, level, "threads changed the frame");
+			free(g);
+		}
 		if (WZF_getContentSize(f, fs) != (unsigned long long)n) fail(what, name, level, "wrong content size");
 		size_t d = WZF_decompress(dec, (size_t)n, f, fs);
 		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, WZF_isError(d) ? WZF_getErrorName(d) : "decoded data differs");
@@ -327,6 +336,98 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 	}
 }
 
+/* WZ frames of linked blocks: the same frame from any number of threads and from the streaming compressor fed whole
+   blocks, decoded in one call (in place) and block by block (through the window); irregular blocks too */
+static void test_linked(const unsigned char* src, int n, const char* name)
+{
+	static const int sets[][3] = { { 1, 15, 10 }, { 5, 16, 17 }, { 11, 16, 17 }, { 1, 17, 20 }, { 3, 15, 27 } };
+	if (n == 0) {                                         /* linked blocks are WZIP's, at most 2^30 bytes each */
+		const WZF_params bad[2] = { { WZF_CODEC_WLZ4, 1, 0, 0, 1, 20 }, { WZF_CODEC_WZIP, 1, 31, 0, 1, 20 } };
+		unsigned char f[64];
+		for (int k = 0; k < 2; k++)
+			if (WZF_getErrorCode(WZF_compress(f, sizeof f, f, 0, &bad[k])) != WZF_error_parameter)
+				fail("frame/linked", "parameters", k, "accepted invalid parameters");
+		checks++;
+	}
+	if (n < 1000) return;
+	for (int k = 0; k < 5; k++) {
+		const int level = sets[k][0];
+		if (level > 5 && n > (1 << 18)) continue;
+		WZF_params p = { WZF_CODEC_WZIP, level, sets[k][1], k & 1, 1, sets[k][2] };
+		const size_t bound = WZF_compressBound((size_t)n, &p);
+		unsigned char* f = guarded(bound);
+		unsigned char* g = guarded(bound);
+		unsigned char* dec = guarded(n);
+		const char* what = "frame/linked";
+		const size_t fs = WZF_compress(f, bound, src, (size_t)n, &p);
+		checks++;
+		if (WZF_isError(fs)) { fail(what, name, level, WZF_getErrorName(fs)); free(f); free(g); free(dec); continue; }
+		if (!guard_ok(f, bound)) fail(what, name, level, "encoder wrote past its capacity");
+		for (int t = 3; t <= 9; t += 6) {                 /* 3 threads: blocks 3 at a time; 9: 3 threads per block */
+			p.nbWorkers = t;
+			const size_t gs = WZF_compress(g, bound, src, (size_t)n, &p);
+			if (gs != fs || memcmp(f, g, fs)) fail(what, name, level, "threads changed the frame");
+		}
+		{   /* the streaming compressor, three blocks per call, then the rest */
+			WZF_CCtx* c = WZF_createCCtx();
+			const size_t blk = (size_t)1 << p.blockLog;
+			size_t pos = WZF_compressBegin(c, g, bound, &p, (unsigned long long)n);
+			for (size_t done = 0; !WZF_isError(pos) && done < (size_t)n; ) {
+				const size_t len = (size_t)n - done < 3 * blk ? (size_t)n - done : 3 * blk;
+				const size_t r = WZF_compressBlocks(c, g + pos, bound - pos, src + done, len);
+				pos = WZF_isError(r) ? r : pos + r;
+				done += len;
+			}
+			if (!WZF_isError(pos)) { const size_t r = WZF_compressEnd(c, g + pos, bound - pos); pos = WZF_isError(r) ? r : pos + r; }
+			if (pos != fs || memcmp(f, g, fs)) fail(what, name, level, "the streaming compressor made another frame");
+			WZF_freeCCtx(c);
+		}
+		size_t d = WZF_decompress(dec, (size_t)n, f, fs);
+		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, WZF_isError(d) ? WZF_getErrorName(d) : "decoded data differs");
+		if (!guard_ok(dec, n)) fail(what, name, level, "decoder wrote past the content size");
+		memset(dec, 0, n);
+		d = stream_decode(f, fs, dec, (size_t)n);
+		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, "block-by-block decoding differs");
+		if (k == 0) {                                     /* WLZ4, a window log of 28, a block size log of 31: refused */
+			static const int at[3] = { 4, 7, 6 }, v[3] = { 0x11, 28, 31 };
+			for (int e = 0; e < 3; e++) {
+				const unsigned char keep = f[at[e]];
+				f[at[e]] = (unsigned char)(e ? v[e] : (keep | v[e]));
+				if (WZF_getErrorCode(WZF_decompress(dec, (size_t)n, f, fs)) != WZF_error_unsupported)
+					fail(what, name, e, "accepted an unsupported header");
+				f[at[e]] = keep;
+			}
+		}
+		free(f); free(g); free(dec);
+	}
+	{   /* irregular blocks of 1-100000 bytes, content size unknown, block by block both ways */
+		WZF_params p = { WZF_CODEC_WZIP, 2, 17, 0, 1, 16 };
+		WZF_CCtx* c = WZF_createCCtx();
+		const size_t cap = WZF_compressBound((size_t)n, &p) + (size_t)n / 1000 * WZF_BLOCK_HEADER + 64;
+		unsigned char* f = guarded(cap);
+		unsigned char* dec = guarded(n);
+		size_t pos = WZF_compressBegin(c, f, cap, &p, WZF_CONTENTSIZE_UNKNOWN);
+		for (int done = 0, k = 0; !WZF_isError(pos) && done < n; k++) {
+			const int len = n - done < 1 + (k * 40009) % 100000 ? n - done : 1 + (k * 40009) % 100000;
+			const size_t r = WZF_compressBlock(c, f + pos, cap - pos, src + done, len);
+			pos = WZF_isError(r) ? r : pos + r;
+			done += len;
+		}
+		if (!WZF_isError(pos)) { const size_t r = WZF_compressEnd(c, f + pos, cap - pos); pos = WZF_isError(r) ? r : pos + r; }
+		checks++;
+		if (WZF_isError(pos)) fail("frame/linked-stream", name, 2, WZF_getErrorName(pos));
+		else {
+			size_t d = WZF_decompress(dec, (size_t)n, f, pos);
+			if (d != (size_t)n || memcmp(src, dec, n)) fail("frame/linked-stream", name, 2, "decoded data differs");
+			memset(dec, 0, n);
+			d = stream_decode(f, pos, dec, (size_t)n);
+			if (d != (size_t)n || memcmp(src, dec, n)) fail("frame/linked-stream", name, 2, "block-by-block decoding differs");
+		}
+		WZF_freeCCtx(c);
+		free(f); free(dec);
+	}
+}
+
 static void test_all(const unsigned char* src, int n, const char* name)
 {
 	const int before = failures;
@@ -335,6 +436,7 @@ static void test_all(const unsigned char* src, int n, const char* name)
 	if (n > 0) test_wzips(src, n, name);
 	test_wlz4(src, n, name);
 	test_frames(src, n, name);
+	test_linked(src, n, name);
 	printf("%-28s %10d bytes  %s\n", name, n, failures == before ? "ok" : "FAILED");
 	fflush(stdout);
 }

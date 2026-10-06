@@ -29,10 +29,12 @@ const char* WZF_versionString(void);
 #define WZF_MAGIC              0x0A5A578Du      /* bytes 8D 57 5A 0A */
 #define WZF_SKIPPABLE_MIN      0x184D2A50u      /* skippable frames: magic 0x184D2A50-5F, u32 size, data */
 #define WZF_HEADER_MIN         7                /* magic and descriptor */
-#define WZF_HEADER_MAX         15               /* with the content size */
+#define WZF_HEADER_MAX         16               /* with the window log and the content size */
 #define WZF_BLOCK_HEADER       4
 #define WZF_BLOCKLOG_MIN       10
 #define WZF_BLOCKLOG_MAX       31
+#define WZF_WINDOWLOG_MIN      10               /* linked blocks (WZIP): each refers to up to 2^windowLog bytes before it */
+#define WZF_WINDOWLOG_MAX      27               /* WZIP's widest window */
 
 enum { WZF_CODEC_WZIP = 0, WZF_CODEC_WLZ4 = 1 };
 
@@ -62,7 +64,11 @@ typedef struct {
 	int level;          /* WZIP: 0-13. WLZ4: -2 fast, -1 lazy, 0-7 hash chains, 8-12 optimal parsing */
 	int blockLog;       /* blocks decode to at most 2^blockLog bytes (10-31); 0: by the content size (doc) */
 	int noChecksum;     /* 1: no content checksum */
-	int nbWorkers;      /* WZIP: threads for each block (wzip_compress_mt); 0 or 1: one. The frame is the same */
+	int nbWorkers;      /* threads (0 or 1: one): blocks compressed at once, and within a WZIP block at levels 7-13
+	                       its match finder's indexes (wzip_compress_mt). The frame is the same for any count */
+	int windowLog;      /* WZIP: 0 independent blocks; 10-27 linked blocks, each referring to up to 2^windowLog bytes
+	                       of content before it (better compression in blocks, so in parallel; decoders of version
+	                       1.0.0 reject such frames). 0 blockLog then means 26 at most */
 } WZF_params;
 
 #define WZF_CONTENTSIZE_UNKNOWN (~0ULL)
@@ -72,7 +78,7 @@ typedef struct {
 /* The largest frame WZF_compress can produce for srcSize bytes. */
 size_t WZF_compressBound(size_t srcSize, const WZF_params* params);
 
-/* Compresses src into one frame in dst. Returns the frame's size or an error. */
+/* Compresses src into one frame in dst, with params->nbWorkers threads. Returns the frame's size or an error. */
 size_t WZF_compress(void* dst, size_t dstCapacity, const void* src, size_t srcSize, const WZF_params* params);
 
 /* The total content size of the frames in src, if every frame records it; WZF_CONTENTSIZE_UNKNOWN otherwise, or
@@ -86,21 +92,27 @@ size_t WZF_decompress(void* dst, size_t dstCapacity, const void* src, size_t src
    Compression: WZF_compressBegin writes the frame header; WZF_compressBlock compresses one block of at most
    2^blockLog bytes (the caller chooses the cut) and writes its header and data; WZF_compressEnd writes the end mark
    and the checksum. Each returns the bytes written, or an error. A block writes at most WZF_BLOCK_HEADER + srcSize
-   bytes and needs that much room; with WZF_blockBound(srcSize) it compresses in place, without an internal copy. */
+   bytes and needs that much room; with WZF_blockBound(srcSize) it compresses in place, without an internal copy.
+   WZF_compressBlocks compresses srcSize bytes of any size as blocks of 2^blockLog bytes (the last one may be
+   shorter), the same as one WZF_compressBlock per block, but nbWorkers blocks at a time; it writes at most
+   WZF_BLOCK_HEADER per block + srcSize bytes. With linked blocks the context keeps the window, a copy of the last
+   2^windowLog bytes of content, so the caller's buffers may be reused at once. */
 typedef struct WZF_CCtx_s WZF_CCtx;
 WZF_CCtx* WZF_createCCtx(void);
 void      WZF_freeCCtx(WZF_CCtx* cctx);
 size_t WZF_compressBegin(WZF_CCtx* cctx, void* dst, size_t dstCapacity, const WZF_params* params,
                          unsigned long long contentSize);       /* contentSize: WZF_CONTENTSIZE_UNKNOWN if unknown */
 size_t WZF_compressBlock(WZF_CCtx* cctx, void* dst, size_t dstCapacity, const void* src, size_t srcSize);
+size_t WZF_compressBlocks(WZF_CCtx* cctx, void* dst, size_t dstCapacity, const void* src, size_t srcSize);
 size_t WZF_compressEnd(WZF_CCtx* cctx, void* dst, size_t dstCapacity);
 size_t WZF_blockBound(size_t srcSize);
 int    WZF_blockLog(const WZF_CCtx* cctx);                     /* the frame's block size log, after Begin */
 
 /* Decompression: feed the frame in the pieces the functions ask for.
    1. WZF_decompressBegin(dctx, src, n) with the first n >= WZF_HEADER_MIN bytes of the frame returns the header's
-      size h (7 or 15; or, for a skippable frame, 8 + its size, to be skipped) or an error; call it again with h
-      bytes if h > n (the result is h again).
+      size h (7 to 16; or, for a skippable frame, 8 + its size, to be skipped) or an error; call it again with h
+      bytes if h > n (the result is h again). For linked blocks (windowLog > 0) the context keeps the window and
+      decodes into it, up to 2^(windowLog + 1) + 2^blockLog bytes, never more than the content size.
    2. Then repeatedly read WZF_BLOCK_HEADER bytes and pass them to WZF_nextBlock, which returns the size c of the
       block's data (0: the end mark) and sets *isRaw.
    3. For c > 0, read c bytes and pass them to WZF_decompressBlock, which decodes them into dst (room for
@@ -115,6 +127,7 @@ typedef struct {
 	int blockLog;
 	int checksum;                       /* 1: the frame has a content checksum */
 	int skippable;                      /* 1: a skippable frame (the other fields are 0) */
+	int windowLog;                      /* linked blocks: each refers to up to 2^windowLog bytes before it; 0: none */
 } WZF_FrameHeader;
 WZF_DCtx* WZF_createDCtx(void);
 void      WZF_freeDCtx(WZF_DCtx* dctx);

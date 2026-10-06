@@ -42,6 +42,15 @@ class RoundTrip(unittest.TestCase):
         self.assertEqual(wzip.decompress(wzip.compress(bytearray(data))), data)
         self.assertEqual(wzip.decompress(memoryview(wzip.compress(memoryview(data)))), data)
 
+    def test_linked_blocks(self):
+        data = sample(400000, 7)
+        one = wzip.compress(data, level=5, block_log=15, window_log=17)
+        self.assertEqual(wzip.compress(data, level=5, block_log=15, window_log=17, threads=6), one)
+        self.assertLess(len(one), len(wzip.compress(data, level=5, block_log=15)))
+        self.assertEqual(wzip.decompress(one), data)
+        with self.assertRaises(ValueError):
+            wzip.compress(data, "wlz4", window_log=20)
+
     def test_concatenated_frames(self):
         a, b = sample(9000, 2), sample(40000, 3)
         self.assertEqual(wzip.decompress(wzip.compress(a) + wzip.compress(b, "wlz4")), a + b)

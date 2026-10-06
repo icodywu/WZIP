@@ -40,6 +40,17 @@ done
 "$WLZ4" -q -f --fast "$T/big3m" && "$WZIP" -q -d -c "$T/big3m.wlz4" > "$T/f.out" && same "$T/big3m" "$T/f.out" "--fast"
 "$WZIP" -q -f -5 "$T/big3m" && "$WLZ4" -q -d -c "$T/big3m.wz" > "$T/f.out" && same "$T/big3m" "$T/f.out" "wlz4 -d of .wz"
 
+# linked blocks (64 KiB blocks of a 3 MB file): the same frame from 1 and 8 threads, from a file and a pipe, and
+# smaller than independent blocks; -l shows the window log
+"$WZIP" -q -c -3 -B16 --linked "$T/big3m" > "$T/l1.wz" && "$WZIP" -q -c -3 -B16 --linked -T8 "$T/big3m" > "$T/l8.wz" \
+	&& same "$T/l1.wz" "$T/l8.wz" "--linked -T8"
+"$WZIP" -q -c -3 -B16 --linked -T3 < "$T/big3m" | "$WZIP" -q -d -c > "$T/l.out" && same "$T/big3m" "$T/l.out" "--linked pipe"
+"$WZIP" -q -d -c "$T/l1.wz" > "$T/l.out" && same "$T/big3m" "$T/l.out" "--linked -d"
+"$WZIP" -q -c -3 -B16 -T8 "$T/big3m" > "$T/u8.wz" && [ $(wc -c < "$T/l1.wz") -lt $(wc -c < "$T/u8.wz") ] && ok \
+	|| bad "linked blocks no smaller than independent ones"
+"$WZIP" -l "$T/l1.wz" | grep -q " 16  27 " && ok || bad "-l of linked blocks"
+"$WLZ4" -q -c --linked "$T/text8" > /dev/null 2>&1 && bad "--linked accepted with WLZ4" || ok
+
 # concatenated frames of both codecs, with a skippable frame between them
 "$WZIP" -q -c "$T/text8" > "$T/cat.wz"
 printf 'P*M\030\003\000\000\000abc' >> "$T/cat.wz"

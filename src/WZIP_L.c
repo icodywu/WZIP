@@ -640,7 +640,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	nLzLits = 0;
 	Uint32 srcIdx = 0;
 	for (i = 0; i < OffCasheSize; i++ )
-		lastOffset[i] = 1<<OffWidth[8];
+		lastOffset[i] = -1;                     /* unset (0xFFFFFFFF): above every offset, so never a hit */
 
 	while (1) {
 
@@ -1054,7 +1054,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
 	nLzLits = 0;
 	for (i = 0; i < OffCasheSize; i++ )
-		lastOffset[i] = 1<<OffWidth[8];
+		lastOffset[i] = -1;                     /* unset (0xFFFFFFFF): above every offset, so never a hit */
 
 #define L0_EMIT_LITERALS(from, to)   {                                                                    \
 		const Uint8* p_ = (from);                                                                        \
@@ -1499,7 +1499,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 
 	int curr0Idx = 0;
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
-	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
+	memset(lastOffset, 0xFF, OffCasheSize * sizeof(int));     /* unset: above every offset, so never a hit */
 	nLzLits = 0;
 	Uint32 srcIdx = 0, hashV;
 	int nextMatchDone = 0;
@@ -1942,6 +1942,7 @@ static void Opt_Init_LenTab(Opt_LenTab* const t)
    A dictionary takes the positions before the input (-D..-1, the input following it): its positions within each
    level's window (up to -16) are inserted before the input, so that every level finds matches in it. */
 #define   OPT_Nil              0x80000000u                       /* below any position, dictionary included */
+#define   OPT_TreeLead         (8 << 12)                         /* > the most tree threads run apart (Opt_MT) */
 
 typedef struct {
 	int* headA, *headB, *headC;
@@ -1956,6 +1957,8 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 
 static void Opt_Finder_Prime(Opt_Finder* const f, const Uint8* dict, int dictSize, const Uint8* const source,
 	const Uint8* const srcLastMatch, int searchCnt, const int mask);
+static void Opt_Prime_Tree(Opt_Finder* const f, const Uint8* dict, int dictSize, const Uint8* const source,
+	const Uint8* const srcLastMatch, int searchCnt, const int part, const int parts);
 
 /* allocates the indexes; primes those of `prime` with the dictionary (see Opt_Finder_Prime) */
 static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize, const Uint8* const source,
@@ -1963,6 +1966,11 @@ static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict
 {
 	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
 	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
+	/* The tree's nodes are those of the positions modulo 2^w(8): a position takes over the node of the one 2^w(8)
+	   before it. The threads that split the tree (Opt_MT) insert up to OPT_TreeLead positions apart, so when the
+	   positions span more than 2^w(8), the tree's window stops OPT_TreeLead short of it, with one thread as with many:
+	   no walk then reaches a node that another thread may already have taken over. */
+	if ((long long)min(dictSize, f->winC) + (srcLastMatch - source) > (long long)f->maskC + 1) f->winC -= OPT_TreeLead;
 	f->hMaskA = BitMask[min(OffWidth[4] + 2, 20)]; f->hMaskB = BitMask[OffWidth[6]]; f->hMaskC = BitMask[OffWidth[8]];
 	f->headA = (int*)malloc(((size_t)f->hMaskA + 1) * sizeof(int));
 	f->headB = (int*)malloc(((size_t)f->hMaskB + 1) * sizeof(int));
@@ -2000,9 +2008,33 @@ static void Opt_Finder_Prime(Opt_Finder* const f, const Uint8* dict, int dictSiz
 		f->chainB[(Uint32)i & f->maskB] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskB) ? (Uint32)(i - prev) : f->maskB + 1;
 		f->headB[h] = i;
 	}
-	if (mask & 4) for (int i = -min(dictSize, f->winC); i <= lastDict; i++)
-		Opt_Tree_Insert(f, source, i, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
+	if (mask & 4) Opt_Prime_Tree(f, dict, dictSize, source, srcLastMatch, searchCnt, 0, 1);
 }
+
+/* Inserts into the tree the dictionary positions (those of Opt_Finder_Prime) of the hash buckets h with h % parts =
+   part. Each bucket is a tree of its own, whose positions go in the same order whoever inserts them, so threads may
+   prime the parts at once and build the tree that one would. */
+static void Opt_Prime_Tree(Opt_Finder* const f, const Uint8* dict, int dictSize, const Uint8* const source,
+	const Uint8* const srcLastMatch, int searchCnt, const int part, const int parts)
+{
+	if (!dict || dictSize <= 0) return;
+	const Uint8* const dictEnd = dict + dictSize;
+	const int lastDict = dictEnd == source ? -1 : -16;
+	for (int i = -min(dictSize, f->winC); i <= lastDict; i++)
+		if (parts == 1 || (Hash_7B(dictEnd + i) & f->hMaskC) % (Uint32)parts == (Uint32)part)
+			Opt_Tree_Insert(f, source, i, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
+}
+
+#if WZIP_MULTITHREAD
+/* empties the indexes (after a failed start of the threads that were priming them) */
+static void Opt_Finder_Reset(Opt_Finder* const f)
+{
+	memset(f->headA, 0x80, ((size_t)f->hMaskA + 1) * sizeof(int));
+	memset(f->headB, 0x80, ((size_t)f->hMaskB + 1) * sizeof(int));
+	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
+	f->nextA = f->nextB = f->nextC = 0;
+}
+#endif
 
 static void Opt_Finder_Free(Opt_Finder* f)
 {
@@ -2167,38 +2199,20 @@ ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f,
    run in a thread of its own ahead of the parser: a producer searches every position in order, for its indexes, and
    writes the candidates into a ring of chunks; the parser takes those of each position from every producer, in the
    order A, B, C, and filters them as Opt_Candidates does. The parse, and so the output, is the same as with one
-   thread (the single-threaded finder inserts the positions the parse skips with the same tree walk). Producers by
-   worker count: 2: one (A, B, C); 3: two (A and B, C); 4 or more: three. */
+   thread (the single-threaded finder inserts the positions the parse skips with the same tree walk). The tree, the
+   costliest index, is a tree per hash bucket, so it splits further: producers that each take the buckets of one
+   residue modulo their count, and the dictionary's positions, inserted by every thread at once (Opt_Prime_Tree)
+   before the tree is searched. Producers by worker count: 2: one (A, B, C); 3: two (A and B, C); 4: three (A, B, C);
+   5 to 7: A, B and the tree in 2 to 4 parts. */
 #if WZIP_MULTITHREAD
-#  if defined(_WIN32)
-#    ifndef NOMINMAX
-#      define NOMINMAX
-#    endif
-#    ifndef WIN32_LEAN_AND_MEAN
-#      define WIN32_LEAN_AND_MEAN
-#    endif
-#    include <windows.h>
-typedef HANDLE WZ_Thread;
-#    define WZ_THREAD_FN(name, arg)  static DWORD WINAPI name(void* arg)
-#    define WZ_THREAD_START(t, fn, arg)  ((*(t) = CreateThread(NULL, 0, fn, arg, 0, NULL)) != NULL)
-#    define WZ_THREAD_JOIN(t)        (WaitForSingleObject(t, INFINITE), CloseHandle(t))
-#    define WZ_LOAD(p)               InterlockedCompareExchange((volatile LONG*)(p), 0, 0)
-#    define WZ_STORE(p, v)           InterlockedExchange((volatile LONG*)(p), (LONG)(v))
-#    define WZ_YIELD()               SwitchToThread()
-#  else
-#    include <pthread.h>
-#    include <sched.h>
-typedef pthread_t WZ_Thread;
-#    define WZ_THREAD_FN(name, arg)  static void* name(void* arg)
-#    define WZ_THREAD_START(t, fn, arg)  (pthread_create(t, NULL, fn, arg) == 0)
-#    define WZ_THREAD_JOIN(t)        pthread_join(t, NULL)
-#    define WZ_LOAD(p)               __atomic_load_n((p), __ATOMIC_ACQUIRE)
-#    define WZ_STORE(p, v)           __atomic_store_n((p), (v), __ATOMIC_RELEASE)
-#    define WZ_YIELD()               sched_yield()
-#  endif
+#include "wz_threads.h"
 
 #define   MT_ChunkLog          12                  /* positions handed over at a time */
 #define   MT_Ring              8                   /* chunks a producer may run ahead of the parser */
+#define   MT_MaxProd           6                   /* producers: A, B, and the tree in up to 4 parts */
+#if (MT_Ring - 1) << MT_ChunkLog >= OPT_TreeLead
+#  error "producers may run further apart than the tree's window allows (OPT_TreeLead)"
+#endif
 
 typedef struct {
 	Opt_Cand* pool;                                /* the candidates of the chunk's positions, in order */
@@ -2210,6 +2224,7 @@ typedef struct Opt_MT_s Opt_MT;
 typedef struct {
 	Opt_MT* mt;
 	int mask;                                      /* its indexes: 1 chain A, 2 chain B, 4 tree C */
+	int part, parts;                               /* of the tree: the buckets h with h % parts = part */
 	long produced;                                 /* positions done (atomic) */
 	WZ_Thread thread;
 	Opt_MT_Chunk ring[MT_Ring];
@@ -2222,9 +2237,10 @@ struct Opt_MT_s {
 	Uint32 end;                                    /* positions 0 .. end - 1 are searched */
 	long consumed;                                 /* atomic: the start of the parser's chunk */
 	long abort;                                    /* atomic: stop (the parse ended, or memory ran out) */
+	long primed;                                   /* atomic: threads done with their part of the tree's dictionary */
 	int nProd, started;
 	Uint32 readyEnd, chunk;                        /* the parser's: positions ready from every producer, its chunk */
-	Opt_MT_Producer prod[3];
+	Opt_MT_Producer prod[MT_MaxProd];
 };
 
 /* waits until *p >= v or the run is aborted; returns 0 if aborted */
@@ -2244,8 +2260,11 @@ WZ_THREAD_FN(Opt_MT_Producer_Main, arg)
 	Opt_Finder* const f = mt->f;
 	const Uint32 K = 1u << MT_ChunkLog;
 	const size_t perPos = 2 * (size_t)mt->searchCnt + 32;   /* the most one position adds (as tmp's size) */
-	Opt_Finder_Prime(f, mt->dictSize ? mt->dictEnd - mt->dictSize : NULL, mt->dictSize, mt->source, mt->srcLastMatch,
-	                 mt->searchCnt, p->mask);
+	const Uint8* const dict = mt->dictSize ? mt->dictEnd - mt->dictSize : NULL;
+	Opt_Prime_Tree(f, dict, mt->dictSize, mt->source, mt->srcLastMatch, mt->searchCnt, (int)(p - mt->prod), mt->nProd + 1);
+	WZ_FETCH_ADD(&mt->primed, 1);                  /* its part of the tree's dictionary; then its chains' */
+	Opt_Finder_Prime(f, dict, mt->dictSize, mt->source, mt->srcLastMatch, mt->searchCnt, p->mask & 3);
+	if ((p->mask & 4) && !Opt_MT_Wait(&mt->primed, mt->nProd + 1, &mt->abort)) return 0;
 	for (Uint32 base = 0; base < mt->end; base += K) {
 		const Uint32 chunk = base >> MT_ChunkLog;
 		if (chunk >= MT_Ring && !Opt_MT_Wait(&mt->consumed, (long)(chunk - MT_Ring + 1) << MT_ChunkLog, &mt->abort)) break;
@@ -2264,37 +2283,18 @@ WZ_THREAD_FN(Opt_MT_Producer_Main, arg)
 			if (p->mask & 1) used += Opt_Search_A(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->searchCnt, c->pool + used);
 			if (p->mask & 2) used += Opt_Search_B(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->dictLastMatch,
 			                                      mt->searchCnt, c->pool + used);
-			if (p->mask & 4) used += Opt_Search_C(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->searchCnt,
-			                                      c->pool + used);
+			if (p->mask & 4) {
+				if (p->parts == 1)
+					used += Opt_Search_C(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->searchCnt, c->pool + used);
+				else if ((Hash_7B(mt->source + idx) & f->hMaskC) % (Uint32)p->parts == (Uint32)p->part)
+					used += Opt_Tree_Insert(f, mt->source, (int)idx, mt->searchCnt, mt->srcLastMatch, mt->dictEnd, mt->dictSize,
+					                        c->pool + used);
+			}
 		}
 		c->start[lim] = (Uint32)used;
 		WZ_STORE(&p->produced, (long)(base + lim));
 	}
 	return 0;
-}
-
-/* starts the producers for positions 0 .. end - 1; returns 0 (and starts none) if a thread cannot be started */
-static int Opt_MT_Start(Opt_MT* const mt, const int workers)
-{
-	static const int masks[3][3] = { { 7 }, { 3, 4 }, { 1, 2, 4 } };
-	mt->nProd = workers >= 4 ? 3 : workers - 1;
-	mt->consumed = mt->abort = 0;
-	mt->readyEnd = 0;
-	mt->chunk = 0;
-	for (int k = 0; k < mt->nProd; k++) {
-		Opt_MT_Producer* const p = &mt->prod[k];
-		p->mt = mt;
-		p->mask = masks[mt->nProd - 1][k];
-		p->produced = 0;
-	}
-	for (mt->started = 0; mt->started < mt->nProd; mt->started++)
-		if (!WZ_THREAD_START(&mt->prod[mt->started].thread, Opt_MT_Producer_Main, &mt->prod[mt->started])) {
-			WZ_STORE(&mt->abort, 1);
-			for (int k = 0; k < mt->started; k++) WZ_THREAD_JOIN(mt->prod[k].thread);
-			mt->started = 0;
-			return 0;
-		}
-	return 1;
 }
 
 static void Opt_MT_Stop(Opt_MT* const mt)
@@ -2304,6 +2304,34 @@ static void Opt_MT_Stop(Opt_MT* const mt)
 	mt->started = 0;
 	for (int k = 0; k < mt->nProd; k++)
 		for (int r = 0; r < MT_Ring; r++) { free(mt->prod[k].ring[r].pool); mt->prod[k].ring[r].pool = NULL; mt->prod[k].ring[r].cap = 0; }
+}
+
+/* starts the producers for positions 0 .. end - 1, and primes this thread's part of the tree; returns 0 (and leaves
+   no thread running, the indexes to be emptied) if a thread cannot be started */
+static int Opt_MT_Start(Opt_MT* const mt, const int workers)
+{
+	static const int masks[3][3] = { { 7 }, { 3, 4 }, { 1, 2, 4 } };
+	mt->nProd = min(workers, MT_MaxProd + 1) - 1;
+	mt->consumed = mt->abort = mt->primed = 0;
+	mt->readyEnd = 0;
+	mt->chunk = 0;
+	for (int k = 0; k < mt->nProd; k++) {
+		Opt_MT_Producer* const p = &mt->prod[k];
+		p->mt = mt;
+		p->mask = mt->nProd <= 3 ? masks[mt->nProd - 1][k] : k < 2 ? 1 << k : 4;
+		p->part = mt->nProd <= 3 ? 0 : max(k - 2, 0);
+		p->parts = mt->nProd <= 3 ? 1 : mt->nProd - 2;
+		p->produced = 0;
+	}
+	for (mt->started = 0; mt->started < mt->nProd; mt->started++)
+		if (!WZ_THREAD_START(&mt->prod[mt->started].thread, Opt_MT_Producer_Main, &mt->prod[mt->started])) {
+			Opt_MT_Stop(mt);
+			return 0;
+		}
+	Opt_Prime_Tree(mt->f, mt->dictSize ? mt->dictEnd - mt->dictSize : NULL, mt->dictSize, mt->source, mt->srcLastMatch,
+	               mt->searchCnt, mt->nProd, mt->nProd + 1);
+	WZ_FETCH_ADD(&mt->primed, 1);
+	return 1;
 }
 
 /* the candidates of idx (positions taken in increasing order), as Opt_Candidates gives them; -1 if the producers
@@ -2417,7 +2445,10 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 			mt->end = lastMatchIdx;
 			if (!Opt_MT_Start(mt, wzipStr->nbWorkers)) { free(mt); mt = NULL; }
 		}
-		if (NULL == mt) Opt_Finder_Prime(&finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt, 7);
+		if (NULL == mt) {                              /* all here, from empty indexes (threads may have begun them) */
+			Opt_Finder_Reset(&finder);
+			Opt_Finder_Prime(&finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt, 7);
+		}
 	}
 #endif
 	Uint8* lzLitPtr = lzLitBuffer;
@@ -2428,7 +2459,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	Uint8* wlzStrEnd = wlzStream + srcSize + 1024;
 
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
-	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
+	memset(lastOffset, 0xFF, OffCasheSize * sizeof(int));     /* unset: above every offset, so never a hit */
 	Opt_Init_Stats(S_, st, source, srcSize);
 	Opt_Init_LenTab(lenTab);
 	Uint32 nextUpdate = regionIn ? 0 : OPT_UpdateBytes, seqCount = 0;

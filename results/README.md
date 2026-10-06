@@ -21,6 +21,13 @@ Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.
 
+Threads (not in the paper's tables; the README's "Threads"):
+
+| File | Contents |
+|---|---|
+| `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's |
+| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) as one stream and as linked blocks, 1 to 105 threads; then one 64 MiB block of enwik9 with and without its 128 MiB dictionary, 1 to 7 threads on one complex; then decoding speed of one stream, independent and linked 64 MiB blocks (`dbench`, core 4, best of 10) |
+
 ## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)
 
 The paper's first platform; the same ratios. Its tables were `gen_tables.py` applied to these files:

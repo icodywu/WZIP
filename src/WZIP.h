@@ -49,9 +49,11 @@ typedef struct  {
 } WZIP_State_Str;
 
 /* Threads that WZIP_Compress_L may use, at least 1 (the default). At the optimal levels (7-13), 2 or more run its
-   match finding in threads of its own, one per index (3-4 byte chain, 5-6 byte chain, tree), beside the parser; the
-   output is the same as with one thread. Takes effect when the library is built with WZIP_MULTITHREAD=1 (pthreads,
-   or Win32 threads on Windows); otherwise it is ignored. */
+   match finding in threads of its own, one per index (3-4 byte chain, 5-6 byte chain, tree), beside the parser, and
+   5 to WZIP_WORKERS_MAX split the tree among 2 to 4 threads by hash bucket; the output is the same as with one
+   thread. Takes effect when the library is built with WZIP_MULTITHREAD=1 (pthreads, or Win32 threads on Windows);
+   otherwise it is ignored. */
+#define WZIP_WORKERS_MAX 7
 void WZIP_Set_Workers(WZIP_State_Str* wzipStr, int nbWorkers);
 
 void WZIP_Set_OffWidth(int srcSize, int* offWidth);
@@ -88,6 +90,14 @@ int wzip_compress(const void* const source, int srcSize, void* const wzipStream,
 /* The same with up to nbWorkers threads (see WZIP_Set_Workers): at levels 7-13 the match finding runs beside the
    parser, and the stream is identical to wzip_compress's. */
 int wzip_compress_mt(const void* const source, int srcSize, void* const wzipStream, int *wzipCapSize, int level, int nbWorkers);
+
+/* The same with a dictionary, the dictSize bytes before the input (e.g. the content before it in a WZ frame of linked
+   blocks): an input of 32 KB and more (WZIP_L) may refer to them, and its windows follow dictSize + srcSize; a
+   smaller input does not use them. wzip_decompress_usingDict decodes it with the same dictionary (the same bytes and
+   size). A dictionary that ends where the input starts, or where the output starts, is used in place. */
+int wzip_compress_usingDict(const void* const source, int srcSize, void* const wzipStream, int *wzipCapSize, int level,
+                            int nbWorkers, const void* dict, int dictSize);
+int wzip_decompress_usingDict(const void* const source, int srcSize, void* decmp, int *decCapSize, const void* dict, int dictSize);
 
 /* Decompresses a stream of wzip_compress into decmp, whose capacity *decCapSize must hold the decoded size (which
    WZIP_Read_DecSize reports); nothing is written past it. Returns the decoded size, or 0 if the buffer is too small

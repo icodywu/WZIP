@@ -208,7 +208,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	nLzLits = 0;
 	Uint32 srcIdx = 0;
 	for (i = 0; i < OffCasheSize; i++ )
-		lastOffset[i] = 1<<OffWidth;
+		lastOffset[i] = 0xFFFFFFFFu;            /* unset: above every offset, so never a hit */
 
 	while (1) {
 
@@ -614,7 +614,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 
 	int curr0Idx = 0;
 	memset(litHuf, 0, N_HufLits * sizeof(Huffman_Str));
-	memset(lastOffset, 0x3F, OffCasheSize * sizeof(int));
+	memset(lastOffset, 0xFF, OffCasheSize * sizeof(int));     /* unset: above every offset, so never a hit */
 	nLzLits = 0;
 	Uint32 srcIdx = 0, hashV;
 	int nextMatchDone = 0;
@@ -1200,7 +1200,7 @@ static int Opt_Parse(const Uint8* const source, const Uint32 srcSize, const int 
 	const Uint32 lastMatchIdx = srcSize > REG_SIZE * 2 ? srcSize - REG_SIZE * 2 : 0;
 	const Uint8* const dictLastMatch = dictSize ? dictEnd - REG_SIZE * 2 : NULL;
 	Uint32 lastOffset[OffCasheSize], countOffset[OffCasheSize];
-	memset(lastOffset, 0x3F, sizeof(lastOffset));
+	memset(lastOffset, 0xFF, sizeof(lastOffset));            /* unset: above every offset */
 	memcpy(countOffset, lastOffset, sizeof(lastOffset));
 	Opt_Finder_Init(finder, dictEnd, dictSize);
 	Uint32 anchor = 0, pos = 0, nextUpdate = OPT_UpdateBytes;
@@ -1331,7 +1331,7 @@ static Uint32 WLZ2_Compress_Opt(
 	Uint8* lzLitPtr = lzLitBuffer;
 	const Uint8* const lzLitEnd = lzLitBuffer + HUF_BlockSize;
 	Uint32 nLzLits = 0, anchor = 0, lastOffset[OffCasheSize];
-	memset(lastOffset, 0x3F, sizeof(lastOffset));
+	memset(lastOffset, 0xFF, sizeof(lastOffset));            /* unset: above every offset */
 	WLZ_Set* destPtr = wlzSeq;
 	int extra;
 	for (int i = 0; i <= nPath; i++) {

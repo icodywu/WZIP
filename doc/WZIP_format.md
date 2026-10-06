@@ -201,8 +201,9 @@ moves its entry to the front; a new offset is pushed in front and the oldest ent
 ### 4.5 Matches
 
 A match is valid if `1 <= offset <= p + D` (`p`: bytes decoded so far, `D`: the dictionary size, 0 without one) and it
-ends at or before `n`. The one-call stream carries no dictionary; `WZIP_Decompress_L` and `WZIP_Decompress_M` take one,
-which must be the one the encoder was given.
+ends at or before `n`. No stream records its dictionary: `WZIP_Decompress_L`, `WZIP_Decompress_M` and, for a one-call
+stream of WZIP_L, `wzip_decompress_usingDict` take one, which must be the one the encoder was given. (A WZ frame of
+linked blocks gives each block the content before it; `frame_format.md`, section 5.1.)
 
 ## 5. WZIP_L (n >= 32768)
 
@@ -219,7 +220,7 @@ literals. Sequence blocks follow until `n` bytes are decoded.
 
 Each match length has a window **width** `w(l)`: a new offset of a length-`l` match is at most `2^w(l) - 4` (its value
 `offset + 3` is below `2^w(l)`). Lengths 8 and up share `w(8)`, which is derived from the **history size**
-`h = n + D`, where `D` is the size of the dictionary (section 8; 0 without one, and so always in the one-call stream):
+`h = n + D`, where `D` is the size of the dictionary (section 8; 0 without one):
 take the base width `b` from the table below, then `w(8)` is the smallest `w >= b` with `2^w - 3 >= h`, but at most 27.
 (A stream with a dictionary thus has the windows of the end of one stream of `h` bytes.)
 
@@ -458,8 +459,9 @@ Three **repeat slots** `rep = (1, 4, 8)` initially. Each sequence:
 
 ## 8. Dictionaries
 
-WZIP_L and WZIP_M (through `WZIP_New_State_L`/`_M` and `WZIP_Decompress_L`/`_M`) and WZIP_S (`WZIPS_createCDict`,
-`WZIPS_decompress_usingDict`) let a dictionary precede the input: positions `-D..-1` hold its last `D` bytes, and
+WZIP_L and WZIP_M (through `WZIP_New_State_L`/`_M` and `WZIP_Decompress_L`/`_M`; WZIP_L also through
+`wzip_compress_usingDict` and `wzip_decompress_usingDict`, and in WZ frames of linked blocks) and WZIP_S
+(`WZIPS_createCDict`, `WZIPS_decompress_usingDict`) let a dictionary precede the input: positions `-D..-1` hold its last `D` bytes, and
 offsets reach into it as into earlier output (section 2). A match that starts in the dictionary may run on past its
 end into the output, as positions run on from `-1` to `0`. Only WZIP_S records in the block that one is needed.
 WZIP_L derives its windows from the dictionary and output sizes together (section 5.2), so a block reaches as far

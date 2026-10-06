@@ -38,9 +38,11 @@ build/libwzip.a: $(OBJ)
 build/roundtrip$(EXE): tests/roundtrip.c build/libwzip.a
 	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@
 
-# the same, with every WZIP_L block decoded as a pipeline (these inputs are too small for the decoder to choose it)
+# the same, with every WZIP_L block decoded as a pipeline (these inputs are too small for the decoder to choose it),
+# and with windows of at most 2^17 bytes (a test format), so that these inputs wrap the match finder's tree as enwik9
+# does, where the threads that split it must not get in each other's way
 build/roundtrip_pipe$(EXE): tests/roundtrip.c $(SRC) $(HDR) | build
-	$(CC) $(CFLAGS) -DWZL_PIPELINE=1 tests/roundtrip.c $(SRC) -lm -o $@
+	$(CC) $(CFLAGS) -DWZL_PIPELINE=1 -DWZIP_TEST_MAX_OFF_WIDTH=17 tests/roundtrip.c $(SRC) -lm -o $@
 
 build/wzip$(EXE): programs/wzip.c build/libwzip.a
 	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@

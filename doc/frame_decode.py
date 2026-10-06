@@ -71,13 +71,21 @@ def decode(data):
             raise ValueError('truncated frame header')
         flg, ver, bs = data[pos + 4], data[pos + 5], data[pos + 6]
         codec = flg & 3
-        if codec > 1 or flg & 0xF0:
+        if codec > 1 or flg & 0xE0:
             raise ValueError('reserved codec or flag')
         if ver >> 4 != 0 or ver & 15 != 1:
             raise ValueError('unsupported format version')
         if not 10 <= bs <= 31:
             raise ValueError('block size log out of range')
         pos += 7
+        window = 0                                       # linked blocks (5.1): the window, 0 if independent
+        if flg & 0x10:
+            if codec != 0 or bs > 30:
+                raise ValueError('linked blocks of WLZ4 or of 2^31 bytes')
+            if pos >= len(data) or not 10 <= data[pos] <= 27:
+                raise ValueError('window log missing or out of range')
+            window = 1 << data[pos]
+            pos += 1
         size = None
         if flg & 8:
             if pos + 8 > len(data):
@@ -100,7 +108,10 @@ def decode(data):
                     raise ValueError('raw block above the block size')
                 content += block
                 continue
-            d = wzip_decode.decode(block) if codec == 0 else wlz4_decode.decode(block)
+            if codec == 1:
+                d = wlz4_decode.decode(block)
+            else:                                        # the dictionary: the last min(2^W, P) bytes of content
+                d = wzip_decode.decode(block, bytes(content[len(content) - min(window, len(content)):]))
             if not 1 <= len(d) <= 1 << bs:
                 raise ValueError('block decodes to a size out of range')
             content += d

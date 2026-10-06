@@ -1,7 +1,7 @@
 /*
  * libFuzzer target: compress the input with a codec and level chosen by its first two bytes (WZIP_L also with the
- * input's first part as its dictionary), decode it, and require the original back; the encoders must stay inside
- * their buffers and their stated bounds.
+ * input's first part as its dictionary, and WZ frames of linked blocks), decode it, and require the original back;
+ * the encoders must stay inside their buffers and their stated bounds.
  * Copyright (c) 2026-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  * Build and run: tests/fuzz/run.sh (clang -fsanitize=fuzzer,address,undefined, with the sources)
  */
@@ -27,7 +27,7 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 	const size_t n = size - 2;
 	unsigned char* in = exact(data + 2, n);
 	unsigned char* out = (unsigned char*)malloc(n ? n : 1);
-	switch (sel % 6) {
+	switch (sel % 7) {
 	case 0: {                                           /* wzip_compress, levels 0-13 (the optimal ones on small inputs) */
 		const int level = (int)(lv % 14);
 		if (level >= 7 && n > 65536) break;
@@ -113,6 +113,42 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 		}
 		free(c);
 		if (!prefix) { free(dict); free(body); }
+		break;
+	}
+	case 6: {                                           /* WZ frames of linked WZIP blocks of 32 or 64 KiB, windows of
+		                                                   1 KiB to 128 MiB; with 3 threads the same frame (MT builds),
+		                                                   decoded in one call and block by block (through the window) */
+		const int level = (int)(lv % 14);
+		if (level >= 7 && n > 131072) break;
+		WZF_params p = { WZF_CODEC_WZIP, level, 15 + (int)((lv >> 4) & 1), (int)((lv >> 5) & 1), 1, 10 + (int)(sel / 7 % 18) };
+		const size_t bound = WZF_compressBound(n, &p);
+		unsigned char* f = (unsigned char*)malloc(bound);
+		const size_t fs = WZF_compress(f, bound, in, n, &p);
+		if (WZF_isError(fs)) abort();
+#if WZIP_MULTITHREAD
+		p.nbWorkers = 3;
+		unsigned char* g = (unsigned char*)malloc(bound);
+		if (WZF_compress(g, bound, in, n, &p) != fs || memcmp(f, g, fs)) abort();
+		free(g);
+#endif
+		unsigned char* e = exact(f, fs);
+		if (WZF_decompress(out, n, e, fs) != n || memcmp(in, out, n)) abort();
+		WZF_DCtx* d = WZF_createDCtx();
+		size_t pos = WZF_decompressBegin(d, e, fs), o = 0;
+		if (WZF_isError(pos)) abort();
+		for (;;) {
+			int raw;
+			const size_t c = WZF_nextBlock(d, e + pos, &raw);
+			if (WZF_isError(c)) abort();
+			pos += WZF_BLOCK_HEADER;
+			if (c == 0) break;
+			const size_t r = WZF_decompressBlock(d, out + o, n - o, e + pos, c);
+			if (WZF_isError(r)) abort();
+			o += r; pos += c;
+		}
+		if (o != n || memcmp(in, out, n) || WZF_isError(WZF_decompressEnd(d, e + pos, WZF_endSize(d)))) abort();
+		WZF_freeDCtx(d);
+		free(e); free(f);
 		break;
 	}
 	}

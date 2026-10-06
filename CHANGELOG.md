@@ -6,10 +6,26 @@ a WZ frame records its frame format version and its codec's format version (`doc
 ## Unreleased
 
 - **Threads in compression.** At WZIP's optimal levels (7-13) the three match-finder indexes (chain of lengths 3-4,
-  chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser: `wzip -T#`,
-  `wzip_compress_mt`, `WZIP_Set_Workers`, `WZF_params.nbWorkers`. The output is byte for byte that of one thread; level
-  11 compresses Silesia 2.34 times as fast with 4 threads (AMD EPYC 9334). Built by default with make and CMake
+  chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser, and from 5 threads on the
+  tree, a tree per hash bucket, splits among 2 to 4 threads by bucket (`WZIP_WORKERS_MAX`, 7): `wzip -T#`,
+  `wzip_compress_mt`, `WZIP_Set_Workers`, `WZF_params.nbWorkers`. The output is byte for byte that of one thread;
+  level 11 compresses Silesia 2.79 times as fast with 6 threads, enwik8 3.54 times with 7 (AMD EPYC 9334, one 8-core
+  complex). With a dictionary all the threads index it at once. When the history outgrows the tree's 2^27-byte
+  window, the window now stops 32 KiB short, with any number of threads, so that the tree's threads never reuse a
+  node another still reads: enwik9 at level 11 grows by 0.008%. Built by default with make and CMake
   (`WZIP_MULTITHREAD`; pthreads, or Win32 threads on Windows); `make MT=0` and `-DWZIP_MULTITHREAD=OFF` leave it out.
+- **Linked blocks in WZ frames** (frame format: FLG bit 4 and a window log byte, `doc/frame_format.md`, 5.1): each
+  WZIP block may refer to the up to 2^W bytes of content before it (W up to 27, WZIP's widest window), as its
+  dictionary, so that content cut into blocks, and so compressed in parallel, loses almost nothing to the cuts:
+  enwik9 in blocks of 64 MiB, each with the 128 MiB before it, compresses within 0.01% of one stream at level 11.
+  `WZF_params.windowLog`, `wzip --linked`; the tool links WZIP blocks of 64 MiB by itself for content over 64 MiB
+  when given more threads than one block can use (`-T2` and up at levels 0-6, `-T8` and up at 7-13; `--no-linked`:
+  never). Decoders of 1.0.0 reject such frames; frames without linked blocks are unchanged.
+- **Blocks compressed in parallel.** `WZF_compress` and the new `WZF_compressBlocks` (streaming, any number of
+  blocks per call) compress `nbWorkers` blocks at once, of either codec, each with what is left of the threads for
+  WZIP's match finder; the frame is the same for any number of threads. `wzip -T#` reads `-T` blocks at a time.
+- `wzip_compress_usingDict` and `wzip_decompress_usingDict`: the one-call stream with a dictionary (WZIP_L).
+- Python: `wzip.compress(..., threads=, window_log=)`.
 - **Faster WZIP decoding of large inputs.** WZIP_L's decoders, checked and trusted, decode a block as a pipeline that
   prefetches each match's source when the previous block's matches often reached 1 MiB back or more: enwik8 44%
   and enwik9 62% faster at level 11 (AMD EPYC 9334), Silesia unchanged. Same format.
@@ -21,8 +37,15 @@ a WZ frame records its frame format version and its codec's format version (`doc
 - **WZIP_L windows with a dictionary** follow the history, dictionary and input together (`doc/WZIP_format.md`,
   5.2): a small input can reach as far into a large dictionary as one stream reaches back. This changes the format
   of WZIP_L streams with a dictionary (made only through `WZIP_New_State_L` and `WZIP_Decompress_L`): those of
-  earlier versions may not decode with this one, nor the reverse. Streams without one (the one-call stream, WZ
-  frames) are unchanged.
+  earlier versions may not decode with this one, nor the reverse. Streams without one (those of `wzip_compress` and
+  of WZ frames without linked blocks) are unchanged.
+- **Fix: wrong data from WZIP's encoders on large inputs.** They started the offset cache with four equal
+  placeholders, which a match could reach once the input outgrew WZIP's widest window (levels 0 and 1: 2^27 bytes) or
+  1,061,109,567 bytes (levels 2-13), while the cache still held one: its offset then matched all of them at once and
+  was written as a wrong offset, and the stream decoded without error to wrong data (a WZ frame's checksum catches
+  it). Level 0 did so on 1 MiB of random bytes and 127 MiB of zeros, twice over; a test build with narrower windows
+  (`WZIP_TEST_MAX_OFF_WIDTH`, now in `make test`) exposed it. The placeholders now lie above every offset; outputs
+  that were right are unchanged.
 - **Fix:** WLZ4's encoders could read one byte past the input, after a literal run of 15 or 16 bytes before a match
   16 bytes from its end (found by fuzzing the round trip through 2 KB frame blocks).
 

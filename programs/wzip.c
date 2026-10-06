@@ -45,9 +45,10 @@ enum { OP_COMPRESS, OP_DECOMPRESS, OP_TEST, OP_LIST, OP_BENCH };
 
 static struct {
 	int op, codec, level, levelSet, blockLog, noCheck, toStdout, force, rmSource, verbosity, benchEnd, threads;
+	int linked;                                         /* 1 --linked, -1 --no-linked, 0 by -T */
 	const char* outName;
 	const char* prog;
-} g = { OP_COMPRESS, WZF_CODEC_WZIP, 1, 0, 0, 0, 0, 0, 0, 1, -100, 1, NULL, "wzip" };
+} g = { OP_COMPRESS, WZF_CODEC_WZIP, 1, 0, 0, 0, 0, 0, 0, 1, -100, 1, 0, NULL, "wzip" };
 
 static const char* cur = "";                           /* the file being processed, for messages */
 
@@ -90,7 +91,11 @@ static void usage(FILE* f)
 "  -f         overwrite, or write compressed data to a terminal\n"
 "  -k         keep the input files (default)            --rm  remove them after success\n"
 "  -B#        blocks of at most 2^# bytes (10-31; default: the whole file, up to 1 GiB)\n"
-"  -T#        threads for WZIP's optimal levels 7-13 (2-4 help; default 1); the output is the same\n"
+"  -T#        threads (default 1): blocks at once, and up to 7 in each block at WZIP levels 7-13. With more\n"
+"             than one block can use (levels 0-6: 1; 7-13: 7), WZIP compresses more than 64 MiB as linked\n"
+"             blocks of 64 MiB, each referring to the 128 MiB before it, in parallel; the output is the same\n"
+"             for any -T up to that count, and for any above\n"
+"  --linked, --no-linked   WZIP: linked blocks at any -T, or never (linked: wzip 1.0.0 cannot decompress)\n"
 "  --no-check no content checksum\n"
 "  -b         benchmark the level (in memory, no files written); -e# up to level #\n"
 "  -q, -v     fewer, more messages       -h  this help    -V  version\n",
@@ -134,10 +139,21 @@ static int has_suffix(const char* s, const char* suf)
 static int file_exists(const char* name) { stat_t st; return stat_fn(name, &st) == 0; }
 
 /*------   Compression   ------*/
+/* the frame's window log: WZIP content of more than 64 MiB (or of unknown size) becomes linked blocks when the
+   threads outnumber those one block can use (levels 0-6: 1; 7-13: WZIP_WORKERS_MAX); --linked and --no-linked decide
+   otherwise */
+static int window_log(int level, unsigned long long contentSize)
+{
+	if (g.codec != WZF_CODEC_WZIP || g.linked < 0 || g.blockLog > 30) return 0;
+	const int oneBlock = level >= 7 ? WZIP_WORKERS_MAX : 1;
+	return g.linked > 0 || (g.threads > oneBlock && (contentSize == WZF_CONTENTSIZE_UNKNOWN || contentSize > 1ULL << 26))
+	       ? 27 : 0;
+}
+
 static int compress_stream(FILE* in, FILE* out, unsigned long long contentSize, unsigned long long* inTotal,
                            unsigned long long* outTotal)
 {
-	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck, g.threads };
+	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck, g.threads, window_log(g.level, contentSize) };
 	WZF_CCtx* c = WZF_createCCtx();
 	Buf src = { 0 }, dst = { 0 };
 	int ok = 0;
@@ -150,13 +166,17 @@ static int compress_stream(FILE* in, FILE* out, unsigned long long contentSize, 
 	const size_t codecMax = g.codec == WZF_CODEC_WZIP ? WZIP_MAX_INPUT_SIZE : WLZ_MAX_INPUT_SIZE;
 	size_t blk = (size_t)1 << WZF_blockLog(c);
 	if (blk > codecMax) blk = codecMax;
-	if (contentSize != WZF_CONTENTSIZE_UNKNOWN && contentSize < blk) blk = contentSize ? (size_t)contentSize : 1;
-	if (!buf_reserve(&src, blk) || !buf_reserve(&dst, WZF_blockBound(blk))) { fail("out of memory"); goto done; }
+	size_t batch = blk <= (size_t)-1 / 2 / (size_t)g.threads ? blk * (size_t)g.threads : blk;   /* -T blocks at once */
+	if (contentSize != WZF_CONTENTSIZE_UNKNOWN && contentSize < batch) batch = contentSize ? (size_t)contentSize : 1;
+	if (!buf_reserve(&src, batch) || !buf_reserve(&dst, WZF_blockBound(batch) + (batch / blk + 1) * WZF_BLOCK_HEADER)) {
+		fail("out of memory");
+		goto done;
+	}
 	for (;;) {
-		const size_t n = read_full(in, src.p, blk);
+		const size_t n = read_full(in, src.p, batch);
 		if (ferror(in)) { fail("read error"); goto done; }
 		if (n == 0) break;
-		r = WZF_compressBlock(c, dst.p, dst.cap, src.p, n);
+		r = WZF_compressBlocks(c, dst.p, dst.cap, src.p, n);
 		if (WZF_isError(r)) {
 			fail(WZF_getErrorCode(r) == WZF_error_contentSize ? "the input changed while it was read" : WZF_getErrorName(r));
 			goto done;
@@ -164,7 +184,7 @@ static int compress_stream(FILE* in, FILE* out, unsigned long long contentSize, 
 		if (!write_all(out, dst.p, r)) goto write_error;
 		*inTotal += n; *outTotal += r;
 		msg(3, "\r%llu => %llu bytes", *inTotal, *outTotal);
-		if (n < blk) break;
+		if (n < batch) break;
 	}
 	r = WZF_compressEnd(c, dst.p, dst.cap);
 	if (WZF_isError(r)) {
@@ -184,7 +204,7 @@ done:
 }
 
 /*------   Decompression (and testing, listing)   ------*/
-typedef struct { unsigned long long frames, blocks; int codecs, checksum, blockLog; } ListInfo;
+typedef struct { unsigned long long frames, blocks; int codecs, checksum, blockLog, windowLog; } ListInfo;
 
 /* decodes every frame of in into out (NULL: only checks them, for -t and -l); info collects what -l prints */
 static int decompress_stream(FILE* in, FILE* out, unsigned long long* inTotal, unsigned long long* outTotal, ListInfo* info)
@@ -229,6 +249,7 @@ static int decompress_stream(FILE* in, FILE* out, unsigned long long* inTotal, u
 			info->codecs |= 1 << fh->codec;
 			info->checksum |= fh->checksum;
 			if (fh->blockLog > info->blockLog) info->blockLog = fh->blockLog;
+			if (fh->windowLog > info->windowLog) info->windowLog = fh->windowLog;
 		}
 		for (;;) {
 			unsigned char bh[WZF_BLOCK_HEADER];
@@ -311,9 +332,11 @@ static int process(const char* inName)
 	if (g.op == OP_LIST || g.op == OP_TEST) {
 		ListInfo info = { 0 };
 		ok = decompress_stream(in, NULL, &inTotal, &outTotal, g.op == OP_LIST ? &info : NULL);
+		char w[12] = "-";                               /* the window of linked blocks */
+		if (info.windowLog) snprintf(w, sizeof w, "%d", info.windowLog);
 		if (g.op == OP_LIST && ok)
-			printf("%-30s %6llu %7llu  %-5s %3d  %-5s %14llu %14llu  %6.3f\n", cur, info.frames, info.blocks,
-			       info.codecs == 1 ? "WZIP" : info.codecs == 2 ? "WLZ4" : info.codecs ? "mixed" : "-", info.blockLog,
+			printf("%-30s %6llu %7llu  %-5s %3d %3s  %-5s %14llu %14llu  %6.3f\n", cur, info.frames, info.blocks,
+			       info.codecs == 1 ? "WZIP" : info.codecs == 2 ? "WLZ4" : info.codecs ? "mixed" : "-", info.blockLog, w,
 			       info.checksum ? "XXH32" : "-", inTotal, outTotal, inTotal ? (double)outTotal / inTotal : 0.0);
 		else if (ok) msg(2, "%s: OK (%llu bytes)\n", cur, outTotal);
 		if (!isStdin) fclose(in);
@@ -389,7 +412,7 @@ static int bench(const char* name)
 	const int last = g.benchEnd > g.level ? g.benchEnd : g.level;
 	int ok = 1;
 	for (int level = g.level; level <= last && ok; level++) {
-		const WZF_params p = { g.codec, level, g.blockLog, 1, g.threads };    /* the codec alone: no checksum */
+		const WZF_params p = { g.codec, level, g.blockLog, 1, g.threads, window_log(level, n) };   /* no checksum */
 		const size_t cap = WZF_compressBound(n, &p);
 		unsigned char* c = (unsigned char*)malloc(cap);
 		unsigned char* d = (unsigned char*)malloc(n + 32);
@@ -458,6 +481,8 @@ int main(int argc, char** argv)
 			else if (!strcmp(a, "--rm")) g.rmSource = 1;
 			else if (!strcmp(a, "--quiet")) g.verbosity--;
 			else if (!strcmp(a, "--verbose")) g.verbosity++;
+			else if (!strcmp(a, "--linked")) g.linked = 1;
+			else if (!strcmp(a, "--no-linked")) g.linked = -1;
 			else if (!strcmp(a, "--no-check")) g.noCheck = 1;
 			else if (!strcmp(a, "--check")) g.noCheck = 0;
 			else if (!strcmp(a, "--wzip")) { g.codec = WZF_CODEC_WZIP; if (!g.levelSet) g.level = 1; }
@@ -503,12 +528,13 @@ int main(int argc, char** argv)
 	if (g.codec == WZF_CODEC_WLZ4 && (g.level < -2 || g.level > 12)) { msg(1, "%s: WLZ4 levels are 0-12, --fast and --lazy\n", g.prog); return 1; }
 	if (g.blockLog && (g.blockLog < WZF_BLOCKLOG_MIN || g.blockLog > WZF_BLOCKLOG_MAX)) { msg(1, "%s: -B takes 10-31\n", g.prog); return 1; }
 	if (g.threads < 1 || g.threads > 256) { msg(1, "%s: -T takes 1-256\n", g.prog); return 1; }
+	if (g.linked > 0 && (g.codec != WZF_CODEC_WZIP || g.blockLog > 30)) { msg(1, "%s: --linked takes WZIP and -B up to 30\n", g.prog); return 1; }
 	if (nFiles == 0) files[nFiles++] = "-";
 	if (g.outName && nFiles > 1 && strcmp(g.outName, "-")) { msg(1, "%s: -o takes one input file\n", g.prog); return 1; }
 
 	int failed = 0;
 	if (g.op == OP_LIST)
-		printf("%-30s %6s %7s  %-5s %3s  %-5s %14s %14s  %6s\n", "file", "frames", "blocks", "codec", "B", "check",
+		printf("%-30s %6s %7s  %-5s %3s %3s  %-5s %14s %14s  %6s\n", "file", "frames", "blocks", "codec", "B", "W", "check",
 		       "compressed", "content", "ratio");
 	for (int i = 0; i < nFiles; i++)
 		if (!(g.op == OP_BENCH ? bench(files[i]) : process(files[i]))) failed = 1;

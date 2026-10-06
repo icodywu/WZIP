@@ -157,6 +157,10 @@ void WZIP_Set_OffWidth(int srcSize, int* offWidth) {
 			if (offWidth[i] == top) offWidth[i] = i < 8 ? min(w, WZIP_SHORT_OFF_WIDTH) : w;
 	}
 
+#ifdef WZIP_TEST_MAX_OFF_WIDTH    /* tests only, another format: narrower windows, so that small inputs wrap the indexes */
+	for (int i = 3; i <= 8; i++)
+		if (offWidth[i] > WZIP_TEST_MAX_OFF_WIDTH) offWidth[i] = WZIP_TEST_MAX_OFF_WIDTH;
+#endif
 	for (int i = 8; i > 3; i--)
 		assert(offWidth[i] >= offWidth[i - 1]);     /* windows never narrow as the length grows */
 }
@@ -187,8 +191,10 @@ static int WZIP_Store(const void* source, int srcSize, Uint8* dst, int dstCap)
 	return srcSize + 2;
 }
 
-/* Compresses into dst, which holds at least WZIP_Cap_CmprSize(srcSize) bytes. */
-static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, int dstCap, int level, int nbWorkers)
+/* Compresses into dst, which holds at least WZIP_Cap_CmprSize(srcSize) bytes; a WZIP_L stream (32 KB and more) with
+   the dictionary, if any (a WZIP_M stream never uses one). */
+static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, int dstCap, int level, int nbWorkers,
+	const void* dict, int dictSize)
 {
 	if (srcSize < 32)                                   /* not worth compressing */
 		return WZIP_Store(source, srcSize, dst, dstCap);
@@ -198,7 +204,7 @@ static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, in
 	WZIP_State_Str* wzipStr;
 	int cmprSize = 0;
 	if (srcSize >> 15) {
-		if (NULL == (wzipStr = WZIP_New_State_L(level, srcSize, NULL, 0))) return 0;
+		if (NULL == (wzipStr = WZIP_New_State_L(level, srcSize, dictSize > 0 ? dict : NULL, dictSize > 0 ? dictSize : 0))) return 0;
 		WZIP_Set_Workers(wzipStr, nbWorkers);
 		cmprSize = WZIP_Compress_L(wzipStr, source, srcSize, dst + hdrSize, dstCap - hdrSize);
 		WZIP_Free_State(wzipStr);
@@ -236,16 +242,22 @@ int wzip_compress(const void* source, int srcSize, void* wzipStream, int *wzipCa
 
 /* wzip_compress with up to nbWorkers threads (WZIP.h); the stream is the same */
 int wzip_compress_mt(const void* source, int srcSize, void* wzipStream, int *wzipCapSize, int level, int nbWorkers) {
+	return wzip_compress_usingDict(source, srcSize, wzipStream, wzipCapSize, level, nbWorkers, NULL, 0);
+}
+
+/* wzip_compress_mt with a dictionary for a WZIP_L stream (WZIP.h) */
+int wzip_compress_usingDict(const void* source, int srcSize, void* wzipStream, int *wzipCapSize, int level, int nbWorkers,
+	const void* dict, int dictSize) {
 	if (NULL == source || NULL == wzipStream || NULL == wzipCapSize || srcSize < 0 || (Uint32)srcSize > WZIP_MAX_INPUT_SIZE
-	    || level < 0 || level > 13)
+	    || level < 0 || level > 13 || dictSize < 0 || (dictSize && NULL == dict))
 		return 0;
 	const int cap = *wzipCapSize, bound = WZIP_Cap_CmprSize(srcSize);
 	if (cap >= bound)
-		return WZIP_Compress_Bounded(source, srcSize, (Uint8*)wzipStream, cap, level, nbWorkers);
+		return WZIP_Compress_Bounded(source, srcSize, (Uint8*)wzipStream, cap, level, nbWorkers, dict, dictSize);
 
 	Uint8* const tmp = (Uint8*)malloc(bound);
 	if (NULL == tmp) return 0;
-	int cmprSize = WZIP_Compress_Bounded(source, srcSize, tmp, bound, level, nbWorkers);
+	int cmprSize = WZIP_Compress_Bounded(source, srcSize, tmp, bound, level, nbWorkers, dict, dictSize);
 	if (cmprSize > cap) cmprSize = 0;
 	if (cmprSize) memcpy(wzipStream, tmp, cmprSize);
 	free(tmp);
@@ -256,7 +268,13 @@ int wzip_compress_mt(const void* source, int srcSize, void* wzipStream, int *wzi
    (WZIP_Read_DecSize reports it). Returns the decoded size, or 0 if the buffer is too small or the stream is corrupt. */
 int wzip_decompress(const void* source, int srcSize, void* decmp, int *decCapSize)
 {
-	if (NULL == source || NULL == decmp || NULL == decCapSize || srcSize < 2) return 0;
+	return wzip_decompress_usingDict(source, srcSize, decmp, decCapSize, NULL, 0);
+}
+
+/* wzip_decompress of a stream made by wzip_compress_usingDict, with the same dictionary (WZIP.h) */
+int wzip_decompress_usingDict(const void* source, int srcSize, void* decmp, int *decCapSize, const void* dict, int dictSize)
+{
+	if (NULL == source || NULL == decmp || NULL == decCapSize || srcSize < 2 || dictSize < 0 || (dictSize && NULL == dict)) return 0;
 	const int totalSize = srcSize;
 	const int decSize = WZIP_Read_DecSize(source, &srcSize);
 	const Uint8* const srcPtr = (const Uint8*)source + (totalSize - srcSize);     /* past the size header */
@@ -268,7 +286,7 @@ int wzip_decompress(const void* source, int srcSize, void* decmp, int *decCapSiz
 	if (*decCapSize < decSize) return 0;
 
 	if (decSize >> 15)
-		return WZIP_Decompress_L(srcPtr, srcSize, decmp, decSize, NULL, 0);
+		return WZIP_Decompress_L(srcPtr, srcSize, decmp, decSize, (void*)dict, dictSize);
 	else
 		return WZIP_Decompress_M(srcPtr, srcSize, decmp, decSize, NULL, 0);
 }

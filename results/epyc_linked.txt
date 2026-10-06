@@ -1,0 +1,54 @@
+== wzip -b<level> -T<n> [--no-linked] <file>, whole node, threads unpinned (2x AMD EPYC 9334); /usr/bin/time: wall time and peak memory (KB)
+auh7-3b-gpu-221 EnWik/enwik9 -11 -T1 WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 0.96 MB/s 721.8 MB/s wall 17:22.20 peak KB 3249904 
+auh7-3b-gpu-253 EnWik/enwik9 -11 -T5 --no-linked WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 2.27 MB/s 738.9 MB/s wall 7:23.06 peak KB 3253900 
+auh7-3b-gpu-274 EnWik/enwik9 -11 -T7 --no-linked WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 1.98 MB/s 710.7 MB/s wall 8:27.00 peak KB 3254404 
+auh7-3b-gpu-276 EnWik/enwik9 -11 -T8 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 3.54 MB/s 682.4 MB/s wall 4:45.83 peak KB 26539620 
+auh7-4b-gpu-053 EnWik/enwik9 -11 -T16 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 6.37 MB/s 683.4 MB/s wall 2:39.33 peak KB 46741572 
+auh7-4b-gpu-117 EnWik/enwik9 -11 -T30 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 5.96 MB/s 684.1 MB/s wall 2:50.08 peak KB 47063936 
+auh7-4b-gpu-125 EnWik/enwik9 -11 -T60 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 7.90 MB/s 683.0 MB/s wall 2:08.91 peak KB 46770544 
+auh7-4b-gpu-136 EnWik/enwik9 -11 -T105 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 11.00 MB/s 689.9 MB/s wall 1:33.07 peak KB 46933428 
+auh7-4b-gpu-149 EnWik/enwik9 -13 -T7 --no-linked WZIP 13 EnWik/enwik9 1000000000 -> 210118561 4.759 0.98 MB/s 684.7 MB/s wall 17:07.02 peak KB 3344944 
+auh7-4b-gpu-226 EnWik/enwik9 -13 -T105 WZIP 13 EnWik/enwik9 1000000000 -> 210148862 4.759 6.04 MB/s 665.6 MB/s wall 2:48.44 peak KB 47029884 
+auh7-3b-gpu-007 silesia.cat -11 -T1 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 1.49 MB/s 1033.4 MB/s wall 2:23.69 peak KB 2167172 
+auh7-3b-gpu-008 silesia.cat -11 -T4 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 2.91 MB/s 1030.8 MB/s wall 1:14.35 peak KB 2170620 
+auh7-3b-gpu-029 silesia.cat -11 -T7 --no-linked WZIP 11 silesia.cat 211938580 -> 51879884 4.085 2.81 MB/s 1030.5 MB/s wall 1:16.83 peak KB 2173036 
+auh7-3b-gpu-030 silesia.cat -11 -T16 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 4.89 MB/s 1017.2 MB/s wall 0:44.91 peak KB 10655164 
+auh7-4b-gpu-121 silesia.cat -11 -T28 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 6.07 MB/s 978.2 MB/s wall 0:36.52 peak KB 10587972 
+auh7-4b-gpu-122 EnWik/enwik8 -11 -T7 --no-linked WZIP 11 EnWik/enwik8 100000000 -> 25190218 3.970 2.13 MB/s 980.8 MB/s wall 0:48.26 peak KB 1756604 
+auh7-4b-gpu-161 EnWik/enwik9 -7 -T105 WZIP 7 EnWik/enwik9 1000000000 -> 243337790 4.110 20.93 MB/s 671.1 MB/s wall 0:51.05 peak KB 47019452 
+auh7-4b-gpu-162 EnWik/enwik9 -5 -T16 WZIP 5 EnWik/enwik9 1000000000 -> 241380957 4.143 43.78 MB/s 700.6 MB/s wall 0:25.65 peak KB 20381020 
+
+== bench/block_dict: one 64 MiB block of enwik9 (from 256 MiB on), level 11, without and with its 128 MiB dictionary, taskset -c 8-15
+L11 block 67108864 dict 0 workers 1: 16870324 bytes, 61.35 s, 1.094 MB/s
+L11 block 67108864 dict 0 workers 4: 16870324 bytes, 26.40 s, 2.542 MB/s
+L11 block 67108864 dict 0 workers 5: 16870324 bytes, 17.67 s, 3.797 MB/s
+L11 block 67108864 dict 0 workers 6: 16870324 bytes, 17.64 s, 3.805 MB/s
+L11 block 67108864 dict 0 workers 7: 16870324 bytes, 17.73 s, 3.785 MB/s
+L11 block 67108864 dict 134217728 workers 1: 15678845 bytes, 133.54 s, 0.503 MB/s
+L11 block 67108864 dict 134217728 workers 4: 15678845 bytes, 58.33 s, 1.150 MB/s
+L11 block 67108864 dict 134217728 workers 5: 15678845 bytes, 40.28 s, 1.666 MB/s
+L11 block 67108864 dict 134217728 workers 6: 15678845 bytes, 36.01 s, 1.863 MB/s
+L11 block 67108864 dict 134217728 workers 7: 15678845 bytes, 34.57 s, 1.941 MB/s
+
+== bench/frame_dec: decoding speed, core 4, best of 10; frames with checksum; enwik9 at level 5 and enwik8 at level 11 as one stream (one),
+   independent 64 MiB blocks (ind: -B26 --no-linked) and linked 64 MiB blocks (lnk); first with the decoders' rule for pipelining
+e9.L5.one.wz    241373986 ->   1000000000     856.0 MB/s
+e9.L5.ind.wz    250681320 ->   1000000000     885.7 MB/s
+e9.L5.lnk.wz    241380961 ->   1000000000     807.0 MB/s
+e8.L11.one.wz     25190222 ->    100000000     826.2 MB/s
+e8.L11.ind.wz     25914130 ->    100000000     837.2 MB/s
+e8.L11.lnk.wz     25197066 ->    100000000     796.6 MB/s
+-- every WZIP_L block pipelined (-DWZL_PIPELINE=1)
+e9.L5.one.wz    241373986 ->   1000000000     882.0 MB/s
+e9.L5.ind.wz    250681320 ->   1000000000     895.2 MB/s
+e9.L5.lnk.wz    241380961 ->   1000000000     833.6 MB/s
+e8.L11.one.wz     25190222 ->    100000000     831.5 MB/s
+e8.L11.ind.wz     25914130 ->    100000000     837.9 MB/s
+e8.L11.lnk.wz     25197066 ->    100000000     800.9 MB/s
+-- none pipelined (-DWZL_PIPELINE=-1)
+e9.L5.one.wz    241373986 ->   1000000000     521.0 MB/s
+e9.L5.ind.wz    250681320 ->   1000000000     714.3 MB/s
+e9.L5.lnk.wz    241380961 ->   1000000000     517.7 MB/s
+e8.L11.one.wz     25190222 ->    100000000     561.5 MB/s
+e8.L11.ind.wz     25914130 ->    100000000     666.9 MB/s
+e8.L11.lnk.wz     25197066 ->    100000000     557.9 MB/s
