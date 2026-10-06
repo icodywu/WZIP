@@ -85,7 +85,7 @@ WLZLIB_API const char* WLZ_versionString (void);   /**< library version string; 
 **************************************/
 #define WLZ_MAX_INPUT_SIZE       0x7FFFFF00   
 #define WLZ_COMP_BOUND           16
-#define WLZ_MEM_OVERHEAD          32
+#define WLZ_MEM_OVERHEAD          32      /* output room the trusted decoder needs past the decoded size */
 #define WLZ_COMPRESSBOUND(n)     ((n) + WLZ_COMP_BOUND + 8)   /* output capacity the compressors require: the output
                                                               is at most n + 15 bytes, plus room for wild copies */
 
@@ -249,7 +249,7 @@ WLZLIB_API unsigned WLZ_Compress_Fast(WLZ_State_Str *lzbStr, const char* src, ch
 	Note : the input is validated as LZ4's safe decoder validates its own: whatever the input, no read leaves
 	       src[0, compressedSize) or the dictionary, and no write leaves dst[0, dstCapacity); a malformed or truncated
 	       input returns 0 (so does a decoded size that differs from the header's).
-	'dstCapacity' must exceed the decoded size by WLZ_MEM_OVERHEAD (wild copies).
+	'dstCapacity' must hold the decoded size (WLZ_Read_DecSize); nothing is written past it.
 */
 WLZLIB_API unsigned WLZ_Decompress(const char* src, char* dst, unsigned compressedSize, unsigned dstCapSize);
 

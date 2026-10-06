@@ -128,8 +128,11 @@ static void test_wlz4(const unsigned char* src, int n, const char* name)
 		if (c == 0 || c > bound) { fail("wlz4", name, mode, "compression failed"); continue; }
 		if (!guard_ok(cmp, bound)) fail("wlz4", name, mode, "encoder wrote past its capacity");
 		if (WLZ_Read_DecSize((const char*)cmp, c) != (unsigned)n) fail("wlz4", name, mode, "wrong size header");
-		const unsigned d = WLZ_Decompress((const char*)cmp, (char*)dec, c, (unsigned)n + WLZ_MEM_OVERHEAD);
+		memset(dec + n, 0xA5, WLZ_MEM_OVERHEAD);          /* the checked decoder needs no room past the output */
+		const unsigned d = WLZ_Decompress((const char*)cmp, (char*)dec, c, (unsigned)n);
 		if (d != (unsigned)n || memcmp(src, dec, n)) fail("wlz4", name, mode, "decoded data differs");
+		for (int k = 0; k < WLZ_MEM_OVERHEAD; k++)
+			if (dec[n + k] != 0xA5) { fail("wlz4", name, mode, "decoder wrote past the decoded size"); break; }
 		if (!guard_ok(dec, (size_t)n + WLZ_MEM_OVERHEAD)) fail("wlz4", name, mode, "decoder wrote past its capacity");
 		{   /* trusted mode, from a buffer holding the stream and WLZ_TRUSTED_SRC_PAD bytes */
 			unsigned char* t = (unsigned char*)malloc((size_t)c + WLZ_TRUSTED_SRC_PAD);

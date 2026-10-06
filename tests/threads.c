@@ -3,15 +3,28 @@
  * frames, each with its own contexts, and every output must equal the one a single thread produces.
  * Copyright (c) 2026-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  *
- * usage: threads [threads [rounds]]      (default 8 threads, 3 rounds; built with -pthread)
+ * usage: threads [threads [rounds]]      (default 8 threads, 3 rounds; POSIX threads, or Windows threads)
  */
-#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "WZIP.h"
 #include "WLZ4.h"
 #include "wzframe.h"
+
+#ifdef _WIN32
+#  include <windows.h>
+typedef HANDLE thread_t;
+static DWORD WINAPI thread_main(LPVOID arg);
+static int  thread_start(thread_t* t, void* arg) { *t = CreateThread(NULL, 0, thread_main, arg, 0, NULL); return *t == NULL; }
+static void thread_join(thread_t t) { WaitForSingleObject(t, INFINITE); CloseHandle(t); }
+#else
+#  include <pthread.h>
+typedef pthread_t thread_t;
+static void* thread_main(void* arg);
+static int  thread_start(thread_t* t, void* arg) { return pthread_create(t, NULL, thread_main, arg); }
+static void thread_join(thread_t t) { pthread_join(t, NULL); }
+#endif
 
 #define N_INPUTS 6
 static unsigned char* input[N_INPUTS];
@@ -68,7 +81,7 @@ static int run(int k, unsigned out[4])
 	return ok;
 }
 
-static void* worker(void* arg)
+static void worker(void* arg)
 {
 	const int id = (int)(size_t)arg;
 	for (int r = 0; r < rounds; r++) {
@@ -79,8 +92,13 @@ static void* worker(void* arg)
 			failures++;
 		}
 	}
-	return NULL;
 }
+
+#ifdef _WIN32
+static DWORD WINAPI thread_main(LPVOID arg) { worker(arg); return 0; }
+#else
+static void* thread_main(void* arg) { worker(arg); return NULL; }
+#endif
 
 static unsigned rng = 777;
 static unsigned next_rand(void) { rng = rng * 1103515245u + 12345u; return rng >> 8; }
@@ -100,9 +118,10 @@ int main(int argc, char** argv)
 		}
 		if (!run(k, expected[k])) { printf("FAIL single-threaded round trip of input %d\n", k); return 1; }
 	}
-	pthread_t* t = (pthread_t*)malloc(nThreads * sizeof(pthread_t));
-	for (int i = 0; i < nThreads; i++) pthread_create(&t[i], NULL, worker, (void*)(size_t)i);
-	for (int i = 0; i < nThreads; i++) pthread_join(t[i], NULL);
+	thread_t* t = (thread_t*)malloc(nThreads * sizeof(thread_t));
+	for (int i = 0; i < nThreads; i++)
+		if (thread_start(&t[i], (void*)(size_t)i)) { printf("FAIL: cannot start a thread\n"); return 1; }
+	for (int i = 0; i < nThreads; i++) thread_join(t[i]);
 	printf("%d threads x %d rounds, %d failures\n", nThreads, rounds, failures);
 	return failures ? 1 : 0;
 }

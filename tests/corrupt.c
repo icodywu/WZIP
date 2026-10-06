@@ -162,8 +162,9 @@ static void fuzz_wlz4(const unsigned char* src, int n, const char* name, int ite
 	static const int modes[] = { -2, -1, 2, 6, 10, 12 };                 /* -2 fast, -1 lazy, then hash-chain levels */
 	const unsigned bound = WLZ_COMPRESSBOUND((unsigned)n);
 	unsigned char* cmp = (unsigned char*)malloc(bound);
-	const size_t cap = (size_t)n + WLZ_MEM_OVERHEAD;
+	const size_t cap = (size_t)n;                        /* the checked decoder needs no room past the output */
 	unsigned char* dec = guarded(cap);
+	unsigned char* dect = guarded(cap + WLZ_MEM_OVERHEAD);  /* the trusted decoder does */
 	WLZ_State_Str* ws = WLZ_New_State();
 	WLZhc_State_Str* hs = WLZhc_New_State();
 	for (unsigned m = 0; m < sizeof modes / sizeof modes[0]; m++) {
@@ -178,8 +179,8 @@ static void fuzz_wlz4(const unsigned char* src, int n, const char* name, int ite
 			check_clean(WLZ_Decompress((const char*)e, (char*)dec, c, (unsigned)cap) == (unsigned)n && !memcmp(dec, src, n), "wlz4", mode, name);
 			free(e);
 			e = exact_copy_pad(cmp, (int)c, WLZ_TRUSTED_SRC_PAD);  /* trusted mode: undamaged streams only */
-			check_clean(WLZ_Decompress_Trusted((const char*)e, (char*)dec, c, (unsigned)cap) == (unsigned)n && !memcmp(dec, src, n)
-				&& guard_ok(dec, cap), "wlz4-t", mode, name);
+			check_clean(WLZ_Decompress_Trusted((const char*)e, (char*)dect, c, (unsigned)cap + WLZ_MEM_OVERHEAD) == (unsigned)n
+				&& !memcmp(dect, src, n) && guard_ok(dect, cap + WLZ_MEM_OVERHEAD), "wlz4-t", mode, name);
 			free(e);
 		}
 		for (int it = 0; it < iters; it++) {
@@ -195,7 +196,7 @@ static void fuzz_wlz4(const unsigned char* src, int n, const char* name, int ite
 	}
 	WLZ_Free_State(ws);
 	WLZhc_Free_State(hs);
-	free(cmp); free(dec);
+	free(cmp); free(dec); free(dect);
 }
 
 static void fuzz_frames(const unsigned char* src, int n, const char* name, int iters)

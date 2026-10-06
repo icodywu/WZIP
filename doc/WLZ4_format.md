@@ -202,8 +202,8 @@ bytes: `200 << 1 | 1 = 0x191` is written `91 01`; a length-6 match at offset 100
 `src/WLZ4.c` has two decoders with the same output on valid input:
 
 - `WLZ_Decompress` (default) checks every rule of section 6 and never reads outside the input or writes outside the
-  output buffer, whatever the input (fuzzed with sanitizers). It requires `dstCapacity >= n + WLZ_MEM_OVERHEAD`
-  (32): copies may write up to 31 bytes past the end of the output.
+  output buffer, whatever the input (fuzzed with sanitizers). It needs `dstCapacity >= n` and writes nothing past
+  the output: its wide copies stop 40 bytes short of the end, and the last bytes are copied exactly.
 - `WLZ_Decompress_Trusted` skips the checks, for input known to come from a WLZ4 encoder; it may read up to
   `WLZ_TRUSTED_SRC_PAD` (32) bytes past the input. On Silesia it is 9-15% faster.
 

@@ -1,4 +1,4 @@
-# Builds and tests on Linux (GCC, clang; x86-64 and arm64), macOS, Windows (MSYS2 MinGW-w64) and with CMake; runs the
+# Builds and tests on Linux (GCC, clang; x86-64 and arm64), macOS, Windows (MSYS2 MinGW-w64, MSVC) and with CMake; runs the
 # damaged-stream test under AddressSanitizer and UndefinedBehaviorSanitizer and the thread test under
 # ThreadSanitizer. `make test` includes the golden frames (tests/golden), decoded by the tool and the Python
 # reference decoder. The big-endian job (s390x under QEMU) is informative until big-endian support is verified.
@@ -59,6 +59,18 @@ jobs:
           install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-python
       - name: Build and test
         run: make test
+
+  msvc:
+    name: Windows, MSVC (CMake)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure, build, test
+        shell: bash
+        run: |
+          cmake -S . -B build-cmake
+          cmake --build build-cmake --config Release
+          ctest --test-dir build-cmake -C Release --output-on-failure
 
   cmake:
     name: CMake, install, pkg-config

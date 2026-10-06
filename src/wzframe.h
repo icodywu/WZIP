@@ -78,8 +78,7 @@ size_t WZF_compress(void* dst, size_t dstCapacity, const void* src, size_t srcSi
    if src is not a sequence of frames (only headers are read, so a damaged frame may still fail to decode). */
 unsigned long long WZF_getContentSize(const void* src, size_t srcSize);
 
-/* Decompresses every frame in src (skipping skippable frames) into dst. Returns the content size or an error.
-   (WLZ4's decoder copies in 32-byte steps: with 32 bytes of room beyond the content, no block goes through a copy.) */
+/* Decompresses every frame in src (skipping skippable frames) into dst. Returns the content size or an error. */
 size_t WZF_decompress(void* dst, size_t dstCapacity, const void* src, size_t srcSize);
 
 /*------   Block by block (streaming)   ------

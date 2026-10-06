@@ -273,12 +273,10 @@ struct WZF_DCtx_s {
 	size_t pendingSize;
 	unsigned long long decoded;
 	XXH32_state xxh;
-	unsigned char* tmp;
-	size_t tmpCap;
 };
 
 WZF_DCtx* WZF_createDCtx(void) { return (WZF_DCtx*)calloc(1, sizeof(WZF_DCtx)); }
-void WZF_freeDCtx(WZF_DCtx* d) { if (d) { free(d->tmp); free(d); } }
+void WZF_freeDCtx(WZF_DCtx* d) { free(d); }
 const WZF_FrameHeader* WZF_frameHeader(const WZF_DCtx* d) { return &d->h; }
 size_t WZF_frameBlockSize(const WZF_DCtx* d) { return (size_t)1 << d->h.blockLog; }
 
@@ -352,20 +350,7 @@ static size_t decode_block(WZF_DCtx* d, unsigned char* dst, size_t cap, const un
 	const size_t size = WLZ_Read_DecSize((const char*)s, (unsigned)n);
 	if (size == 0 || size > maxBlk) return ERR(corrupted);
 	if (cap < size) return ERR(dstSize_tooSmall);
-	if (cap - size >= WLZ_MEM_OVERHEAD)
-		return WLZ_Decompress((const char*)s, (char*)dst, (unsigned)n, (unsigned)(size + WLZ_MEM_OVERHEAD)) == size
-		       ? size : ERR(corrupted);
-	/* no room for the decoder's wild copies past the end: decode into a scratch buffer */
-	if (d->tmpCap < size + WLZ_MEM_OVERHEAD) {
-		free(d->tmp);
-		d->tmpCap = 0;
-		if (!(d->tmp = (unsigned char*)malloc(size + WLZ_MEM_OVERHEAD))) return ERR(memory);
-		d->tmpCap = size + WLZ_MEM_OVERHEAD;
-	}
-	if (WLZ_Decompress((const char*)s, (char*)d->tmp, (unsigned)n, (unsigned)(size + WLZ_MEM_OVERHEAD)) != size)
-		return ERR(corrupted);
-	memcpy(dst, d->tmp, size);
-	return size;
+	return WLZ_Decompress((const char*)s, (char*)dst, (unsigned)n, (unsigned)size) == size ? size : ERR(corrupted);
 }
 
 size_t WZF_blockDecodedSize(const WZF_DCtx* d, const void* src, size_t srcSize)

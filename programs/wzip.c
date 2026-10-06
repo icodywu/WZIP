@@ -7,6 +7,10 @@
  * either codec. Files are processed block by block, so their size is not limited by memory.
  */
 #define _FILE_OFFSET_BITS 64
+#ifdef _MSC_VER
+#  define _CRT_SECURE_NO_WARNINGS                      /* strerror, strcpy, fopen: used safely here */
+#  define _CRT_NONSTDC_NO_WARNINGS
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -238,7 +242,7 @@ static int decompress_stream(FILE* in, FILE* out, unsigned long long* inTotal, u
 			*inTotal += c;
 			const size_t size = WZF_blockDecodedSize(d, cmp.p, c);
 			if (WZF_isError(size)) { fail(WZF_getErrorName(size)); goto done; }
-			if (!buf_reserve(&dec, size + 32)) { fail("out of memory"); goto done; }    /* 32: WLZ4 needs no copy */
+			if (!buf_reserve(&dec, size)) { fail("out of memory"); goto done; }
 			const size_t r = WZF_decompressBlock(d, dec.p, dec.cap, cmp.p, c);
 			if (WZF_isError(r)) { fail(WZF_getErrorName(r)); goto done; }
 			if (out && !write_all(out, dec.p, r)) { fail(strerror(errno)); goto done; }
@@ -504,6 +508,6 @@ int main(int argc, char** argv)
 		       "compressed", "content", "ratio");
 	for (int i = 0; i < nFiles; i++)
 		if (!(g.op == OP_BENCH ? bench(files[i]) : process(files[i]))) failed = 1;
-	free(files);
+	free((void*)files);
 	return failed;
 }

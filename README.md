@@ -220,7 +220,8 @@ ctest --test-dir build-cmake && cmake --install build-cmake
 The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 (MinGW-w64, Windows), and GCC 11.4
 and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer,
 and the thread test under ThreadSanitizer. Continuous integration ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
-runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows (MinGW-w64), and builds with CMake.
+runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows (MinGW-w64 and MSVC), and builds
+with CMake.
 Big-endian support is not yet verified: a job on an emulated s390x runs the tests for information only. On x86 the
 decoders pick BMI2 code paths at run time. The library's version
 (1.0.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
@@ -267,7 +268,7 @@ int dSize = wzip_decompress(dst, cSize, out, &decCap);
 
 WLZhc_State_Str* hc = WLZhc_New_State();
 unsigned cSize = WLZhc_Compress(hc, src, dst, n, WLZ_COMPRESSBOUND(n), 10);   /* level 0-12 */
-unsigned dSize = WLZ_Decompress(dst, out, cSize, n + WLZ_MEM_OVERHEAD);      /* out holds n + WLZ_MEM_OVERHEAD */
+unsigned dSize = WLZ_Decompress(dst, out, cSize, n);                         /* out holds n bytes */
 WLZhc_Free_State(hc);
 ```
 
@@ -428,6 +429,7 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 | `tests/` | round trips of every codec and level, the thread test, the tool's test (`make test`), damaged streams (`make fuzz`) |
 | `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |
+| `contrib/lzbench/` | adds WLZ4 and WZIP to [lzbench](https://github.com/inikep/lzbench) |
 
 ## License
 
