@@ -71,7 +71,10 @@
 
 /* chain insertion runs L_InsertAhead positions ahead of the search, prefetching each inserted position's first
    candidate; hash slots are prefetched L_HashAhead positions ahead of insertion. A position's chain link is fixed
-   when it is inserted, so inserting ahead changes no match. Search positions lie before srcEnd - 16, so hashing
+   when it is inserted, but a chain table of 2^w slots walked to a window of 2^w - 3 lets a position inserted ahead
+   overwrite the slot of one still in the window: a walk can then follow a stale link to another position of the
+   history, a candidate compared like any other. The walks stop at one in the dictionary's last 15 bytes, which hold
+   no entries and whose 8-byte compares would read past it. Search positions lie before srcEnd - 16, so hashing
    L_InsertAhead (<= 8) positions ahead stays inside the input. */
 #define   L_InsertAhead        8
 #define   L_HashAhead          24
@@ -1245,7 +1248,8 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 	Uint64 diffPattern, currPattern = MemReadARCH(srcPtr);
 	int matchDist = chain1Table[currIdx & chain1Mask];
 	matchIdx = currIdx - matchDist;
-	while (matchIdx >= -dictSize && matchDist < off1Window && chainSearchCnt) {		
+	while (matchIdx >= -dictSize && matchDist < off1Window && chainSearchCnt) {
+		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		diffPattern = currPattern ^ MemReadARCH(matchPtr);
 		matchLen = diffPattern ? N_ZeroBytes(diffPattern) : REG_SIZE;
@@ -1293,6 +1297,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 	int matchDist = chain2Table[currIdx & chain2Mask];
 	matchIdx = currIdx - matchDist;
 	while (matchIdx >= -dictSize && matchDist < off2Window && chainSearchCnt) {
+		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH((int)matchStr->len + 1)) {
 			matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
@@ -1348,6 +1353,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 	int searchCnt = chainSearchCnt * 3 / 4 + 4;
 	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
 		matchIdx = currIdx - matchDist;
+		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr)) {
 			const int backIdx = (matchIdx >= 2 || (matchIdx < 0 && matchIdx >= 2 - (int)dictSize)) ? (back0 == *(matchPtr - 1)) ^ ((back1 == *(matchPtr - 2)) << 1) : 0;   /* never extend before the history start */
@@ -1377,6 +1383,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 	searchCnt = 2 + chainSearchCnt / 4;
 	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
 		matchIdx = currIdx - matchDist;
+		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr)) {
 			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
