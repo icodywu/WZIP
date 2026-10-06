@@ -332,7 +332,9 @@ ForceInlineTemplate Uint8* WLZ_Encode_Sequence(Uint8* destPtr, const Uint8* anch
 		Uint32 extraLitLen = litLen - RUN_MASK;
 		*token = (RUN_MASK << ML_BITS);
 		WLZ_WRITE_ExtraLength(destPtr, extraLitLen);
-		MemWildCopy(destPtr + 16, anchor + 16, destPtr + litLen);
+		/* only past 16 literals: the wild copy always moves one chunk, and for a run of 15 or 16 before a match
+		   16 bytes from the input's end it would read past it (found by fuzzing) */
+		if (litLen > 16) MemWildCopy(destPtr + 16, anchor + 16, destPtr + litLen);
 	}
 	else *token = (Uint8)(litLen << ML_BITS);
 	memcpy(destPtr, anchor, 16);
