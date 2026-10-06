@@ -6,3 +6,6 @@ Makefile text eol=lf
 # golden test files: exact bytes
 tests/golden/** -text
 tests/golden/*.sh text eol=lf
+
+# patches applied by scripts: exact line endings
+*.patch text eol=lf

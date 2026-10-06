@@ -1,0 +1,2 @@
+include LICENSE NOTICE python/README.md python/_wzip.c
+include src/*.c src/*.h

@@ -1,0 +1,39 @@
+# Builds the Python package for PyPI: wheels for Linux (x86-64, arm64), macOS and Windows with cibuildwheel, and the
+# source distribution, as workflow artifacts. Run by hand (Actions > Wheels > Run workflow) or by a v* tag. Publishing
+# is left to the maintainer: twine upload of the artifacts, or PyPI's trusted publishing.
+name: Wheels
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  wheels:
+    name: Wheels, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pypa/cibuildwheel@v2.21
+        env:
+          CIBW_SKIP: "pp* *-musllinux_i686 *-win32 *-manylinux_i686"
+          CIBW_TEST_COMMAND: python -m unittest discover -s {project}/python/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}
+          path: wheelhouse/*.whl
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

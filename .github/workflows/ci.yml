@@ -91,6 +91,23 @@ jobs:
           cc use.c $(pkg-config --cflags --libs libwzip) -o use
           LD_LIBRARY_PATH="$PWD/inst/lib" ./use
 
+  python:
+    name: Python package, ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install and test
+        run: |
+          python -m pip install .
+          python -m unittest discover -s python/tests -v
+
   big-endian:
     name: Big-endian (s390x, QEMU; informative)
     runs-on: ubuntu-24.04

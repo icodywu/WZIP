@@ -14,6 +14,9 @@ First release.
 - **Frame API** (`wzframe.h`): one-shot and block-by-block (streaming) compression and decompression, `size_t` sizes,
   error codes, content beyond the codecs' 2 GB limit as several blocks.
 - **Command-line tool** `wzip` / `wlz4`: compress, decompress, test, list and benchmark, through files or pipes.
+- **Python package** `wzip` (`pip install .`): WZ frames and the bare codec streams, releasing the GIL.
+- WLZ4's bounds-checked decoder needs no room past the decoded size (it used to need 32 bytes).
+- **lzbench integration** (`contrib/lzbench`).
 - **Thread safety:** every function may run in several threads at once, each thread with its own contexts (WZIP_L's
   window schedule used to be global).
 - **Builds:** GNU make (static library, tool, tests) and CMake (static and shared libraries, tool, tests, install,

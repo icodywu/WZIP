@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wzip"
+version = "1.0.0"
+description = "WZIP and WLZ4 compression: LZ77 codecs with match-length-dependent sliding windows"
+readme = "python/README.md"
+license = "BSD-2-Clause"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Yingquan (Cody) Wu" }]
+requires-python = ">=3.9"
+keywords = ["compression", "lz77", "lz4", "zstd", "huffman"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Archiving :: Compression",
+]
+
+[project.urls]
+Homepage = "https://github.com/icodywu/WZIP"
+Documentation = "https://github.com/icodywu/WZIP#readme"
+
+[tool.setuptools]
+package-dir = { "" = "python" }
+packages = ["wzip"]

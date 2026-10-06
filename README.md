@@ -199,6 +199,21 @@ wzip -b9 -e11 file     # benchmark levels 9 to 11 in memory
 As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are not overwritten without `-f`.
 `wzip -h` lists every option.
 
+## Python
+
+```sh
+pip install .            # from this repository (a C compiler is needed); the package is wzip
+```
+
+```python
+import wzip
+packed = wzip.compress(data, "wlz4", level=10)   # or "wzip", levels 0-13 (default 1)
+assert wzip.decompress(packed) == data           # the tools' WZ frames, either codec; wzip.Error on damage
+```
+
+Calls release the GIL, so threads compress in parallel; [`python/README.md`](python/README.md) has the rest.
+`.github/workflows/wheels.yml` builds wheels for Linux, macOS and Windows, for publication on PyPI.
+
 ## Build and test
 
 ```sh
@@ -430,6 +445,7 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 | `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |
 | `contrib/lzbench/` | adds WLZ4 and WZIP to [lzbench](https://github.com/inikep/lzbench) |
+| `python/` | the Python package `wzip` (`pyproject.toml`, `setup.py` at the root) |
 
 ## License
 
