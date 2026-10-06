@@ -196,10 +196,19 @@ wzip -d file.wz        # back to file (-o name, -c to standard output)
 tar cf - dir | wlz4 > dir.tar.wlz4
 wzip -t file.wz        # test; -l lists frames, blocks, codec, sizes and ratio
 wzip -b9 -e11 file     # benchmark levels 9 to 11 in memory
+wzip -11 -T4 file      # 4 threads: about 2.3 times as fast at levels 7-13, the same output
 ```
 
 As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are not overwritten without `-f`.
 `wzip -h` lists every option.
+
+**Threads.** At its optimal levels (7-13) WZIP spends most of its time finding matches, in three indexes, one per
+class of lengths, each with its own window: a 3-byte chain for lengths 3-4, a 5-byte chain for lengths 5-6 and a
+binary tree for lengths 7 and up. They depend only on the input, not on the parse, so with `-T` each runs in a thread
+of its own, ahead of the parser, which takes their candidates in order: the input is not cut, and the output is
+byte for byte that of one thread. On AMD EPYC 9334, level 11 compresses Silesia 2.08 times as fast with 3 threads and
+2.34 times with 4 (enwik8: 2.08, 2.17); level 13 2.16 times, level 7 2.15 times. The tree is the slowest stage, so more
+threads do not help further.
 
 ## Python
 
@@ -219,7 +228,7 @@ Calls release the GIL, so threads compress in parallel; [`python/README.md`](pyt
 ## Build and test
 
 ```sh
-make          # build/libwzip.a, the tool build/wzip (and build/wlz4), and the tests
+make          # build/libwzip.a, the tool build/wzip (and build/wlz4), and the tests; with threads (make MT=0: none)
 make test     # round trips of every codec and level on synthetic inputs, with guard checks on every buffer;
               # 8 threads at once against single-threaded outputs; the tool on files, pipes and damaged files;
               # the golden frames of tests/golden, which every version must keep decoding
@@ -276,6 +285,7 @@ identification or checksum, for applications that store sizes and codecs themsel
 
 int cap = WZIP_Cap_CmprSize(n);                       /* input + 256 always suffices */
 int cSize = wzip_compress(src, n, dst, &cap, 11);     /* level 0-13; 0 on failure */
+/* or wzip_compress_mt(src, n, dst, &cap, 11, 4): 4 threads, the same stream (WZF_params.nbWorkers for frames) */
 
 int decCap = n;                                       /* the decoded size, also given by WZIP_Read_DecSize */
 int dSize = wzip_decompress(dst, cSize, out, &decCap);

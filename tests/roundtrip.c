@@ -69,6 +69,23 @@ static void test_wzip(const unsigned char* src, int n, const char* name)
 			if (wzip_decompress(cmp, c, dec, &dcap) != 0) fail("wzip", name, level, "accepted a too-small output buffer");
 		}
 	}
+	/* threads (wzip_compress_mt, with WZIP_MULTITHREAD): the stream of one thread */
+	if (n >= 32768) {
+		static const int mtLevels[3] = { 7, 11, 13 };
+		unsigned char* one = guarded(bound);
+		for (int k = 0; k < 3; k++) {
+			int cap1 = bound;
+			const int c1 = wzip_compress(src, n, one, &cap1, mtLevels[k]);
+			for (int w = 2; w <= 4; w += 2) {
+				int capm = bound;
+				const int cm = wzip_compress_mt(src, n, cmp, &capm, mtLevels[k], w);
+				checks++;
+				if (cm != c1 || memcmp(cmp, one, c1)) fail("wzip/mt", name, mtLevels[k], "threads changed the stream");
+				if (!guard_ok(cmp, bound)) fail("wzip/mt", name, mtLevels[k], "encoder wrote past its capacity");
+			}
+		}
+		free(one);
+	}
 	/* a small output buffer: either a valid stream that fits, or 0 */
 	if (n >= 64) {
 		int cap = n / 2;
@@ -109,6 +126,13 @@ static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
 			if (c < 0) { fail(what, name, level, "no state"); continue; }
 			if (!guard_ok(cmp, bound)) fail(what, name, level, "encoder wrote past its capacity");
 			if (c == 0) continue;                         /* did not fit: a caller would store the input */
+			if (level == 7 || level == 11) {              /* with threads, the same stream */
+				WZIP_State_Str* sm = WZIP_New_State_L(level, len, dict, dictSize);
+				WZIP_Set_Workers(sm, 4);
+				const int cm = sm ? WZIP_Compress_L(sm, src + dictSize, len, t, bound) : -1;
+				WZIP_Free_State(sm);
+				if (cm != c || memcmp(t, cmp, c)) fail(what, name, level, "threads changed the stream");
+			}
 			memset(dec, 0, len);
 			int d = WZIP_Decompress_L(cmp, c, dec, len, (void*)dict, dictSize);
 			if (d != len || memcmp(src + dictSize, dec, len)) fail(what, name, level, "decoded data differs");

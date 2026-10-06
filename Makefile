@@ -9,6 +9,14 @@ CC := gcc
 endif
 CFLAGS ?= -O2
 override CFLAGS += -Wall -Isrc
+# threads in compression (WZIP_Set_Workers, wzip -T): pthreads, or Win32 threads on Windows; make MT=0 leaves them out
+MT ?= 1
+ifeq ($(MT),1)
+override CFLAGS += -DWZIP_MULTITHREAD=1
+ifneq ($(OS),Windows_NT)
+override CFLAGS += -pthread
+endif
+endif
 AR     ?= ar
 EXE    := $(if $(filter Windows_NT,$(OS)),.exe,)
 

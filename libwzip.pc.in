@@ -7,5 +7,5 @@ Description: WZIP and WLZ4 compression, and the WZ frame
 URL: https://github.com/icodywu/WZIP
 Version: @PROJECT_VERSION@
 Libs: -L${libdir} -lwzip
-Libs.private: -lm
+Libs.private: -lm @WZIP_PC_THREADS@
 Cflags: -I${includedir}

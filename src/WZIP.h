@@ -45,7 +45,14 @@ typedef struct  {
 	int dictSize;
 	unsigned char* dictEnd;
 	void* sched;                  /* WZIP_L: the input's window schedule (private) */
+	int nbWorkers;                /* threads of WZIP_Compress_L (WZIP_Set_Workers) */
 } WZIP_State_Str;
+
+/* Threads that WZIP_Compress_L may use, at least 1 (the default). At the optimal levels (7-13), 2 or more run its
+   match finding in threads of its own, one per index (3-4 byte chain, 5-6 byte chain, tree), beside the parser; the
+   output is the same as with one thread. Takes effect when the library is built with WZIP_MULTITHREAD=1 (pthreads,
+   or Win32 threads on Windows); otherwise it is ignored. */
+void WZIP_Set_Workers(WZIP_State_Str* wzipStr, int nbWorkers);
 
 void WZIP_Set_OffWidth(int srcSize, int* offWidth);
 
@@ -77,6 +84,10 @@ int WZIP_Decompress_M_Trusted(const void* const source, int const srcSize, void*
    WZIP_Cap_CmprSize(srcSize) always suffices. Returns the compressed size, at most srcSize + 2 (an input that does not
    shrink is stored), or 0 if it does not fit or an argument is invalid. The caller's buffer is never reallocated. */
 int wzip_compress(const void* const source, int srcSize, void* const wzipStream, int *wzipCapSize, int level);
+
+/* The same with up to nbWorkers threads (see WZIP_Set_Workers): at levels 7-13 the match finding runs beside the
+   parser, and the stream is identical to wzip_compress's. */
+int wzip_compress_mt(const void* const source, int srcSize, void* const wzipStream, int *wzipCapSize, int level, int nbWorkers);
 
 /* Decompresses a stream of wzip_compress into decmp, whose capacity *decCapSize must hold the decoded size (which
    WZIP_Read_DecSize reports); nothing is written past it. Returns the decoded size, or 0 if the buffer is too small

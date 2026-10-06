@@ -12,6 +12,9 @@
 #include "Memry.h"
 #include "BitStream_Huffman.h"
 #include "WZIP.h"
+#ifndef WZIP_MULTITHREAD
+#  define WZIP_MULTITHREAD 0                       /* 1: WZIP_Set_Workers may run match finding in threads (pthreads or Win32) */
+#endif
 #include <stdio.h>
 #include <math.h>
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -1951,8 +1954,12 @@ typedef struct {
 ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, const int idx, int searchCnt,
 	const Uint8* const srcLastMatch, const Uint8* const dictEnd, const int dictSize, Opt_Cand* out);
 
+static void Opt_Finder_Prime(Opt_Finder* const f, const Uint8* dict, int dictSize, const Uint8* const source,
+	const Uint8* const srcLastMatch, int searchCnt, const int mask);
+
+/* allocates the indexes; primes those of `prime` with the dictionary (see Opt_Finder_Prime) */
 static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize, const Uint8* const source,
-	const Uint8* const srcLastMatch, int searchCnt)
+	const Uint8* const srcLastMatch, int searchCnt, const int prime)
 {
 	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
 	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
@@ -1968,25 +1975,33 @@ static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict
 	memset(f->headB, 0x80, ((size_t)f->hMaskB + 1) * sizeof(int));
 	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
 	f->nextA = f->nextB = f->nextC = 0;
-	/* dictionary positions within each level's window (older ones cannot be reached), up to -16, as hashing and compares
-	   read 8 bytes, or, for a dictionary just before the input, to its end */
-	const Uint8* const dictEnd = dict ? dict + dictSize : NULL;
+	if (prime) Opt_Finder_Prime(f, dict, dictSize, source, srcLastMatch, searchCnt, prime);
+	return 1;
+}
+
+/* Inserts the dictionary into the indexes of mask (1 chain A, 2 chain B, 4 tree C): its positions within each index's
+   window (older ones cannot be reached), up to -16, as hashing and compares read 8 bytes, or, for a dictionary just
+   before the input, to its end. An index is primed by the thread that searches it. */
+static void Opt_Finder_Prime(Opt_Finder* const f, const Uint8* dict, int dictSize, const Uint8* const source,
+	const Uint8* const srcLastMatch, int searchCnt, const int mask)
+{
+	if (!dict || dictSize <= 0) return;
+	const Uint8* const dictEnd = dict + dictSize;
 	const int lastDict = dictEnd == source ? -1 : -16;
-	for (int i = -min(dictSize, f->winA); i <= lastDict; i++) {
+	if (mask & 1) for (int i = -min(dictSize, f->winA); i <= lastDict; i++) {
 		const Uint32 h = Hash_3B(dictEnd + i) & f->hMaskA;
 		const int prev = f->headA[h];
 		f->chainA[(Uint32)i & f->maskA] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskA) ? (Uint32)(i - prev) : f->maskA + 1;
 		f->headA[h] = i;
 	}
-	for (int i = -min(dictSize, f->winB); i <= lastDict; i++) {
+	if (mask & 2) for (int i = -min(dictSize, f->winB); i <= lastDict; i++) {
 		const Uint32 h = Hash_5B(dictEnd + i) & f->hMaskB;
 		const int prev = f->headB[h];
 		f->chainB[(Uint32)i & f->maskB] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskB) ? (Uint32)(i - prev) : f->maskB + 1;
 		f->headB[h] = i;
 	}
-	for (int i = -min(dictSize, f->winC); i <= lastDict; i++)
+	if (mask & 4) for (int i = -min(dictSize, f->winC); i <= lastDict; i++)
 		Opt_Tree_Insert(f, source, i, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
-	return 1;
 }
 
 static void Opt_Finder_Free(Opt_Finder* f)
@@ -2040,78 +2055,85 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 	return n;
 }
 
-/* Collects match candidates at currIdx: for each length, the nearest offset found for it (lengths and offsets both
-   increase along the list), limited to offsets that the window of the length admits. */
-ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f, const Uint8* const source, Uint32 currIdx, const int dictSize,
-	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, int searchCnt,
-	Opt_Cand* const cand, Opt_Cand* const tmp)
+/* chain A: inserts the positions up to currIdx, then lists the candidates of lengths 3-4, nearest first, until a match
+   of length 5 */
+ForceInlineTemplate int Opt_Search_A(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const int searchCnt, Opt_Cand* const out)
 {
-	const Uint8* const srcPtr = source + currIdx;
-	const Uint8* matchPtr;
-	int matchIdx, nTmp = 0;
-
-	/* chains A and B: insert up to currIdx */
 	for (; f->nextA <= currIdx; f->nextA++) {
 		const Uint32 h = Hash_3B(source + f->nextA) & f->hMaskA;
 		const int prev = f->headA[h], d = (int)f->nextA - prev;
 		f->chainA[f->nextA & f->maskA] = (prev >= -dictSize && d > 0 && d <= (int)f->maskA) ? (Uint32)d : f->maskA + 1;
 		f->headA[h] = (int)f->nextA;
 	}
+	const Uint8* const srcPtr = source + currIdx;
+	const reg_t currPattern = MemReadARCH(srcPtr);
+	Uint32 matchDist = f->chainA[currIdx & f->maskA];
+	int bestLen = MinMatchLen - 1, cnt = min(4 * searchCnt, OPT_ChainMax), n = 0;
+	while (matchDist < (Uint32)f->winA && cnt--) {
+		const int matchIdx = (int)currIdx - (int)matchDist;
+		if (matchIdx < -dictSize) break;
+		const Uint8* const matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
+		const reg_t diff = currPattern ^ MemReadARCH(matchPtr);
+		const int len = diff ? (int)N_ZeroBytes(diff) : REG_SIZE;
+		if (len > bestLen) {
+			bestLen = len;
+			out[n].len = len; out[n].off = matchDist; n++;
+			if (len >= 5) break;
+		}
+		matchDist += f->chainA[(Uint32)matchIdx & f->maskA];
+	}
+	return n;
+}
+
+/* chain B: inserts the positions up to currIdx, then lists the candidates of lengths 5-6, nearest first, until a match
+   of length 7 */
+ForceInlineTemplate int Opt_Search_B(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, const int searchCnt,
+	Opt_Cand* const out)
+{
 	for (; f->nextB <= currIdx; f->nextB++) {
 		const Uint32 h = Hash_5B(source + f->nextB) & f->hMaskB;
 		const int prev = f->headB[h], d = (int)f->nextB - prev;
 		f->chainB[f->nextB & f->maskB] = (prev >= -dictSize && d > 0 && d <= (int)f->maskB) ? (Uint32)d : f->maskB + 1;
 		f->headB[h] = (int)f->nextB;
 	}
-
-	/* A: lengths 3-4, nearest first, until a match of length 5 */
-	{
-		const reg_t currPattern = MemReadARCH(srcPtr);
-		Uint32 matchDist = f->chainA[currIdx & f->maskA];
-		int bestLen = MinMatchLen - 1, cnt = min(4 * searchCnt, OPT_ChainMax);
-		while (matchDist < (Uint32)f->winA && cnt--) {
-			matchIdx = (int)currIdx - (int)matchDist;
-			if (matchIdx < -dictSize) break;
-			matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
-			const reg_t diff = currPattern ^ MemReadARCH(matchPtr);
-			const int len = diff ? (int)N_ZeroBytes(diff) : REG_SIZE;
+	const Uint8* const srcPtr = source + currIdx;
+	const Uint32 currPattern = MemRead4(srcPtr);
+	Uint32 matchDist = f->chainB[currIdx & f->maskB];
+	int bestLen = 4, cnt = min(searchCnt, OPT_ChainMax), n = 0;
+	while (matchDist < (Uint32)f->winB && cnt--) {
+		const int matchIdx = (int)currIdx - (int)matchDist;
+		if (matchIdx < -dictSize) break;
+		const Uint8* const matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
+		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH(bestLen + 1)) {
+			const int len = 4 + (int)HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch - srcPtr > MaxMatchLen ? srcPtr + MaxMatchLen : srcLastMatch);
 			if (len > bestLen) {
 				bestLen = len;
-				tmp[nTmp].len = len; tmp[nTmp].off = matchDist; nTmp++;
-				if (len >= 5) break;
+				out[n].len = min(len, MaxMatchLen); out[n].off = matchDist; n++;
+				if (len >= 7) break;
 			}
-			matchDist += f->chainA[(Uint32)matchIdx & f->maskA];
 		}
+		matchDist += f->chainB[(Uint32)matchIdx & f->maskB];
 	}
+	return n;
+}
 
-	/* B: lengths 5-6, nearest first, until a match of length 7 */
-	{
-		const Uint32 currPattern = MemRead4(srcPtr);
-		Uint32 matchDist = f->chainB[currIdx & f->maskB];
-		int bestLen = 4, cnt = min(searchCnt, OPT_ChainMax);
-		while (matchDist < (Uint32)f->winB && cnt--) {
-			matchIdx = (int)currIdx - (int)matchDist;
-			if (matchIdx < -dictSize) break;
-			matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
-			if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH(bestLen + 1)) {
-				const int len = 4 + (int)HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch - srcPtr > MaxMatchLen ? srcPtr + MaxMatchLen : srcLastMatch);
-				if (len > bestLen) {
-					bestLen = len;
-					tmp[nTmp].len = min(len, MaxMatchLen); tmp[nTmp].off = matchDist; nTmp++;
-					if (len >= 7) break;
-				}
-			}
-			matchDist += f->chainB[(Uint32)matchIdx & f->maskB];
-		}
-	}
-
-	/* C: lengths 7+, binary tree */
-	while (f->nextC < currIdx)                                     /* positions the parse skipped */
+/* tree C: inserts the positions the parse skipped, then currIdx, listing its candidates of lengths 7+ */
+ForceInlineTemplate int Opt_Search_C(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const int searchCnt, Opt_Cand* const out)
+{
+	while (f->nextC < currIdx)
 		Opt_Tree_Insert(f, source, (int)f->nextC++, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
-	nTmp += Opt_Tree_Insert(f, source, (int)currIdx, searchCnt, srcLastMatch, dictEnd, dictSize, tmp + nTmp);
+	const int n = Opt_Tree_Insert(f, source, (int)currIdx, searchCnt, srcLastMatch, dictEnd, dictSize, out);
 	f->nextC = currIdx + 1;
+	return n;
+}
 
-	/* nearest first; keep a candidate only if it is longer than all nearer ones and its window admits its length */
+/* the candidates of A, B and C (in that order in tmp), nearest first; keeps one only if it is longer than all nearer
+   ones and its window admits its length */
+ForceInlineTemplate int Opt_Filter(WZL_Sched* const S_, Opt_Cand* const tmp, const int nTmp, Opt_Cand* const cand)
+{
 	for (int i = 1; i < nTmp; i++) {
 		const Opt_Cand c = tmp[i];
 		int j = i - 1;
@@ -2127,6 +2149,188 @@ ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f,
 		}
 	return n;
 }
+
+/* Collects match candidates at currIdx: for each length, the nearest offset found for it (lengths and offsets both
+   increase along the list), limited to offsets that the window of the length admits. */
+ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f, const Uint8* const source, Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, int searchCnt,
+	Opt_Cand* const cand, Opt_Cand* const tmp)
+{
+	int nTmp = Opt_Search_A(f, source, currIdx, dictSize, dictEnd, searchCnt, tmp);
+	nTmp += Opt_Search_B(f, source, currIdx, dictSize, dictEnd, srcLastMatch, dictLastMatch, searchCnt, tmp + nTmp);
+	nTmp += Opt_Search_C(f, source, currIdx, dictSize, dictEnd, srcLastMatch, searchCnt, tmp + nTmp);
+	return Opt_Filter(S_, tmp, nTmp, cand);
+}
+
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Match finding in threads of its own, one per index (WZIP_MULTITHREAD) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* The finder's indexes (chain A, chain B, tree C) depend only on the positions inserted, not on the parse, so each can
+   run in a thread of its own ahead of the parser: a producer searches every position in order, for its indexes, and
+   writes the candidates into a ring of chunks; the parser takes those of each position from every producer, in the
+   order A, B, C, and filters them as Opt_Candidates does. The parse, and so the output, is the same as with one
+   thread (the single-threaded finder inserts the positions the parse skips with the same tree walk). Producers by
+   worker count: 2: one (A, B, C); 3: two (A and B, C); 4 or more: three. */
+#if WZIP_MULTITHREAD
+#  if defined(_WIN32)
+#    ifndef NOMINMAX
+#      define NOMINMAX
+#    endif
+#    ifndef WIN32_LEAN_AND_MEAN
+#      define WIN32_LEAN_AND_MEAN
+#    endif
+#    include <windows.h>
+typedef HANDLE WZ_Thread;
+#    define WZ_THREAD_FN(name, arg)  static DWORD WINAPI name(void* arg)
+#    define WZ_THREAD_START(t, fn, arg)  ((*(t) = CreateThread(NULL, 0, fn, arg, 0, NULL)) != NULL)
+#    define WZ_THREAD_JOIN(t)        (WaitForSingleObject(t, INFINITE), CloseHandle(t))
+#    define WZ_LOAD(p)               InterlockedCompareExchange((volatile LONG*)(p), 0, 0)
+#    define WZ_STORE(p, v)           InterlockedExchange((volatile LONG*)(p), (LONG)(v))
+#    define WZ_YIELD()               SwitchToThread()
+#  else
+#    include <pthread.h>
+#    include <sched.h>
+typedef pthread_t WZ_Thread;
+#    define WZ_THREAD_FN(name, arg)  static void* name(void* arg)
+#    define WZ_THREAD_START(t, fn, arg)  (pthread_create(t, NULL, fn, arg) == 0)
+#    define WZ_THREAD_JOIN(t)        pthread_join(t, NULL)
+#    define WZ_LOAD(p)               __atomic_load_n((p), __ATOMIC_ACQUIRE)
+#    define WZ_STORE(p, v)           __atomic_store_n((p), (v), __ATOMIC_RELEASE)
+#    define WZ_YIELD()               sched_yield()
+#  endif
+
+#define   MT_ChunkLog          12                  /* positions handed over at a time */
+#define   MT_Ring              8                   /* chunks a producer may run ahead of the parser */
+
+typedef struct {
+	Opt_Cand* pool;                                /* the candidates of the chunk's positions, in order */
+	size_t cap;
+	Uint32 start[(1 << MT_ChunkLog) + 1];          /* position i's candidates: pool[start[i] .. start[i + 1]) */
+} Opt_MT_Chunk;
+
+typedef struct Opt_MT_s Opt_MT;
+typedef struct {
+	Opt_MT* mt;
+	int mask;                                      /* its indexes: 1 chain A, 2 chain B, 4 tree C */
+	long produced;                                 /* positions done (atomic) */
+	WZ_Thread thread;
+	Opt_MT_Chunk ring[MT_Ring];
+} Opt_MT_Producer;
+
+struct Opt_MT_s {
+	Opt_Finder* f;
+	const Uint8* source, *dictEnd, *srcLastMatch, *dictLastMatch;
+	int dictSize, searchCnt;
+	Uint32 end;                                    /* positions 0 .. end - 1 are searched */
+	long consumed;                                 /* atomic: the start of the parser's chunk */
+	long abort;                                    /* atomic: stop (the parse ended, or memory ran out) */
+	int nProd, started;
+	Uint32 readyEnd, chunk;                        /* the parser's: positions ready from every producer, its chunk */
+	Opt_MT_Producer prod[3];
+};
+
+/* waits until *p >= v or the run is aborted; returns 0 if aborted */
+static int Opt_MT_Wait(long* const p, const long v, long* const abortFlag)
+{
+	for (int spin = 0; WZ_LOAD(p) < v; spin++) {
+		if (WZ_LOAD(abortFlag)) return 0;
+		if (spin > 256) WZ_YIELD();
+	}
+	return 1;
+}
+
+WZ_THREAD_FN(Opt_MT_Producer_Main, arg)
+{
+	Opt_MT_Producer* const p = (Opt_MT_Producer*)arg;
+	Opt_MT* const mt = p->mt;
+	Opt_Finder* const f = mt->f;
+	const Uint32 K = 1u << MT_ChunkLog;
+	const size_t perPos = 2 * (size_t)mt->searchCnt + 32;   /* the most one position adds (as tmp's size) */
+	Opt_Finder_Prime(f, mt->dictSize ? mt->dictEnd - mt->dictSize : NULL, mt->dictSize, mt->source, mt->srcLastMatch,
+	                 mt->searchCnt, p->mask);
+	for (Uint32 base = 0; base < mt->end; base += K) {
+		const Uint32 chunk = base >> MT_ChunkLog;
+		if (chunk >= MT_Ring && !Opt_MT_Wait(&mt->consumed, (long)(chunk - MT_Ring + 1) << MT_ChunkLog, &mt->abort)) break;
+		Opt_MT_Chunk* const c = &p->ring[chunk % MT_Ring];
+		const Uint32 lim = min(K, mt->end - base);
+		size_t used = 0;
+		for (Uint32 i = 0; i < lim; i++) {
+			if (c->cap < used + perPos) {
+				const size_t cap = 2 * c->cap + perPos;
+				Opt_Cand* const q = (Opt_Cand*)realloc(c->pool, cap * sizeof(Opt_Cand));
+				if (!q) { WZ_STORE(&mt->abort, 1); return 0; }
+				c->pool = q; c->cap = cap;
+			}
+			c->start[i] = (Uint32)used;
+			const Uint32 idx = base + i;
+			if (p->mask & 1) used += Opt_Search_A(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->searchCnt, c->pool + used);
+			if (p->mask & 2) used += Opt_Search_B(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->dictLastMatch,
+			                                      mt->searchCnt, c->pool + used);
+			if (p->mask & 4) used += Opt_Search_C(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->searchCnt,
+			                                      c->pool + used);
+		}
+		c->start[lim] = (Uint32)used;
+		WZ_STORE(&p->produced, (long)(base + lim));
+	}
+	return 0;
+}
+
+/* starts the producers for positions 0 .. end - 1; returns 0 (and starts none) if a thread cannot be started */
+static int Opt_MT_Start(Opt_MT* const mt, const int workers)
+{
+	static const int masks[3][3] = { { 7 }, { 3, 4 }, { 1, 2, 4 } };
+	mt->nProd = workers >= 4 ? 3 : workers - 1;
+	mt->consumed = mt->abort = 0;
+	mt->readyEnd = 0;
+	mt->chunk = 0;
+	for (int k = 0; k < mt->nProd; k++) {
+		Opt_MT_Producer* const p = &mt->prod[k];
+		p->mt = mt;
+		p->mask = masks[mt->nProd - 1][k];
+		p->produced = 0;
+	}
+	for (mt->started = 0; mt->started < mt->nProd; mt->started++)
+		if (!WZ_THREAD_START(&mt->prod[mt->started].thread, Opt_MT_Producer_Main, &mt->prod[mt->started])) {
+			WZ_STORE(&mt->abort, 1);
+			for (int k = 0; k < mt->started; k++) WZ_THREAD_JOIN(mt->prod[k].thread);
+			mt->started = 0;
+			return 0;
+		}
+	return 1;
+}
+
+static void Opt_MT_Stop(Opt_MT* const mt)
+{
+	WZ_STORE(&mt->abort, 1);
+	for (int k = 0; k < mt->started; k++) WZ_THREAD_JOIN(mt->prod[k].thread);
+	mt->started = 0;
+	for (int k = 0; k < mt->nProd; k++)
+		for (int r = 0; r < MT_Ring; r++) { free(mt->prod[k].ring[r].pool); mt->prod[k].ring[r].pool = NULL; mt->prod[k].ring[r].cap = 0; }
+}
+
+/* the candidates of idx (positions taken in increasing order), as Opt_Candidates gives them; -1 if the producers
+   stopped (memory ran out) */
+static int Opt_MT_Candidates(WZL_Sched* const S_, Opt_MT* const mt, const Uint32 idx, Opt_Cand* const cand, Opt_Cand* const tmp)
+{
+	if (idx >= mt->readyEnd) {
+		const Uint32 chunk = idx >> MT_ChunkLog, chunkEnd = min((chunk + 1) << MT_ChunkLog, mt->end);
+		if (chunk != mt->chunk) {                    /* earlier chunks are done with: their slots may be refilled */
+			mt->chunk = chunk;
+			WZ_STORE(&mt->consumed, (long)chunk << MT_ChunkLog);
+		}
+		for (int k = 0; k < mt->nProd; k++)
+			if (!Opt_MT_Wait(&mt->prod[k].produced, (long)chunkEnd, &mt->abort)) return -1;
+		mt->readyEnd = chunkEnd;
+	}
+	const Uint32 i = idx & ((1u << MT_ChunkLog) - 1), slot = (idx >> MT_ChunkLog) % MT_Ring;
+	int nTmp = 0;
+	for (int k = 0; k < mt->nProd; k++) {
+		const Opt_MT_Chunk* const c = &mt->prod[k].ring[slot];
+		const Uint32 n = c->start[i + 1] - c->start[i];
+		memcpy(tmp + nTmp, c->pool + c->start[i], n * sizeof(Opt_Cand));
+		nTmp += (int)n;
+	}
+	return Opt_Filter(S_, tmp, nTmp, cand);
+}
+#endif
 
 ForceInlineTemplate void Opt_Relax(Opt_Node* const opt, int* const lastPos, int from, int fromC, Uint32 len, Uint32 off, int price)
 {
@@ -2192,12 +2396,30 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	Opt_Cand* const cand = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Cand* const tmp = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Finder finder;
-	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt);
+#if WZIP_MULTITHREAD
+	Opt_MT* mt = NULL;
+	const int useMT = wzipStr->nbWorkers > 1 && lastMatchIdx > 0;   /* the indexes are then primed by their threads */
+#else
+	const int useMT = 0;
+#endif
+	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt,
+	                                     useMT ? 0 : 7);
 	Opt_Stats* const st = (Opt_Stats*)malloc(sizeof(Opt_Stats));
 	Opt_LenTab* const lenTab = (Opt_LenTab*)malloc(sizeof(Opt_LenTab));
 	Opt_Path* const path = (Opt_Path*)malloc(((OPT_Num + MaxMatchLen) / MinMatchLen + 2) * sizeof(Opt_Path));
 	if (!finderOk || !lzLitBuffer || !wlzSeq || !wlzStream || !opt || !cand || !tmp || !st || !path || !lenTab)
 		goto _lit_overflow;
+#if WZIP_MULTITHREAD
+	if (useMT) {                                       /* match finding in threads of its own; else, all here */
+		if (NULL != (mt = (Opt_MT*)calloc(1, sizeof(Opt_MT)))) {
+			mt->f = &finder; mt->source = source; mt->dictEnd = dictEnd; mt->dictSize = dictSize;
+			mt->srcLastMatch = srcLastMatch; mt->dictLastMatch = dictLastMatch; mt->searchCnt = maxSearchCnt;
+			mt->end = lastMatchIdx;
+			if (!Opt_MT_Start(mt, wzipStr->nbWorkers)) { free(mt); mt = NULL; }
+		}
+		if (NULL == mt) Opt_Finder_Prime(&finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt, 7);
+	}
+#endif
 	Uint8* lzLitPtr = lzLitBuffer;
 	const Uint8* const lzLitEnd = lzLitBuffer + HUF_BlockSize;
 	WLZ_Set* wlzSeqPtr = wlzSeq;
@@ -2272,7 +2494,13 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 			if ((cur > 0 && cur >= lastPos) || cur >= OPT_Num || idx >= lastMatchIdx) { endCur = cur; break; }
 
 			/* searched matches, shared by the states */
+#if WZIP_MULTITHREAD
+			const int nCand = mt ? Opt_MT_Candidates(S_, mt, idx, cand, tmp)
+			                     : Opt_Candidates(S_, &finder, source, idx, dictSize, dictEnd, srcLastMatch, dictLastMatch, maxSearchCnt, cand, tmp);
+			if (nCand < 0) goto _lit_overflow;             /* a producer ran out of memory */
+#else
 			const int nCand = Opt_Candidates(S_, &finder, source, idx, dictSize, dictEnd, srcLastMatch, dictLastMatch, maxSearchCnt, cand, tmp);
+#endif
 			Uint32 longest = nCand ? cand[nCand - 1].len : 0, longestOff = nCand ? cand[nCand - 1].off : 0;
 			int bestC = 0;
 			for (int c = 1; c < nStates; c++)
@@ -2466,10 +2694,16 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	memcpy(wzipLitPtr, wlzStream, wlzStrPtr - wlzStream);
 	const int cmprSize = (int)((wzipLitPtr - wzipStream) + (wlzStrPtr - wlzStream));
 
+#if WZIP_MULTITHREAD
+	if (mt) { Opt_MT_Stop(mt); free(mt); mt = NULL; }
+#endif
 	Opt_Finder_Free(&finder);
 	free(lzLitBuffer); free(wlzSeq); free(wlzStream); free(opt); free(cand); free(tmp); free(st); free(path); free(lenTab);
 	return cmprSize;
 _lit_overflow:                 /* the output buffer is full: the caller stores the input raw */
+#if WZIP_MULTITHREAD
+	if (mt) { Opt_MT_Stop(mt); free(mt); mt = NULL; }
+#endif
 	Opt_Finder_Free(&finder);
 	free(lzLitBuffer); free(wlzSeq); free(wlzStream); free(opt); free(cand); free(tmp); free(st); free(path); free(lenTab);
 	return 0;
@@ -2573,6 +2807,12 @@ static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const
 			chain2Table[(Uint32)i & chain2Mask] = (dist > 0 && dist < chain2Mask) ? dist : chain2Mask;
 		}
 	}
+}
+
+/* the threads WZIP_Compress_L may use (WZIP.h) */
+void WZIP_Set_Workers(WZIP_State_Str* const wzipStr, const int nbWorkers)
+{
+	if (wzipStr) wzipStr->nbWorkers = nbWorkers < 1 ? 1 : nbWorkers;
 }
 
 WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int dictSize)
@@ -2704,7 +2944,7 @@ static void Copy_Dict_Match(Uint8* destPtr, const Uint8* dest, const Uint32 prod
 #ifndef WZL_PIPELINE
 #  define WZL_PIPELINE         0                   /* tests: 1 pipelines every block, -1 none; 0 chooses by the rule */
 #endif
-#define   PIPELINE_NEXT(far, bytes)  (WZL_PIPELINE ? WZL_PIPELINE > 0 : (Uint64)(far) * FAR_BytesPerMatch >= (Uint64)(bytes))
+#define   PIPELINE_NEXT(nFar, bytes)  (WZL_PIPELINE ? WZL_PIPELINE > 0 : (Uint64)(nFar) * FAR_BytesPerMatch >= (Uint64)(bytes))
 
 /* Executes a sequence the decoder has checked: litRun literals, then matchLen bytes from matchOffset back (a run:
    offset 1), into *destRef, from the literals at *litRef; advances both */
@@ -2786,7 +3026,7 @@ ForceInlineTemplate void Execute_Sequence(Uint8** destRef, Uint8** litRef, const
 			destPtr += lastLit;                                                                                    \
 			lzLitBufPtr += lastLit;                                                                                \
 		}                                                                                                          \
-		*farCount += far; }
+		*farCount += nFar; }
 
 /* Decodes one block of sequences; returns the decoded size so far, or -1 if the block is corrupt. The literal run and
    match length are checked against the output, and the offset against the bytes decoded and the dictionary, for
@@ -2801,7 +3041,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	Uint8* destPtr = (Uint8*)dest+decPos;
 	Uint8* decEnd = destPtr;                         /* the output's end once the sequences decoded so far are executed */
 	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
-	Uint32 far = 0, lastLit = 0;
+	Uint32 nFar = 0, lastLit = 0;
 	int ended = 0;
 	/* a dictionary in a buffer of its own is copied from through Copy_Dict_Match; one just before the output (a prefix
 	   of the same buffer) is copied from as earlier output */
@@ -2945,7 +3185,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	_check:
 		if (unlikely(matchOffset - 1 >= (Uint32)(decEnd - dest) + (Uint32)dictSize)) return -1;   /* corrupt: before the history */
 		if (unlikely(matchLen > (Uint32)(destEnd - decEnd))) return -1;                          /* corrupt: past the output */
-		far += matchOffset >= FAR_Offset;
+		nFar += matchOffset >= FAR_Offset;
 #ifdef WZIP_DEBUG
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
@@ -3102,15 +3342,15 @@ int WZIP_Decompress_L(
 		BITStream_Read_FlushEnd(bitStream);
 
 		const int blockStart = decSize;
-		Uint32 far = 0;
+		Uint32 nFar = 0;
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &far, pipelined);
+			decSize = Decompress_WLZ_Sequence_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &nFar, pipelined);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &far, pipelined);
+		decSize = Decompress_WLZ_Sequence(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, histSize, &hufWtSet, offsetLast, offTables, &nFar, pipelined);
 		if (decSize < 0 || bitStream.streamPtr > srcEnd) { decSize = -1; break; }    /* corrupt: read past the input */
-		pipelined = PIPELINE_NEXT(far, decSize - blockStart);   /* for the next block */
+		pipelined = PIPELINE_NEXT(nFar, decSize - blockStart);   /* for the next block */
 	}
 
 	free(tail);
@@ -3133,7 +3373,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	Uint8* destPtr = (Uint8*)dest+decPos;
 	Uint8* decEnd = destPtr;                         /* the output's end once the sequences decoded so far are executed */
 	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
-	Uint32 far = 0, lastLit = 0;
+	Uint32 nFar = 0, lastLit = 0;
 	int ended = 0;
 	/* a dictionary in a buffer of its own is copied from through Copy_Dict_Match; one just before the output (a prefix
 	   of the same buffer) is copied from as earlier output */
@@ -3269,7 +3509,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		BITStream_Read_Flush(bitStream);
 
 	_execute:
-		far += matchOffset >= FAR_Offset;
+		nFar += matchOffset >= FAR_Offset;
 #ifdef WZIP_DEBUG
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
@@ -3378,14 +3618,14 @@ int WZIP_Decompress_L_Trusted(
 		BITStream_Read_FlushEnd(bitStream);
 		
 		const int blockStart = decSize;
-		Uint32 far = 0;
+		Uint32 nFar = 0;
 #if WZIP_DYNAMIC_BMI2
 		if (CPU_Has_Bmi2())
-			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &far, pipelined);
+			decSize = Decompress_WLZ_Sequence_Trusted_Bmi2(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &nFar, pipelined);
 		else
 #endif
-		decSize = Decompress_WLZ_Sequence_Trusted(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &far, pipelined);
-		pipelined = PIPELINE_NEXT(far, decSize - blockStart);   /* for the next block */
+		decSize = Decompress_WLZ_Sequence_Trusted(S_, &(bitStream.streamPtr), &lzLitBufPtr, (Uint8*)dest, decSize, destEnd, dictEnd, dictSize, &hufWtSet, offsetLast, &nFar, pipelined);
+		pipelined = PIPELINE_NEXT(nFar, decSize - blockStart);   /* for the next block */
 		bitStream.container = MemReadBE8(bitStream.streamPtr);
 		bitStream.nUsedBits = 0;
 	}

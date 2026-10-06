@@ -188,7 +188,7 @@ static int WZIP_Store(const void* source, int srcSize, Uint8* dst, int dstCap)
 }
 
 /* Compresses into dst, which holds at least WZIP_Cap_CmprSize(srcSize) bytes. */
-static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, int dstCap, int level)
+static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, int dstCap, int level, int nbWorkers)
 {
 	if (srcSize < 32)                                   /* not worth compressing */
 		return WZIP_Store(source, srcSize, dst, dstCap);
@@ -199,6 +199,7 @@ static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, in
 	int cmprSize = 0;
 	if (srcSize >> 15) {
 		if (NULL == (wzipStr = WZIP_New_State_L(level, srcSize, NULL, 0))) return 0;
+		WZIP_Set_Workers(wzipStr, nbWorkers);
 		cmprSize = WZIP_Compress_L(wzipStr, source, srcSize, dst + hdrSize, dstCap - hdrSize);
 		WZIP_Free_State(wzipStr);
 	}
@@ -230,16 +231,21 @@ static int WZIP_Compress_Bounded(const void* source, int srcSize, Uint8* dst, in
    at most srcSize + 2, or 0 if it does not fit or an argument is invalid. The caller's buffer is never reallocated;
    with less than WZIP_Cap_CmprSize(srcSize) bytes, the stream is built in a temporary buffer and copied if it fits. */
 int wzip_compress(const void* source, int srcSize, void* wzipStream, int *wzipCapSize, int level) {
+	return wzip_compress_mt(source, srcSize, wzipStream, wzipCapSize, level, 1);
+}
+
+/* wzip_compress with up to nbWorkers threads (WZIP.h); the stream is the same */
+int wzip_compress_mt(const void* source, int srcSize, void* wzipStream, int *wzipCapSize, int level, int nbWorkers) {
 	if (NULL == source || NULL == wzipStream || NULL == wzipCapSize || srcSize < 0 || (Uint32)srcSize > WZIP_MAX_INPUT_SIZE
 	    || level < 0 || level > 13)
 		return 0;
 	const int cap = *wzipCapSize, bound = WZIP_Cap_CmprSize(srcSize);
 	if (cap >= bound)
-		return WZIP_Compress_Bounded(source, srcSize, (Uint8*)wzipStream, cap, level);
+		return WZIP_Compress_Bounded(source, srcSize, (Uint8*)wzipStream, cap, level, nbWorkers);
 
 	Uint8* const tmp = (Uint8*)malloc(bound);
 	if (NULL == tmp) return 0;
-	int cmprSize = WZIP_Compress_Bounded(source, srcSize, tmp, bound, level);
+	int cmprSize = WZIP_Compress_Bounded(source, srcSize, tmp, bound, level, nbWorkers);
 	if (cmprSize > cap) cmprSize = 0;
 	if (cmprSize) memcpy(wzipStream, tmp, cmprSize);
 	free(tmp);

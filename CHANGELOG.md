@@ -5,6 +5,11 @@ a WZ frame records its frame format version and its codec's format version (`doc
 
 ## Unreleased
 
+- **Threads in compression.** At WZIP's optimal levels (7-13) the three match-finder indexes (chain of lengths 3-4,
+  chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser: `wzip -T#`,
+  `wzip_compress_mt`, `WZIP_Set_Workers`, `WZF_params.nbWorkers`. The output is byte for byte that of one thread; level
+  11 compresses Silesia 2.34 times as fast with 4 threads (AMD EPYC 9334). Built by default with make and CMake
+  (`WZIP_MULTITHREAD`; pthreads, or Win32 threads on Windows); `make MT=0` and `-DWZIP_MULTITHREAD=OFF` leave it out.
 - **Faster WZIP decoding of large inputs.** WZIP_L's decoders, checked and trusted, decode a block as a pipeline that
   prefetches each match's source when the previous block's matches often reached 1 MiB back or more: enwik8 44%
   and enwik9 62% faster at level 11 (AMD EPYC 9334), Silesia unchanged. Same format.

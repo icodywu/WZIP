@@ -44,10 +44,10 @@ static void set_binary(FILE* f) { (void)f; }
 enum { OP_COMPRESS, OP_DECOMPRESS, OP_TEST, OP_LIST, OP_BENCH };
 
 static struct {
-	int op, codec, level, levelSet, blockLog, noCheck, toStdout, force, rmSource, verbosity, benchEnd;
+	int op, codec, level, levelSet, blockLog, noCheck, toStdout, force, rmSource, verbosity, benchEnd, threads;
 	const char* outName;
 	const char* prog;
-} g = { OP_COMPRESS, WZF_CODEC_WZIP, 1, 0, 0, 0, 0, 0, 0, 1, -100, NULL, "wzip" };
+} g = { OP_COMPRESS, WZF_CODEC_WZIP, 1, 0, 0, 0, 0, 0, 0, 1, -100, 1, NULL, "wzip" };
 
 static const char* cur = "";                           /* the file being processed, for messages */
 
@@ -90,6 +90,7 @@ static void usage(FILE* f)
 "  -f         overwrite, or write compressed data to a terminal\n"
 "  -k         keep the input files (default)            --rm  remove them after success\n"
 "  -B#        blocks of at most 2^# bytes (10-31; default: the whole file, up to 1 GiB)\n"
+"  -T#        threads for WZIP's optimal levels 7-13 (2-4 help; default 1); the output is the same\n"
 "  --no-check no content checksum\n"
 "  -b         benchmark the level (in memory, no files written); -e# up to level #\n"
 "  -q, -v     fewer, more messages       -h  this help    -V  version\n",
@@ -136,7 +137,7 @@ static int file_exists(const char* name) { stat_t st; return stat_fn(name, &st) 
 static int compress_stream(FILE* in, FILE* out, unsigned long long contentSize, unsigned long long* inTotal,
                            unsigned long long* outTotal)
 {
-	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck };
+	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck, g.threads };
 	WZF_CCtx* c = WZF_createCCtx();
 	Buf src = { 0 }, dst = { 0 };
 	int ok = 0;
@@ -388,7 +389,7 @@ static int bench(const char* name)
 	const int last = g.benchEnd > g.level ? g.benchEnd : g.level;
 	int ok = 1;
 	for (int level = g.level; level <= last && ok; level++) {
-		const WZF_params p = { g.codec, level, g.blockLog, 1 };       /* the codec alone: no checksum */
+		const WZF_params p = { g.codec, level, g.blockLog, 1, g.threads };    /* the codec alone: no checksum */
 		const size_t cap = WZF_compressBound(n, &p);
 		unsigned char* c = (unsigned char*)malloc(cap);
 		unsigned char* d = (unsigned char*)malloc(n + 32);
@@ -464,6 +465,7 @@ int main(int argc, char** argv)
 			else if (!strcmp(a, "--fast")) { g.codec = WZF_CODEC_WLZ4; g.level = -2; g.levelSet = 1; }
 			else if (!strcmp(a, "--lazy")) { g.codec = WZF_CODEC_WLZ4; g.level = -1; g.levelSet = 1; }
 			else if (!strncmp(a, "--block-log=", 12)) { const char* s = a + 12; g.blockLog = read_number(&s); }
+			else if (!strncmp(a, "--threads=", 10)) { const char* s = a + 10; g.threads = read_number(&s); }
 			else if (!strcmp(a, "--help")) { usage(stdout); return 0; }
 			else if (!strcmp(a, "--version")) { version(); return 0; }
 			else { msg(1, "%s: unknown option %s\n", g.prog, a); usage(stderr); return 1; }
@@ -485,6 +487,7 @@ int main(int argc, char** argv)
 			case 'q': g.verbosity--; break;
 			case 'v': g.verbosity++; break;
 			case 'B': g.blockLog = read_number(&s); break;
+			case 'T': g.threads = read_number(&s); break;
 			case 'h': usage(stdout); return 0;
 			case 'V': version(); return 0;
 			case 'o':
@@ -499,6 +502,7 @@ int main(int argc, char** argv)
 	if (g.codec == WZF_CODEC_WZIP && (g.level < 0 || g.level > 13)) { msg(1, "%s: WZIP levels are 0-13\n", g.prog); return 1; }
 	if (g.codec == WZF_CODEC_WLZ4 && (g.level < -2 || g.level > 12)) { msg(1, "%s: WLZ4 levels are 0-12, --fast and --lazy\n", g.prog); return 1; }
 	if (g.blockLog && (g.blockLog < WZF_BLOCKLOG_MIN || g.blockLog > WZF_BLOCKLOG_MAX)) { msg(1, "%s: -B takes 10-31\n", g.prog); return 1; }
+	if (g.threads < 1 || g.threads > 256) { msg(1, "%s: -T takes 1-256\n", g.prog); return 1; }
 	if (nFiles == 0) files[nFiles++] = "-";
 	if (g.outName && nFiles > 1 && strcmp(g.outName, "-")) { msg(1, "%s: -o takes one input file\n", g.prog); return 1; }
 

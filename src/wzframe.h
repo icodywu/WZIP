@@ -62,6 +62,7 @@ typedef struct {
 	int level;          /* WZIP: 0-13. WLZ4: -2 fast, -1 lazy, 0-7 hash chains, 8-12 optimal parsing */
 	int blockLog;       /* blocks decode to at most 2^blockLog bytes (10-31); 0: by the content size (doc) */
 	int noChecksum;     /* 1: no content checksum */
+	int nbWorkers;      /* WZIP: threads for each block (wzip_compress_mt); 0 or 1: one. The frame is the same */
 } WZF_params;
 
 #define WZF_CONTENTSIZE_UNKNOWN (~0ULL)

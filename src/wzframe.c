@@ -171,7 +171,7 @@ static size_t codec_compress(WZF_CCtx* c, unsigned char* out, size_t cap, const 
 {
 	if (c->p.codec == WZF_CODEC_WZIP) {
 		int icap = cap > 0x7FFFFFFF ? 0x7FFFFFFF : (int)cap;
-		const int r = wzip_compress(src, (int)n, out, &icap, c->p.level);
+		const int r = wzip_compress_mt(src, (int)n, out, &icap, c->p.level, c->p.nbWorkers);
 		return r > 0 ? (size_t)r : 0;
 	}
 	const unsigned ucap = cap > 0xFFFFFFFFu ? 0xFFFFFFFFu : (unsigned)cap;
