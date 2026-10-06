@@ -43,6 +43,7 @@ test: build/roundtrip$(EXE) build/threads$(EXE) build/wzip$(EXE) build/wlz4$(EXE
 	./build/roundtrip$(EXE)
 	./build/threads$(EXE)
 	sh tests/cli.sh build
+	sh tests/golden.sh build
 
 check: build/roundtrip$(EXE)
 	./build/roundtrip$(EXE) $(FILES)

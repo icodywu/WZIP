@@ -1,5 +1,7 @@
 # WZIP and WLZ4
 
+[![CI](https://github.com/icodywu/WZIP/actions/workflows/ci.yml/badge.svg)](https://github.com/icodywu/WZIP/actions/workflows/ci.yml)
+
 Two LZ77 codecs built on **match-length-dependent sliding windows**: each match length has its own maximum
 distance, so short matches use short, cheap offsets while long matches reach the whole history. Lengths are decoded
 before offsets, so the decoder knows each match's window and no extra field is sent.
@@ -202,7 +204,8 @@ As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are 
 ```sh
 make          # build/libwzip.a, the tool build/wzip (and build/wlz4), and the tests
 make test     # round trips of every codec and level on synthetic inputs, with guard checks on every buffer;
-              # 8 threads at once against single-threaded outputs; the tool on files, pipes and damaged files
+              # 8 threads at once against single-threaded outputs; the tool on files, pipes and damaged files;
+              # the golden frames of tests/golden, which every version must keep decoding
 make check FILES="file1 file2"
 make fuzz     # damaged streams of every codec and of frames, under AddressSanitizer and UndefinedBehaviorSanitizer
 ```
@@ -216,7 +219,10 @@ ctest --test-dir build-cmake && cmake --install build-cmake
 
 The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 (MinGW-w64, Windows), and GCC 11.4
 and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer,
-and the thread test under ThreadSanitizer. On x86 the decoders pick BMI2 code paths at run time. The library's version
+and the thread test under ThreadSanitizer. Continuous integration ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows (MinGW-w64), and builds with CMake.
+Big-endian support is not yet verified: a job on an emulated s390x runs the tests for information only. On x86 the
+decoders pick BMI2 code paths at run time. The library's version
 (1.0.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
 
 The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing

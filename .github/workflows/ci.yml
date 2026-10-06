@@ -1,0 +1,95 @@
+# Builds and tests on Linux (GCC, clang; x86-64 and arm64), macOS, Windows (MSYS2 MinGW-w64) and with CMake; runs the
+# damaged-stream test under AddressSanitizer and UndefinedBehaviorSanitizer and the thread test under
+# ThreadSanitizer. `make test` includes the golden frames (tests/golden), decoded by the tool and the Python
+# reference decoder. The big-endian job (s390x under QEMU) is informative until big-endian support is verified.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux x86-64, ${{ matrix.cc }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: make CC=${{ matrix.cc }} test
+      - name: Damaged streams under ASan and UBSan
+        run: make CC=${{ matrix.cc }} fuzz ITERS=100
+      - name: Thread test under ThreadSanitizer
+        run: |
+          sudo sysctl vm.mmap_rnd_bits=28
+          ${{ matrix.cc }} -O1 -g -fsanitize=thread -Wall -Isrc tests/threads.c src/*.c -lm -pthread -o build/threads_tsan
+          ./build/threads_tsan 8 2
+
+  arm64:
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: make test
+
+  macos:
+    name: macOS arm64
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: make test
+
+  windows:
+    name: Windows, MSYS2 MinGW-w64
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-python
+      - name: Build and test
+        run: make test
+
+  cmake:
+    name: CMake, install, pkg-config
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure, build, test, install
+        run: |
+          cmake -S . -B build-cmake -DCMAKE_INSTALL_PREFIX="$PWD/inst"
+          cmake --build build-cmake -j 4
+          ctest --test-dir build-cmake --output-on-failure
+          cmake --install build-cmake
+      - name: Use the installed library through pkg-config
+        run: |
+          export PKG_CONFIG_PATH="$PWD/inst/lib/pkgconfig"
+          pkg-config --modversion libwzip
+          printf '#include <wzframe.h>\n#include <stdio.h>\nint main(void){puts(WZF_versionString());return 0;}\n' > use.c
+          cc use.c $(pkg-config --cflags --libs libwzip) -o use
+          LD_LIBRARY_PATH="$PWD/inst/lib" ./use
+
+  big-endian:
+    name: Big-endian (s390x, QEMU; informative)
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: s390x
+      - name: Build and test
+        run: |
+          docker run --rm --platform linux/s390x -v "$PWD":/w -w /w ubuntu:24.04 sh -c \
+            "apt-get update -qq && apt-get install -y -qq gcc make python3 > /dev/null && make test"

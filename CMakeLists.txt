@@ -70,6 +70,7 @@ if(WZIP_BUILD_TESTS)
   find_program(SH sh)
   if(SH AND WZIP_BUILD_PROGRAMS)
     add_test(NAME cli COMMAND ${SH} ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.sh $<TARGET_FILE_DIR:wzip>)
+    add_test(NAME golden COMMAND ${SH} ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden.sh $<TARGET_FILE_DIR:wzip>)
   endif()
 endif()
 
