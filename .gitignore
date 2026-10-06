@@ -19,3 +19,6 @@ local/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# CMake build trees
+build-*/

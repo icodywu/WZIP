@@ -1,6 +1,6 @@
-# WZIP and WLZ4: static library and round-trip test (GNU make; gcc or clang)
-#   make          builds build/libwzip.a and build/roundtrip
-#   make test     runs the round-trip test on built-in synthetic inputs, and the thread-safety test
+# WZIP and WLZ4: static library, command-line tool and tests (GNU make; gcc or clang)
+#   make          builds build/libwzip.a, the tool build/wzip (and its copy build/wlz4), and the tests
+#   make test     runs the round-trip test on built-in synthetic inputs, the thread-safety test and the tool's test
 #   make check FILES="a b c"   runs it on your files
 # The benchmark harness of the paper has its own Makefile in bench/.
 
@@ -16,7 +16,7 @@ SRC := src/WZIP_L.c src/WZIP_M.c src/WZIP_S.c src/WZIP_wrapper.c src/Huffman_Com
 OBJ := $(SRC:src/%.c=build/%.o)
 HDR := $(wildcard src/*.h)
 
-all: build/libwzip.a build/roundtrip$(EXE) build/threads$(EXE)
+all: build/libwzip.a build/wzip$(EXE) build/wlz4$(EXE) build/roundtrip$(EXE) build/threads$(EXE)
 
 build:
 	mkdir -p build
@@ -30,12 +30,19 @@ build/libwzip.a: $(OBJ)
 build/roundtrip$(EXE): tests/roundtrip.c build/libwzip.a
 	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@
 
+build/wzip$(EXE): programs/wzip.c build/libwzip.a
+	$(CC) $(CFLAGS) $< build/libwzip.a -lm -o $@
+
+build/wlz4$(EXE): build/wzip$(EXE)
+	cp $< $@
+
 build/threads$(EXE): tests/threads.c build/libwzip.a
 	$(CC) $(CFLAGS) -pthread $< build/libwzip.a -lm -o $@
 
-test: build/roundtrip$(EXE) build/threads$(EXE)
+test: build/roundtrip$(EXE) build/threads$(EXE) build/wzip$(EXE) build/wlz4$(EXE)
 	./build/roundtrip$(EXE)
 	./build/threads$(EXE)
+	sh tests/cli.sh build
 
 check: build/roundtrip$(EXE)
 	./build/roundtrip$(EXE) $(FILES)

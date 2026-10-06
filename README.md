@@ -180,18 +180,44 @@ Each comes with a small decoder written from the specification alone ([`doc/wlz4
 [`doc/wzip_decode.py`](doc/wzip_decode.py), [`doc/frame_decode.py`](doc/frame_decode.py)), which checks every
 rule and decodes the output of every encoder level identically; they are slow, and meant as executable references.
 
+## Command-line tool
+
+`wzip` compresses with WZIP, and the same program called `wlz4` with WLZ4; either decompresses both. Files are
+written as WZ frames, with a checksum, and processed block by block, so pipes and files of any size work.
+
+```sh
+wzip file              # file.wz (level 1; -0 to -13, 7-13 optimal parsing)
+wlz4 -10 file          # file.wlz4 (lazy mode by default; --fast, -0 to -12)
+wzip -d file.wz        # back to file (-o name, -c to standard output)
+tar cf - dir | wlz4 > dir.tar.wlz4
+wzip -t file.wz        # test; -l lists frames, blocks, codec, sizes and ratio
+wzip -b9 -e11 file     # benchmark levels 9 to 11 in memory
+```
+
+As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are not overwritten without `-f`.
+`wzip -h` lists every option.
+
 ## Build and test
 
 ```sh
-make          # build/libwzip.a and build/roundtrip
-make test     # round trip of every codec and level on synthetic inputs, with guard checks on every buffer
+make          # build/libwzip.a, the tool build/wzip (and build/wlz4), and the tests
+make test     # round trips of every codec and level on synthetic inputs, with guard checks on every buffer;
+              # 8 threads at once against single-threaded outputs; the tool on files, pipes and damaged files
 make check FILES="file1 file2"
-make fuzz     # damaged streams of every codec, under AddressSanitizer and UndefinedBehaviorSanitizer (Linux, macOS)
+make fuzz     # damaged streams of every codec and of frames, under AddressSanitizer and UndefinedBehaviorSanitizer
+```
+
+CMake builds the static and shared libraries, the tools and the tests, and installs them with a pkg-config file:
+
+```sh
+cmake -S . -B build-cmake -DCMAKE_INSTALL_PREFIX=/usr/local && cmake --build build-cmake
+ctest --test-dir build-cmake && cmake --install build-cmake
 ```
 
 The sources (`src/`) are C99 and build without warnings (`-Wall`) with GCC 14.2 (MinGW-w64, Windows), and GCC 11.4
-and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer.
-On x86 the decoders pick BMI2 code paths at run time.
+and clang 14 (Ubuntu 22.04, x86-64), where the tests also pass under AddressSanitizer and UndefinedBehaviorSanitizer,
+and the thread test under ThreadSanitizer. On x86 the decoders pick BMI2 code paths at run time. The library's version
+(1.0.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
 
 The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing
 outside the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated
@@ -392,7 +418,8 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 |---|---|
 | `src/` | the codecs: `WZIP.h` (WZIP_L, WZIP_M, WZIP_S), `WLZ4.h`, the frame `wzframe.h`, and their sources |
 | `doc/` | format specifications (WZIP, WLZ4, the WZ frame) and reference decoders (Python) |
-| `tests/roundtrip.c` | round-trip test of every codec and level (`make test`) |
+| `programs/wzip.c` | the command-line tool `wzip` / `wlz4` |
+| `tests/` | round trips of every codec and level, the thread test, the tool's test (`make test`), damaged streams (`make fuzz`) |
 | `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |
 

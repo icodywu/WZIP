@@ -18,10 +18,11 @@
 extern "C" {
 #endif
 
-#define WZF_VERSION_MAJOR    1
+#define WZF_VERSION_MAJOR    1                /* the library's version, as WZIP_VERSION_* in WZIP.h */
 #define WZF_VERSION_MINOR    0
 #define WZF_VERSION_RELEASE  0
 #define WZF_VERSION_NUMBER   (WZF_VERSION_MAJOR * 10000 + WZF_VERSION_MINOR * 100 + WZF_VERSION_RELEASE)
+#define WZF_VERSION_STRING   "1.0.0"
 unsigned WZF_versionNumber(void);
 const char* WZF_versionString(void);
 
@@ -84,8 +85,8 @@ size_t WZF_decompress(void* dst, size_t dstCapacity, const void* src, size_t src
 /*------   Block by block (streaming)   ------
    Compression: WZF_compressBegin writes the frame header; WZF_compressBlock compresses one block of at most
    2^blockLog bytes (the caller chooses the cut) and writes its header and data; WZF_compressEnd writes the end mark
-   and the checksum. Each returns the bytes written, or an error. A block needs WZF_blockBound(srcSize) bytes of
-   output room. */
+   and the checksum. Each returns the bytes written, or an error. A block writes at most WZF_BLOCK_HEADER + srcSize
+   bytes and needs that much room; with WZF_blockBound(srcSize) it compresses in place, without an internal copy. */
 typedef struct WZF_CCtx_s WZF_CCtx;
 WZF_CCtx* WZF_createCCtx(void);
 void      WZF_freeCCtx(WZF_CCtx* cctx);
@@ -122,6 +123,9 @@ const WZF_FrameHeader* WZF_frameHeader(const WZF_DCtx* dctx);
 size_t WZF_frameBlockSize(const WZF_DCtx* dctx);               /* 2^blockLog */
 size_t WZF_nextBlock(WZF_DCtx* dctx, const void* blockHeader, int* isRaw);
 size_t WZF_decompressBlock(WZF_DCtx* dctx, void* dst, size_t dstCapacity, const void* src, size_t srcSize);
+/* The decoded size of the block announced by WZF_nextBlock, from the first min(4, c) bytes of its data (a codec
+   stream begins with its size), so that a caller can size dst per block; or an error if the size is invalid. */
+size_t WZF_blockDecodedSize(const WZF_DCtx* dctx, const void* src, size_t srcSize);
 size_t WZF_endSize(const WZF_DCtx* dctx);
 size_t WZF_decompressEnd(WZF_DCtx* dctx, const void* src, size_t srcSize);
 

@@ -63,9 +63,9 @@ extern "C" {
 #endif
 
 /*------   Version   ------*/
-#define WLZ_VERSION_MAJOR    0    /* for breaking interface changes  */
-#define WLZ_VERSION_MINOR    0    /* for new (non-breaking) interface capabilities */
-#define WLZ_VERSION_RELEASE  0    /* for tweaks, bug-fixes, or development */
+#define WLZ_VERSION_MAJOR    1    /* the library's version, as WZIP_VERSION_* in WZIP.h */
+#define WLZ_VERSION_MINOR    0
+#define WLZ_VERSION_RELEASE  0
 
 #define WLZ_VERSION_NUMBER (WLZ_VERSION_MAJOR *100*100 + WLZ_VERSION_MINOR *100 + WLZ_VERSION_RELEASE)
 

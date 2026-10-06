@@ -16,7 +16,10 @@
 #define WZF_FLAG_SIZE       0x08
 
 unsigned WZF_versionNumber(void) { return WZF_VERSION_NUMBER; }
-const char* WZF_versionString(void) { return "1.0.0"; }
+const char* WZF_versionString(void) { return WZF_VERSION_STRING; }
+#if WZF_VERSION_NUMBER != WZIP_VERSION_NUMBER || WZF_VERSION_NUMBER != WLZ_VERSION_NUMBER
+#  error "WZIP.h, WLZ4.h and wzframe.h must carry the same version"
+#endif
 
 /*------   Errors: (size_t)-code   ------*/
 #define ERR(e) ((size_t)-(ptrdiff_t)(WZF_error_##e))
@@ -132,7 +135,7 @@ void WZF_freeCCtx(WZF_CCtx* c)
 	free(c);
 }
 
-size_t WZF_blockBound(size_t srcSize) { return WZF_BLOCK_HEADER + srcSize; }
+size_t WZF_blockBound(size_t srcSize) { return WZF_BLOCK_HEADER + srcSize + WZIP_MEM_OVERHEAD; }
 
 int WZF_blockLog(const WZF_CCtx* c) { return c->blockLog; }
 
@@ -188,7 +191,7 @@ size_t WZF_compressBlock(WZF_CCtx* c, void* dst, size_t dstCapacity, const void*
 	if (srcSize == 0) return 0;
 	if (srcSize > ((size_t)1 << c->blockLog) || srcSize > codec_max(c->p.codec)) return ERR(parameter);
 	if (c->contentSize != WZF_CONTENTSIZE_UNKNOWN && srcSize > c->contentSize - c->consumed) return ERR(contentSize);
-	if (dstCapacity < WZF_blockBound(srcSize)) return ERR(dstSize_tooSmall);
+	if (dstCapacity < WZF_BLOCK_HEADER + srcSize) return ERR(dstSize_tooSmall);
 	unsigned char* const o = (unsigned char*)dst;
 	const unsigned char* const s = (const unsigned char*)src;
 	const size_t bound = codec_bound(c->p.codec, srcSize);
@@ -363,6 +366,33 @@ static size_t decode_block(WZF_DCtx* d, unsigned char* dst, size_t cap, const un
 		return ERR(corrupted);
 	memcpy(dst, d->tmp, size);
 	return size;
+}
+
+size_t WZF_blockDecodedSize(const WZF_DCtx* d, const void* src, size_t srcSize)
+{
+	const unsigned char* const s = (const unsigned char*)src;
+	const size_t c = d ? d->pendingSize : 0, maxBlk = d ? (size_t)1 << d->h.blockLog : 0;
+	if (!d || d->stage != 2 || !src || srcSize < (c < 4 ? c : 4)) return ERR(parameter);
+	if (d->pendingRaw) return c;
+	size_t size;
+	if (d->h.codec == WZF_CODEC_WZIP) {                 /* WZIP_Read_DecSize; 0: stored, the rest of the block */
+		if (c < 2) return ERR(corrupted);
+		size = (size_t)s[0] | (size_t)s[1] << 8;
+		if (size >> 15) {
+			if (c < 4) return ERR(corrupted);
+			size = (size & 0x7FFF) | ((size_t)s[2] | (size_t)s[3] << 8) << 15;
+		}
+		else if (size == 0) size = c - 2;
+	}
+	else {                                              /* WLZ4: the same two forms, no stored form */
+		if (c < 2) return ERR(corrupted);
+		size = (size_t)s[0] | (size_t)s[1] << 8;
+		if (size >> 15) {
+			if (c < 4) return ERR(corrupted);
+			size = (size & 0x7FFF) | ((size_t)s[2] | (size_t)s[3] << 8) << 15;
+		}
+	}
+	return size == 0 || size > maxBlk ? ERR(corrupted) : size;
 }
 
 size_t WZF_decompressBlock(WZF_DCtx* d, void* dst, size_t dstCapacity, const void* src, size_t srcSize)

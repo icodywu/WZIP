@@ -50,6 +50,9 @@ void WZIP_Free_State(WZIP_State_Str* wzipStr)
 	free(wzipStr);
 }
 
+unsigned wzip_versionNumber(void) { return WZIP_VERSION_NUMBER; }
+const char* wzip_versionString(void) { return WZIP_VERSION_STRING; }
+
 //It returns a safe compression buffer size without overflowing, even if the input data is uncompressible.
 int WZIP_Cap_CmprSize(int srcSize) {
 	return srcSize + WZIP_MEM_OVERHEAD;

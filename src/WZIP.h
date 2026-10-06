@@ -17,6 +17,15 @@ extern "C" {
 
 /* The compressed formats (the wzip_compress stream, WZIP_L, WZIP_M and WZIP_S) are specified in doc/WZIP_format.md. */
 
+/* The library's version (WZIP, WLZ4 and the WZ frame share it); see CHANGELOG.md */
+#define WZIP_VERSION_MAJOR        1
+#define WZIP_VERSION_MINOR        0
+#define WZIP_VERSION_RELEASE      0
+#define WZIP_VERSION_NUMBER       (WZIP_VERSION_MAJOR * 10000 + WZIP_VERSION_MINOR * 100 + WZIP_VERSION_RELEASE)
+#define WZIP_VERSION_STRING       "1.0.0"
+unsigned wzip_versionNumber(void);
+const char* wzip_versionString(void);
+
 #define WZIP_MAX_INPUT_SIZE       0x7EEEE000
 #define WZIP_MEM_OVERHEAD         256
 #define WZIP_MAX_OFF_WIDTH        27          /* the window of lengths 8+ covers the input up to 2^27 bytes */

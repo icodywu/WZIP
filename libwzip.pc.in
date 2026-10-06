@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: libwzip
+Description: WZIP and WLZ4 compression, and the WZ frame
+URL: https://github.com/icodywu/WZIP
+Version: @PROJECT_VERSION@
+Libs: -L${libdir} -lwzip
+Libs.private: -lm
+Cflags: -I${includedir}
