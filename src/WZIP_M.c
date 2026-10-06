@@ -1427,15 +1427,18 @@ WZIP_State_Str* WZIP_New_State_M(int level, const void* dict, int dictSize)
 	}
 	else {
 		fprintf(stderr, "compression level must be in [0, 12]\n");
+		WZIP_Free_State(wzipStr);
 		return NULL;
 	}
 
-	wzipStr->hash0Table = malloc((1 + wzipStr->hash0Mask) * sizeof(Sint16));
-	wzipStr->hash1Table = malloc((1 + wzipStr->hash1Mask) * sizeof(Sint16));
+	/* zeroed: an entry not yet written then names position 0, always in the history (a stale one from reused memory
+	   could name a position near the dictionary's end, whose compare reads past it) */
+	wzipStr->hash0Table = calloc((size_t)wzipStr->hash0Mask + 1, sizeof(Sint16));
+	wzipStr->hash1Table = calloc((size_t)wzipStr->hash1Mask + 1, sizeof(Sint16));
 	wzipStr->hash2Table = NULL;
 
 	if (0 == wzipStr->chain1Mask) wzipStr->chain1Table = NULL;
-	else wzipStr->chain1Table = malloc((1 + wzipStr->chain1Mask) * sizeof(Uint16));
+	else wzipStr->chain1Table = calloc((size_t)wzipStr->chain1Mask + 1, sizeof(Uint16));
 	
 	if (NULL == wzipStr->hash0Table || NULL == wzipStr->hash1Table || (wzipStr->chain1Mask && NULL == wzipStr->chain1Table)) {
 		WZIP_Free_State(wzipStr);

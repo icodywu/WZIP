@@ -2567,17 +2567,20 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	}
 	else {
 		fprintf(stderr, "compression level must be in [0, 13]\n");
+		WZIP_Free_State(wzipStr);
 		return NULL;
 	}
-	wzipStr->hash0Table = malloc((1 + wzipStr->hash0Mask) * sizeof(int));
-	wzipStr->hash1Table = malloc((1 + wzipStr->hash1Mask) * sizeof(int));
-	wzipStr->hash2Table = malloc((1 + wzipStr->hash2Mask) * sizeof(int));
+	/* zeroed: an entry not yet written then names position 0, which is always in the history. Left unset, a stale
+	   entry from reused memory could name a position near the dictionary's end, whose compare reads past it. */
+	wzipStr->hash0Table = calloc((size_t)wzipStr->hash0Mask + 1, sizeof(int));
+	wzipStr->hash1Table = calloc((size_t)wzipStr->hash1Mask + 1, sizeof(int));
+	wzipStr->hash2Table = calloc((size_t)wzipStr->hash2Mask + 1, sizeof(int));
 
 	if (0 == wzipStr->chain1Mask) wzipStr->chain1Table = NULL;
-	else wzipStr->chain1Table = malloc((1 + wzipStr->chain1Mask) * sizeof(Uint32));
-		
+	else wzipStr->chain1Table = calloc((size_t)wzipStr->chain1Mask + 1, sizeof(Uint32));
+
 	if (0 == wzipStr->chain2Mask) wzipStr->chain2Table = NULL;
-	else wzipStr->chain2Table = malloc((1 + wzipStr->chain2Mask) * sizeof(Uint32));
+	else wzipStr->chain2Table = calloc((size_t)wzipStr->chain2Mask + 1, sizeof(Uint32));
 	
 	if (NULL == wzipStr->hash0Table || NULL == wzipStr->hash1Table || NULL == wzipStr->hash2Table
 	    || (wzipStr->chain1Mask && NULL == wzipStr->chain1Table) || (wzipStr->chain2Mask && NULL == wzipStr->chain2Table)) {
