@@ -297,8 +297,9 @@ RUN_SYM = 67
 
 
 def decode_l(data, n, dictionary=b''):
-    """a WZIP_L payload (after the wrapper's size field) of n >= 32768 decoded bytes"""
-    width = off_widths(n)
+    """a WZIP_L payload (after the wrapper's size field) of n >= 32768 decoded bytes; the windows are those of the
+    history, the dictionary and the output (5.2, 8)"""
+    width = off_widths(n + len(dictionary))
     if len(data) < 3 or data[2] >> 4 > 1:
         raise ValueError('bad window header')
     fine = data[2] >> 4

@@ -12,9 +12,12 @@ a WZ frame records its frame format version and its codec's format version (`doc
   (the nearest in each chain), never longer ones, which their binary tree finds in the input; they now insert the
   dictionary's positions within each window into both chains and the tree. At every level a match may now run from
   the dictionary into the input. Compressed with the 128 MiB before it as dictionary, a 128 MiB block of enwik9 now
-  loses 0.19% against one stream at level 11 (3.6% before). Without a dictionary the output is unchanged. Streams
-  with matches across the dictionary's end need the decoders of this version (the earlier trusted decoder copied
-  them wrongly).
+  loses 0.19% against one stream at level 11 (3.6% before). Without a dictionary the output is unchanged.
+- **WZIP_L windows with a dictionary** follow the history, dictionary and input together (`doc/WZIP_format.md`,
+  5.2): a small input can reach as far into a large dictionary as one stream reaches back. This changes the format
+  of WZIP_L streams with a dictionary (made only through `WZIP_New_State_L` and `WZIP_Decompress_L`): those of
+  earlier versions may not decode with this one, nor the reverse. Streams without one (the one-call stream, WZ
+  frames) are unchanged.
 - **Fix:** WLZ4's encoders could read one byte past the input, after a literal run of 15 or 16 bytes before a match
   16 bytes from its end (found by fuzzing the round trip through 2 KB frame blocks).
 

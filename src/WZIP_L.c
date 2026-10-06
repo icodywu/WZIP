@@ -144,6 +144,15 @@ static void Set_Offset_Groups(WZL_Sched* const S_, int natural, int fine)
 	}
 }
 
+/* The window schedule follows the history: with a dictionary of D bytes before an input of n, the windows are those
+   of an input of n + D bytes (as for the end of one stream that long), so that a match can reach as far into the
+   dictionary as one stream's could; encoder and decoders derive them alike. */
+static int WZL_History(const int n, const int dictSize)
+{
+	const long long h = (long long)n + (dictSize > 0 ? dictSize : 0);
+	return h > 0x7FFFFFFF ? 0x7FFFFFFF : (int)h;
+}
+
 /* We combine 8-bit Huffman index and up-to 24 appended bits into Uint32, Therefore, expanding to more than 24 appended bits will break the code.
 */
 static ExtHuffman_Lit const ExtHufLitRun[] = {
@@ -2525,11 +2534,12 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	WZL_Sched* const S_ = (WZL_Sched*)calloc(1, sizeof(WZL_Sched));
 	if (NULL == wzipStr || NULL == S_) { free(wzipStr); free(S_); return NULL; }
 	wzipStr->sched = S_;
+	if (NULL == dict || dictSize < 0) dictSize = 0;
 	wzipStr->compressLevel = level;
 	wzipStr->dictSize = dictSize;
 	wzipStr->dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
-	WZIP_Set_OffWidth(srcSize, OffWidth);
+	WZIP_Set_OffWidth(WZL_History(srcSize, dictSize), OffWidth);
 	/* wider short windows for optimal parsing, measured from the widest window of the short lengths (2^26 at most; on
 	   enwik8, widening from the 2^27 window of lengths 8+ lost 0.06%); gaps fit in 4 bits */
 	const int shortTop = min(OffWidth[8], WZIP_SHORT_OFF_WIDTH);
@@ -2996,7 +3006,7 @@ int WZIP_Decompress_L(
 	Uint8* const dictEnd = histSize ? (Uint8*)dict + dictSize : NULL;
 
 	if (destSize <= 0) return 0;
-	WZIP_Set_OffWidth(destSize, OffWidth);
+	WZIP_Set_OffWidth(WZL_History(destSize, histSize), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
 		if (srcSize < WIN_HeaderSize + 4 || (srcPtr[2] >> 4) > 1) return 0;
 		OffGroupsFine = srcPtr[2] >> 4;
@@ -3291,7 +3301,7 @@ int WZIP_Decompress_L_Trusted(
 	Uint8* srcPtr = (Uint8*)source;
 	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
-	WZIP_Set_OffWidth(destSize, OffWidth);
+	WZIP_Set_OffWidth(WZL_History(destSize, dict ? dictSize : 0), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
 		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 1) return 0;
 		OffGroupsFine = srcPtr[2] >> 4;

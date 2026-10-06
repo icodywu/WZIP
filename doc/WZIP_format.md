@@ -218,23 +218,25 @@ literals. Sequence blocks follow until `n` bytes are decoded.
 ### 5.2 Windows
 
 Each match length has a window **width** `w(l)`: a new offset of a length-`l` match is at most `2^w(l) - 4` (its value
-`offset + 3` is below `2^w(l)`). Lengths 8 and up share `w(8)`, which is derived from `n`: take the base width
-`b` from the table below, then `w(8)` is the smallest `w >= b` with `2^w - 3 >= n`, but at most 27.
+`offset + 3` is below `2^w(l)`). Lengths 8 and up share `w(8)`, which is derived from the **history size**
+`h = n + D`, where `D` is the size of the dictionary (section 8; 0 without one, and so always in the one-call stream):
+take the base width `b` from the table below, then `w(8)` is the smallest `w >= b` with `2^w - 3 >= h`, but at most 27.
+(A stream with a dictionary thus has the windows of the end of one stream of `h` bytes.)
 
-| `n` | base widths of lengths 3, 4, 5, 6, 7, 8 (`b` is the last) |
+| `h` | base widths of lengths 3, 4, 5, 6, 7, 8 (`b` is the last) |
 |---|---|
-| `2^28 <= n` | 10, 15, 20, 24, 25, 26 |
-| `2^26 <= n < 2^28` | 11, 15, 19, 23, 25, 26 |
-| `2^25 <= n < 2^26` | 11, 15, 19, 22, 24, 24 |
-| `2^24 <= n < 2^25` | 12, 16, 20, 22, 23, 23 |
-| `2^23 <= n < 2^24` | 12, 16, 19, 22, 22, 22 |
-| `2^22 <= n < 2^23` | 12, 15, 18, 21, 21, 21 |
-| `2^21 <= n < 2^22` | 12, 15, 17, 20, 20, 20 |
-| `2^20 <= n < 2^21` | 12, 15, 17, 19, 19, 19 |
-| `2^19 <= n < 2^20` | 12, 15, 17, 18, 18, 18 |
-| `2^18 <= n < 2^19` | 12, 15, 17, 17, 17, 17 |
-| `2^17 <= n < 2^18` | 12, 15, 16, 16, 16, 16 |
-| `2^15 <= n < 2^17` | 13, 14, 15, 15, 15, 15 |
+| `2^28 <= h` | 10, 15, 20, 24, 25, 26 |
+| `2^26 <= h < 2^28` | 11, 15, 19, 23, 25, 26 |
+| `2^25 <= h < 2^26` | 11, 15, 19, 22, 24, 24 |
+| `2^24 <= h < 2^25` | 12, 16, 20, 22, 23, 23 |
+| `2^23 <= h < 2^24` | 12, 16, 19, 22, 22, 22 |
+| `2^22 <= h < 2^23` | 12, 15, 18, 21, 21, 21 |
+| `2^21 <= h < 2^22` | 12, 15, 17, 20, 20, 20 |
+| `2^20 <= h < 2^21` | 12, 15, 17, 19, 19, 19 |
+| `2^19 <= h < 2^20` | 12, 15, 17, 18, 18, 18 |
+| `2^18 <= h < 2^19` | 12, 15, 17, 17, 17, 17 |
+| `2^17 <= h < 2^18` | 12, 15, 16, 16, 16, 16 |
+| `2^15 <= h < 2^17` | 13, 14, 15, 15, 15, 15 |
 
 The **window header** gives lengths 3-7 as gaps below `w(8)`, 4 bits each, and the offset grouping:
 
@@ -460,11 +462,14 @@ WZIP_L and WZIP_M (through `WZIP_New_State_L`/`_M` and `WZIP_Decompress_L`/`_M`)
 `WZIPS_decompress_usingDict`) let a dictionary precede the input: positions `-D..-1` hold its last `D` bytes, and
 offsets reach into it as into earlier output (section 2). A match that starts in the dictionary may run on past its
 end into the output, as positions run on from `-1` to `0`. Only WZIP_S records in the block that one is needed.
+WZIP_L derives its windows from the dictionary and output sizes together (section 5.2), so a block reaches as far
+into its dictionary as one stream reaches back; the decoder must be given the same dictionary size as the encoder.
 
 The reference encoder of WZIP_L searches a dictionary at every level: the hash-chain levels from tables built over
 it, and the optimal levels by inserting its positions within each window into their two chains and their binary tree
-before the input. (Before October 2026 the optimal levels found only matches of 3-6 bytes in a dictionary, and no
-level let a match run past its end.) Splitting enwik9 into blocks of 128 MiB, each compressed at level 11 with the
+before the input. (Before October 2026 the optimal levels found only matches of 3-6 bytes in a dictionary, no
+level let a match run past its end, and WZIP_L's windows followed `n` alone, which made streams with a dictionary
+incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each compressed at level 11 with the
 128 MiB before it as its dictionary, costs 0.19% of the ratio of one stream; without the dictionaries, 3.8%.
 
 ## 9. Reference decoders (informative)
