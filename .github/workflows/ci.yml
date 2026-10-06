@@ -29,6 +29,19 @@ jobs:
           ${{ matrix.cc }} -O1 -g -fsanitize=thread -Wall -Isrc tests/threads.c src/*.c -lm -pthread -o build/threads_tsan
           ./build/threads_tsan 8 2
 
+  libfuzzer:
+    name: Coverage-guided fuzzing (libFuzzer, 2 minutes a target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fuzz every decoder and the round trip
+        run: CC=clang sh tests/fuzz/run.sh /tmp/fuzz 120 2
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-findings
+          path: /tmp/fuzz/*/crash-*
+
   arm64:
     name: Linux arm64
     runs-on: ubuntu-24.04-arm

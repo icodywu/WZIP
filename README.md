@@ -223,6 +223,7 @@ make test     # round trips of every codec and level on synthetic inputs, with g
               # the golden frames of tests/golden, which every version must keep decoding
 make check FILES="file1 file2"
 make fuzz     # damaged streams of every codec and of frames, under AddressSanitizer and UndefinedBehaviorSanitizer
+CC=clang sh tests/fuzz/run.sh /tmp/fuzz 600 4   # coverage-guided fuzzing (libFuzzer) of every decoder and round trip
 ```
 
 CMake builds the static and shared libraries, the tools and the tests, and installs them with a pkg-config file:
