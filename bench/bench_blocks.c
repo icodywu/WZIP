@@ -1,22 +1,41 @@
 /* Block benchmark: every file is cut into independent blocks of a fixed size (e.g. 4 KB storage pages), and each
    block is compressed and decompressed by its own call, as a page cache or a key-value store would. One thread pinned
-   to core 2 at high priority, after a one-second warm-up. Ratio = total input / total output; speeds = total input /
+   to core 2 at high priority (on Linux: to the core in env BENCH_CPU, else as started, e.g. by taskset), after a
+   one-second warm-up. Ratio = total input / total output; speeds = total input /
    total time over all blocks, best of <rounds> passes for compression and of 10 for decompression; every block is
    verified.
    Usage: bench_blocks <codec> <level> <block size> <rounds> file...
    codecs: wzips (WZIP_S, 1-9), wzipm (WZIP_M through wzip_compress, 0-12), lz4 (acceleration), lz4hc (1-12),
            zstd (1-22), wlz4f (acceleration), wlz4hc (0-12) */
+#ifndef _WIN32
+#  define _GNU_SOURCE                                    /* sched_setaffinity */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <sched.h>
+#  include <time.h>
+#endif
 #include <zstd.h>
 #include <lz4.h>
 #include <lz4hc.h>
 #include "WZIP.h"
 #include "WLZ4.h"
 
+#ifdef _WIN32
 static double now(void) { LARGE_INTEGER f, t; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (double)t.QuadPart / f.QuadPart; }
+static void pin(void) { SetThreadAffinityMask(GetCurrentThread(), 1 << 2); SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS); }
+#else
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static void pin(void)
+{
+	const char* c = getenv("BENCH_CPU");
+	if (c) { cpu_set_t set; CPU_ZERO(&set); CPU_SET(atoi(c), &set); sched_setaffinity(0, sizeof set, &set); }
+}
+#endif
 
 static const char* codec;
 static int level;
@@ -64,8 +83,7 @@ int main(int argc, char** argv)
 	if (kind == 7) { fprintf(stderr, "unknown codec %s\n", codec); return 1; }
 	hcState = malloc(LZ4_sizeofStateHC());
 	const int bs = atoi(argv[3]), rounds = atoi(argv[4]);
-	SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
-	SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+	pin();
 	zc = ZSTD_createCCtx(); zd = ZSTD_createDCtx(); sc = WZIPS_createCCtx(); ws = WLZ_New_State(); hs = WLZhc_New_State();
 
 	/* the blocks: each file cut from its start; a file's last block may be shorter */

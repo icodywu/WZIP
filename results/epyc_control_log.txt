@@ -1,0 +1,150 @@
+C brotli 1 auh7-3b-gpu-011 cpu4 1s
+C brotli 11 auh7-3b-gpu-011 cpu4 9s
+C brotli 5 auh7-3b-gpu-011 cpu36 1s
+C brotli 9 auh7-3b-gpu-011 cpu36 2s
+C lz4 1 auh7-3b-gpu-095 cpu36 1s
+C lz4hc 12 auh7-4b-gpu-133 cpu36 2s
+C lz4hc 4 auh7-4b-gpu-059 cpu36 2s
+C lz4hc 9 auh7-3b-gpu-272 cpu36 1s
+C wlz4f 1 auh7-3b-gpu-100 cpu4 1s
+C wlz4hc 10 auh7-3b-gpu-011 cpu36 2s
+C wlz4hc 12 auh7-4b-gpu-133 cpu36 3s
+C wlz4hc 2 auh7-4b-gpu-133 cpu4 1s
+C wlz4hc 4 auh7-4b-gpu-059 cpu36 1s
+C wlz4hc 6 auh7-4b-gpu-134 cpu36 1s
+C wlz4hc 8 auh7-3b-gpu-093 cpu4 1s
+C wlz4l 0 auh7-3b-gpu-095 cpu4 2s
+C wzip 0 auh7-3b-gpu-100 cpu4 1s
+C wzip 1 auh7-4b-gpu-059 cpu4 1s
+C wzip 11 auh7-3b-gpu-011 cpu4 3s
+C wzip 12 auh7-3b-gpu-086 cpu36 4s
+C wzip 13 auh7-3b-gpu-011 cpu4 5s
+C wzip 3 auh7-3b-gpu-093 cpu36 1s
+C wzip 5 auh7-3b-gpu-095 cpu4 1s
+C wzip 7 auh7-4b-gpu-059 cpu36 2s
+C wzip 9 auh7-4b-gpu-059 cpu4 2s
+C xz 1 auh7-4b-gpu-134 cpu36 3s
+C xz 109 auh7-3b-gpu-095 cpu36 5s
+C xz 6 auh7-3b-gpu-100 cpu4 4s
+C zstd 1 auh7-3b-gpu-093 cpu36 2s
+C zstd 12 auh7-4b-gpu-133 cpu4 2s
+C zstd 16 auh7-3b-gpu-011 cpu4 2s
+C zstd 19 auh7-4b-gpu-133 cpu4 2s
+C zstd 22 auh7-3b-gpu-272 cpu36 3s
+C zstd 3 auh7-3b-gpu-093 cpu4 1s
+C zstd 9 auh7-4b-gpu-059 cpu4 1s
+E8 brotli 1 auh7-3b-gpu-095 cpu4 8s
+E8 brotli 11 auh7-3b-gpu-093 cpu36 171s
+E8 brotli 5 auh7-3b-gpu-086 cpu36 8s
+E8 brotli 9 auh7-4b-gpu-134 cpu36 23s
+E8 lz4 1 auh7-4b-gpu-059 cpu36 2s
+E8 lz4hc 12 auh7-3b-gpu-011 cpu36 7s
+E8 lz4hc 4 auh7-3b-gpu-100 cpu36 6s
+E8 lz4hc 9 auh7-3b-gpu-095 cpu36 4s
+E8 wlz4f 1 auh7-3b-gpu-011 cpu4 3s
+E8 wlz4hc 10 auh7-3b-gpu-095 cpu36 35s
+E8 wlz4hc 12 auh7-3b-gpu-100 cpu4 117s
+E8 wlz4hc 2 auh7-4b-gpu-134 cpu36 3s
+E8 wlz4hc 4 auh7-3b-gpu-093 cpu4 5s
+E8 wlz4hc 6 auh7-3b-gpu-093 cpu36 5s
+E8 wlz4hc 8 auh7-3b-gpu-086 cpu36 16s
+E8 wlz4l 0 auh7-3b-gpu-011 cpu36 3s
+E8 wzip 0 auh7-3b-gpu-100 cpu4 5s
+E8 wzip 1 auh7-4b-gpu-059 cpu4 6s
+E8 wzip 11 auh7-3b-gpu-100 cpu4 100s
+E8 wzip 12 auh7-3b-gpu-100 cpu36 115s
+E8 wzip 13 auh7-3b-gpu-011 cpu4 205s
+E8 wzip 3 auh7-3b-gpu-095 cpu4 12s
+E8 wzip 5 auh7-3b-gpu-272 cpu36 17s
+E8 wzip 7 auh7-3b-gpu-093 cpu36 46s
+E8 wzip 9 auh7-3b-gpu-086 cpu4 70s
+E8 xz 1 auh7-3b-gpu-093 cpu4 22s
+E8 xz 109 auh7-3b-gpu-086 cpu36 85s
+E8 xz 6 auh7-4b-gpu-133 cpu36 59s
+E8 zstd 1 auh7-4b-gpu-133 cpu36 4s
+E8 zstd 12 auh7-3b-gpu-272 cpu36 7s
+E8 zstd 16 auh7-4b-gpu-133 cpu4 22s
+E8 zstd 19 auh7-3b-gpu-095 cpu36 43s
+E8 zstd 22 auh7-4b-gpu-134 cpu4 69s
+E8 zstd 3 auh7-3b-gpu-100 cpu36 4s
+E8 zstd 9 auh7-3b-gpu-100 cpu36 5s
+E9 brotli 11 auh7-3b-gpu-094 cpu36 1652s
+E9 brotli 9 auh7-3b-gpu-011 cpu36 199s
+E9 lz4 1 auh7-4b-gpu-133 cpu4 12s
+E9 lz4hc 12 auh7-4b-gpu-134 cpu4 57s
+E9 lz4hc 9 auh7-4b-gpu-059 cpu36 31s
+E9 wlz4f 1 auh7-3b-gpu-100 cpu36 21s
+E9 wlz4hc 10 auh7-3b-gpu-272 cpu4 291s
+E9 wlz4hc 12 auh7-4b-gpu-132 cpu36 965s
+E9 wlz4hc 2 auh7-4b-gpu-059 cpu36 24s
+E9 wlz4hc 6 auh7-4b-gpu-134 cpu36 34s
+E9 wlz4l 0 auh7-3b-gpu-095 cpu4 21s
+E9 wzip 0 auh7-4b-gpu-134 cpu36 40s
+E9 wzip 11 auh7-4b-gpu-132 cpu4 1044s
+E9 wzip 13 auh7-3b-gpu-094 cpu4 2154s
+E9 wzip 3 auh7-4b-gpu-134 cpu36 115s
+E9 wzip 9 auh7-4b-gpu-122 cpu4 650s
+E9 xz 109 auh7-4b-gpu-156 cpu36 835s
+E9 xz 6 auh7-4b-gpu-156 cpu4 510s
+E9 zstd 1 auh7-3b-gpu-086 cpu4 23s
+E9 zstd 12 auh7-3b-gpu-100 cpu36 51s
+E9 zstd 19 auh7-3b-gpu-004 cpu36 410s
+E9 zstd 22 auh7-3b-gpu-004 cpu4 750s
+E9 zstd 3 auh7-3b-gpu-272 cpu36 22s
+S brotli 1 auh7-4b-gpu-134 cpu4 12s
+S brotli 11 auh7-4b-gpu-122 cpu36 323s
+S brotli 5 auh7-4b-gpu-134 cpu4 14s
+S brotli 9 auh7-4b-gpu-133 cpu36 34s
+S lz4 1 auh7-3b-gpu-011 cpu36 3s
+S lz4hc 12 auh7-4b-gpu-059 cpu4 18s
+S lz4hc 4 auh7-3b-gpu-272 cpu36 9s
+S lz4hc 9 auh7-4b-gpu-059 cpu36 8s
+S wlz4f 1 auh7-4b-gpu-059 cpu4 5s
+S wlz4f 1 checked auh7-4b-gpu-134 cpu36 5s
+S wlz4hc 10 auh7-3b-gpu-093 cpu4 39s
+S wlz4hc 10 checked auh7-4b-gpu-133 cpu4 39s
+S wlz4hc 12 auh7-4b-gpu-133 cpu4 129s
+S wlz4hc 12 checked auh7-4b-gpu-133 cpu36 128s
+S wlz4hc 2 auh7-3b-gpu-086 cpu36 6s
+S wlz4hc 2 checked auh7-3b-gpu-100 cpu4 5s
+S wlz4hc 4 auh7-3b-gpu-095 cpu36 7s
+S wlz4hc 4 checked auh7-3b-gpu-095 cpu4 6s
+S wlz4hc 6 auh7-4b-gpu-133 cpu36 8s
+S wlz4hc 6 checked auh7-3b-gpu-100 cpu36 8s
+S wlz4hc 8 auh7-4b-gpu-133 cpu4 21s
+S wlz4hc 8 checked auh7-4b-gpu-059 cpu4 21s
+S wlz4l 0 auh7-4b-gpu-059 cpu36 5s
+S wlz4l 0 checked auh7-3b-gpu-011 cpu36 5s
+S wzip 0 auh7-4b-gpu-059 cpu36 7s
+S wzip 0 checked auh7-3b-gpu-093 cpu36 7s
+S wzip 1 auh7-3b-gpu-100 cpu36 9s
+S wzip 1 checked auh7-4b-gpu-133 cpu4 10s
+S wzip 11 auh7-3b-gpu-093 cpu4 131s
+S wzip 11 checked auh7-4b-gpu-059 cpu36 132s
+S wzip 12 auh7-4b-gpu-059 cpu4 179s
+S wzip 12 checked auh7-3b-gpu-272 cpu36 178s
+S wzip 13 auh7-3b-gpu-115 cpu36 279s
+S wzip 13 checked auh7-3b-gpu-115 cpu4 280s
+S wzip 3 auh7-3b-gpu-011 cpu36 13s
+S wzip 3 checked auh7-4b-gpu-134 cpu36 14s
+S wzip 5 auh7-4b-gpu-059 cpu36 18s
+S wzip 5 checked auh7-3b-gpu-100 cpu36 18s
+S wzip 7 auh7-3b-gpu-095 cpu4 59s
+S wzip 7 checked auh7-3b-gpu-086 cpu4 59s
+S wzip 9 auh7-3b-gpu-095 cpu36 78s
+S wzip 9 checked auh7-4b-gpu-134 cpu4 80s
+S xz 1 auh7-3b-gpu-095 cpu4 40s
+S xz 109 auh7-3b-gpu-086 cpu36 118s
+S xz 6 auh7-3b-gpu-086 cpu4 88s
+S zstd -1 auh7-3b-gpu-100 cpu4 4s
+S zstd -3 auh7-3b-gpu-086 cpu36 4s
+S zstd -5 auh7-3b-gpu-011 cpu36 4s
+S zstd -7 auh7-4b-gpu-134 cpu4 4s
+S zstd 1 auh7-4b-gpu-059 cpu4 5s
+S zstd 12 auh7-3b-gpu-011 cpu4 9s
+S zstd 16 auh7-3b-gpu-093 cpu4 33s
+S zstd 19 auh7-3b-gpu-095 cpu36 65s
+S zstd 22 auh7-3b-gpu-095 cpu4 89s
+S zstd 3 auh7-3b-gpu-093 cpu36 7s
+S zstd 6 auh7-4b-gpu-059 cpu36 6s
+S zstd 9 auh7-3b-gpu-093 cpu4 6s

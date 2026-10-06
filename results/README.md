@@ -1,9 +1,29 @@
 # Raw results of the paper
 
 Output of `bench/bench_all` (one line per codec and level: ratio, compression and decompression speed in MB/s,
-encoder memory in MB, verification failures). WZIP and WLZ4 were measured with the decoders that are now their opt-in
-trusted mode (`wzip_decompress_trusted`, `WLZ_Decompress_Trusted`), the same code. The paper's tables are
-`gen_tables.py` applied to these files:
+encoder memory in MB, verification failures) and of `bench/bench_blocks`. WZIP and WLZ4 were measured with the
+decoders that are now their opt-in trusted mode (`wzip_decompress_trusted`, `WLZ_Decompress_Trusted`), the same code,
+unless a file name says `checked`.
+
+## AMD EPYC 9334 (the paper's and the README's numbers)
+
+Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see `bench/README.md`), one run per
+8-core complex. The paper's tables are `gen_tables.py` applied to `epyc_*` and `epyc_control_*` together:
+
+| File | Contents |
+|---|---|
+| `epyc_S.txt`, `epyc_C.txt`, `epyc_e8.txt`, `epyc_e9.txt` | every configuration on Silesia (with Zstandard's negative levels), Canterbury+Calgary, enwik8 and enwik9; eight runs per node |
+| `epyc_checked_S.txt` | WZIP's and WLZ4's bounds-checked decoders on Silesia |
+| `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.0%) |
+| `epyc_log.txt`, `epyc_control_log.txt` | node, core and seconds of each task |
+| `epyc_zstd_asm.txt` | Zstandard's decompression with (`asm`) and without (`noasm`, `-DZSTD_DISABLE_ASM`) its assembly Huffman decoder, three interleaved passes from saved streams: levels -1 to 22 on Silesia, then 1 to 22 on enwik9; the assembly gains 0.1-2.2% |
+| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node) |
+
+A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.
+
+## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)
+
+The paper's first platform; the same ratios. Its tables were `gen_tables.py` applied to these files:
 
 ```sh
 cd bench
@@ -32,5 +52,3 @@ python gen_tables.py OUT S=../results/final_S.txt,../results/final2_S.txt,../res
 | `ablation_wlz4.txt` | `bench/ablation/wlz4/run.sh`: the WLZ4 format variants of Table 5 (two-window, far code) and the "offset size by length alone" variants at levels 10 and 12, the original runs and a rerun from the repository sources (identical ratios), and the far-code parse's match mix |
 | `position_S.txt`, `position_dec_S.txt`, `position_checked_S.txt` | not in the paper: LZ4, WLZ4 and Zstandard levels -7 to 9 on Silesia in one session (`bench/run_position.sh`, `COOL=62`), two more decompression-only passes, and WLZ4's bounds-checked decoder in the same passes; the README's "Where WLZ4 sits" figure and table |
 | `zstd157.txt` | Zstandard 1.5.7 at levels 19 and 22, the paper's check that 1.5.7 changes the ratios by at most 0.06% |
-
-A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.

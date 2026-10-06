@@ -49,113 +49,115 @@ or re-indexing it. See [Dictionary compression](#dictionary-compression).
 
 ## Results
 
-Single thread, Intel Core i7-8850H, GCC 14.2 `-O2`; each file compressed whole. Ratio is total input over total
-output; speeds in MB/s. Full tables, the harness and the raw outputs are in [`bench/`](bench) and [`results/`](results).
-LZ4 and WLZ4 were measured again together after WLZ4's 2026-10 format revision, in a later session than the others.
-WZIP and WLZ4 decode in their trusted mode here, as in the paper (see Usage); their default, bounds-checked decoders
-are 9-13% (WLZ4) and at most 8% (WZIP) slower on Silesia.
+Single thread on AMD EPYC 9334 nodes (Zen 4, clock capped at 2.7 GHz, 32 MB of L3 per 8-core complex), Ubuntu
+22.04; every codec built from source with GCC 14.2 `-O2`, Zstandard with the assembly Huffman decoder its Linux builds
+use. Each file is compressed whole. Each run is pinned to a core complex of its own, and every configuration ran
+twice, on identical nodes; speeds are the best of both runs (of 3 compressions for fast codecs, 1 otherwise, and of
+20 decompressions in each). Ratio is total input over total output; speeds in MB/s. Full tables, the harness and the
+raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
+them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
+`results/`), gave the same ratios and conclusions at lower speeds. WZIP and WLZ4 decode in their trusted mode here,
+as in the paper (see Usage); their default, bounds-checked decoders are 4-7% (WZIP) and at most 7% (WLZ4) slower on
+Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
-| LZ4HC 12 | 2.743 | 10.9 | 3361 |
-| **WLZ4 2** | 2.758 | 45.0 | 2733 |
-| **WLZ4 12** | 3.186 | 1.08 | 2429 |
-| Zstandard 19 | 4.005 | 2.57 | 1006 |
-| Zstandard 22 | 4.045 | 1.93 | 967 |
-| **WZIP 11** | 4.080 | 1.40 | 812 |
-| **WZIP 13** | 4.097 | 0.62 | 752 |
-| Brotli 11 | 4.276 | 0.47 | 383 |
-| xz -9e | 4.374 | 1.90 | 119 |
+| LZ4HC 12 | 2.743 | 13.4 | 4521 |
+| **WLZ4 2** | 2.758 | 72.2 | 3481 |
+| **WLZ4 12** | 3.186 | 1.70 | 3535 |
+| Zstandard 19 | 4.005 | 3.54 | 1395 |
+| Zstandard 22 | 4.045 | 2.53 | 1311 |
+| **WZIP 11** | 4.080 | 1.69 | 1107 |
+| **WZIP 13** | 4.097 | 0.79 | 1053 |
+| Brotli 11 | 4.276 | 0.68 | 506 |
+| xz -9e | 4.374 | 2.42 | 150 |
 
 | enwik9 (1 GB of Wikipedia) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
-| Zstandard 22 | 4.676 | 1.25 | 675 |
-| xz -9e | 4.722 | 1.34 | 136 |
-| **WZIP 11** | 4.745 | 0.92 | 492 |
-| **WZIP 13** | 4.759 | 0.42 | 484 |
+| Zstandard 22 | 4.676 | 1.41 | 968 |
+| xz -9e | 4.722 | 1.42 | 166 |
+| **WZIP 11** | 4.745 | 1.00 | 619 |
+| **WZIP 13** | 4.759 | 0.48 | 593 |
 
 ### Where WLZ4 sits between LZ4 and Zstandard
 
 <img src="doc/figures/wlz4-position.svg" alt="Silesia: compression ratio against decompression speed and against compression speed for LZ4, WLZ4 and Zstandard levels -7 to 9" width="760">
 
-*Silesia, LZ4, WLZ4 and Zstandard measured in one session (`bench/run_position.sh`). Labels are levels, with f
-and l for WLZ4's fast and lazy modes; Zstandard's negative levels are its `--fast` modes. Hollow squares: WLZ4's
-default, bounds-checked decoder. Arrows join configurations of equal ratio, labeled with the speed ratio.*
+*Silesia, LZ4, WLZ4 and Zstandard, from the runs of the tables above (drawn by `bench/plot_position.py`). Labels are
+levels, with f and l for WLZ4's fast and lazy modes; Zstandard's negative levels are its `--fast` modes. Hollow
+squares: WLZ4's default, bounds-checked decoder. Arrows join configurations of equal ratio, labeled with the speed
+ratio.*
 
-In ratio and decompression speed WLZ4 lies between LZ4 and Zstandard, nearer LZ4; in compression speed it does not.
+In ratio and decompression speed WLZ4 lies between LZ4 and Zstandard; in compression speed it does not.
 
-- **Decompression.** WLZ4 decodes at 2.3-2.7 GB/s in trusted mode, 71-83% of LZ4HC 12's 3.3 GB/s, and at
-  2.1-2.4 GB/s with its default, bounds-checked decoder (LZ4 and Zstandard are measured with their checked
-  decoders); Zstandard's levels -7 to 9 decode at 1.1-1.9 GB/s. At equal ratio WLZ4 decodes 1.7-2.1 times as fast
-  as Zstandard (checked decoder: 1.5-2.0): the lazy mode against Zstandard -1 (ratio 2.43), level 12 against
+- **Decompression.** WLZ4 decodes at 3.1-3.5 GB/s in trusted mode, 68-78% of LZ4HC 12's 4.5 GB/s, and at
+  3.0-3.4 GB/s with its default, bounds-checked decoder (LZ4 and Zstandard are measured with their checked
+  decoders); Zstandard's levels -7 to 9 decode at 1.4-2.5 GB/s. At equal ratio WLZ4 decodes 1.6-2.5 times as fast
+  as Zstandard (checked decoder: 1.6-2.4): the lazy mode against Zstandard -1 (ratio 2.43), level 12 against
   Zstandard 3 (3.19).
 - **Ratio.** WLZ4's levels span 2.37-3.19, from 13% above LZ4's default mode to Zstandard 3's ratio, 16% above
   LZ4HC 12's. Zstandard's higher levels go further (3.57 at level 9, 4.05 at 22), as does WZIP.
 - **Compression speed.** At a given ratio WLZ4 compresses more slowly than Zstandard. Its fast and lazy modes run at
-  230-260 MB/s, against 630 MB/s for LZ4 and 440 MB/s for Zstandard -1, which matches the lazy mode's ratio;
-  Zstandard 3 reaches level 12's ratio 200 times as fast. Against LZ4HC, WLZ4 compares well: level 2 exceeds
-  LZ4HC 12's ratio at 4.3 times its compression speed.
+  306-330 MB/s, against 735 MB/s for LZ4 and 593 MB/s for Zstandard -1, which matches the lazy mode's ratio;
+  Zstandard 3 reaches level 12's ratio 184 times as fast. Against LZ4HC, WLZ4 compares well: level 2 exceeds
+  LZ4HC 12's ratio at 5.4 times its compression speed.
 
 WLZ4 therefore suits data compressed once and decompressed many times (read-mostly storage, software packages,
 game and web assets), where decoding near LZ4's speed matters more than encoding speed. For data compressed on the
-fly, LZ4 and Zstandard's fast levels are the better choice. Configurations measured earlier (the tables above and
-`results/`) have the same ratios here; their speeds, from a separate session, differ by up to 4% in decompression
-and 7% in compression.
+fly, LZ4 and Zstandard's fast levels are the better choice.
 
 <details><summary>All points of the figure</summary>
 
 | Codec, level | Ratio | Compress | Decompress (checked) |
 |---|---:|---:|---:|
-| LZ4 1 | 2.101 | 632 | 3285 |
-| LZ4HC 4 | 2.656 | 72.4 | 3095 |
-| LZ4HC 9 | 2.721 | 31.8 | 3226 |
-| LZ4HC 12 | 2.743 | 10.7 | 3301 |
-| **WLZ4 fast** | 2.373 | 257 | 2539 (2254) |
-| **WLZ4 lazy** | 2.432 | 228 | 2700 (2426) |
-| **WLZ4 2** | 2.758 | 45.7 | 2658 (2384) |
-| **WLZ4 4** | 2.805 | 36.1 | 2705 (2448) |
-| **WLZ4 6** | 2.830 | 26.3 | 2728 (2433) |
-| **WLZ4 8** | 2.984 | 7.8 | 2396 (2146) |
-| **WLZ4 10** | 3.101 | 3.9 | 2378 (2126) |
-| **WLZ4 12** | 3.186 | 1.1 | 2330 (2151) |
-| Zstandard -7 | 1.937 | 600 | 1858 |
-| Zstandard -5 | 2.056 | 555 | 1784 |
-| Zstandard -3 | 2.239 | 498 | 1666 |
-| Zstandard -1 | 2.437 | 440 | 1570 |
-| Zstandard 1 | 2.887 | 400 | 1240 |
-| Zstandard 3 | 3.186 | 230 | 1103 |
-| Zstandard 6 | 3.444 | 88.6 | 1153 |
-| Zstandard 9 | 3.570 | 49.5 | 1177 |
+| LZ4 1 | 2.101 | 735 | 4717 |
+| LZ4HC 4 | 2.656 | 95.8 | 4285 |
+| LZ4HC 9 | 2.721 | 38.9 | 4455 |
+| LZ4HC 12 | 2.743 | 13.4 | 4521 |
+| **WLZ4 fast** | 2.373 | 330 | 3061 (3001) |
+| **WLZ4 lazy** | 2.432 | 306 | 3259 (3198) |
+| **WLZ4 2** | 2.758 | 72.2 | 3481 (3243) |
+| **WLZ4 4** | 2.805 | 55.5 | 3275 (3444) |
+| **WLZ4 6** | 2.830 | 40.1 | 3233 (3197) |
+| **WLZ4 8** | 2.984 | 11.9 | 3342 (3267) |
+| **WLZ4 10** | 3.101 | 5.82 | 3449 (3355) |
+| **WLZ4 12** | 3.186 | 1.70 | 3535 (3446) |
+| Zstandard -7 | 1.937 | 793 | 2463 |
+| Zstandard -5 | 2.056 | 729 | 2341 |
+| Zstandard -3 | 2.239 | 664 | 2177 |
+| Zstandard -1 | 2.437 | 593 | 2033 |
+| Zstandard 1 | 2.887 | 520 | 1629 |
+| Zstandard 3 | 3.186 | 314 | 1435 |
+| Zstandard 6 | 3.444 | 117 | 1507 |
+| Zstandard 9 | 3.570 | 78.3 | 1571 |
 
 </details>
 
 ### Independent 4 KB and 8 KB blocks
 
 Storage pages and key-value stores compress small blocks independently. Here every Silesia file is cut into 4 KB
-or 8 KB blocks, each compressed and decompressed by its own call (`bench/bench_blocks.c`; results for
-Canterbury+Calgary are in [`results/blocks_C.txt`](results/blocks_C.txt) and, for the LZ4 class,
-[`results/blocks_lz4class_C.txt`](results/blocks_lz4class_C.txt)).
+or 8 KB blocks, each compressed and decompressed by its own call (`bench/bench_blocks.c`, on the EPYC as above, best
+of two runs; results for Canterbury+Calgary are in [`results/epyc_blocks_C.txt`](results/epyc_blocks_C.txt)).
 
 | Silesia in blocks | 4 KB ratio | Compress | Decompress | 8 KB ratio | Compress | Decompress |
 |---|---:|---:|---:|---:|---:|---:|
-| LZ4 | 1.727 | 590 | 2719 | 1.824 | 581 | 2783 |
-| LZ4HC 12 | 1.856 | 36.2 | 2973 | 2.004 | 30.3 | 3061 |
-| **WLZ4 2** | 1.901 | 67.0 | 2495 | 2.027 | 67.2 | 2671 |
-| **WLZ4 10** | 1.945 | 24.5 | 2317 | 2.087 | 23.1 | 2462 |
-| Zstandard 1 | 2.315 | 210 | 571 | 2.476 | 251 | 699 |
-| Zstandard 9 | 2.424 | 33.3 | 599 | 2.619 | 28.4 | 693 |
-| Zstandard 19 | 2.522 | 3.88 | 530 | 2.737 | 3.80 | 636 |
-| **WZIP_S 1** | 2.434 | 52.3 | 314 | 2.580 | 59.3 | 410 |
-| **WZIP_S 5** | 2.499 | 31.7 | 330 | 2.680 | 30.8 | 424 |
-| **WZIP_S 9** | 2.500 | 24.2 | 332 | 2.682 | 17.6 | 424 |
-| **WZIP_M 12** | 2.502 | 0.82 | 379 | 2.718 | 0.51 | 479 |
+| LZ4 | 1.727 | 740 | 3414 | 1.824 | 733 | 3777 |
+| LZ4HC 12 | 1.856 | 48.9 | 3785 | 2.004 | 40.9 | 4247 |
+| **WLZ4 2** | 1.901 | 91.4 | 2828 | 2.027 | 92.9 | 3052 |
+| **WLZ4 10** | 1.945 | 33.1 | 2650 | 2.087 | 30.4 | 2822 |
+| Zstandard 1 | 2.315 | 296 | 806 | 2.476 | 344 | 1004 |
+| Zstandard 9 | 2.424 | 50.5 | 816 | 2.619 | 47.7 | 991 |
+| Zstandard 19 | 2.522 | 6.52 | 702 | 2.737 | 5.85 | 826 |
+| **WZIP_S 1** | 2.434 | 77.3 | 448 | 2.580 | 85.8 | 561 |
+| **WZIP_S 5** | 2.499 | 48.4 | 465 | 2.680 | 46.2 | 599 |
+| **WZIP_S 9** | 2.500 | 38.0 | 467 | 2.682 | 29.7 | 601 |
+| **WZIP_M 12** | 2.502 | 1.34 | 564 | 2.718 | 0.83 | 696 |
 
-WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at the same
-compression speed, but WZIP_S decodes at 55-61% of Zstandard's speed, and Zstandard 19 still compresses 1-2% more
-than WZIP_S 9. WLZ4 compresses 1-5% more than LZ4HC 12, decoding 13-22% slower (the LZ4 rows were measured again
-with WLZ4 after its format revision, in a later session than the others). WZIP_M, reached through
-`wzip_compress`, compresses slowly on small blocks because the one-call interface builds its tables on every call;
-WZIP_S keeps them in a reusable context.
+WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at about the
+same compression speed, but WZIP_S decodes at 56-60% of the speed of Zstandard 1 and 9, and Zstandard 19 still
+compresses 1-2% more than WZIP_S 9. WLZ4 compresses 1-5% more than LZ4HC 12, decoding 25-34% slower (13-22% on the
+laptop, `results/blocks_*.txt`). WZIP_M, reached through `wzip_compress`, compresses slowly on small blocks because
+the one-call interface builds its tables on every call; WZIP_S keeps them in a reusable context.
 
 ## Papers
 
@@ -303,7 +305,8 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 9-15% faster for WLZ4 and up to 8% faster for WZIP. Never use it on data that
+On Silesia the trusted mode decodes 5-8% faster for WZIP and up to 7% faster for WLZ4 on the EPYC (9-15% for WLZ4
+on the laptop). Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
 Every function is thread-safe when each thread uses its own contexts (`make test` runs several threads at once);
@@ -432,8 +435,8 @@ compressed size; the gain is the ratio with the dictionary over the ratio withou
 
 A dictionary helps WZIP_S about as much as it helps zstd. The remaining 2–4% difference in ratio is the
 same as without a dictionary, so it comes from the block coding, not from the dictionary handling.
-Decoding with a dictionary ran at the same speed as without on 4 KB blocks and about 16% slower on
-16 KB blocks; zstd slowed by about 22% in the same test.
+On the laptop, decoding with a dictionary ran at the same speed as without on 4 KB blocks and about 16%
+slower on 16 KB blocks; zstd slowed by about 22% in the same test.
 
 ## Repository layout
 
@@ -443,7 +446,7 @@ Decoding with a dictionary ran at the same speed as without on 4 KB blocks and a
 | `doc/` | format specifications (WZIP, WLZ4, the WZ frame) and reference decoders (Python) |
 | `programs/wzip.c` | the command-line tool `wzip` / `wlz4` |
 | `tests/` | round trips of every codec and level, the thread test, the tool's test (`make test`), damaged streams (`make fuzz`) |
-| `bench/` | the benchmark harness and scripts of the paper (Windows, MSYS2); see `bench/README.md` |
+| `bench/` | the benchmark harness and scripts of the paper (Windows with MSYS2, or Linux; `bench/cluster/` for Slurm clusters); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |
 | `contrib/lzbench/` | adds WLZ4 and WZIP to [lzbench](https://github.com/inikep/lzbench) |
 | `python/` | the Python package `wzip` (`pyproject.toml`, `setup.py` at the root) |

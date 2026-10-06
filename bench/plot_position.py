@@ -60,8 +60,9 @@ for ax, col, xlabel in ((axes[0], 2, 'Decompression speed (MB/s)'), (axes[1], 1,
         h, = ax.plot(xs, ys, marker=mk, color=color, linestyle=ls, label=lab, markersize=4.5, linewidth=1.2)
         if col == 2: handles.append(h)
         for (_, (c, l), v) in pts:
-            ax.annotate(label(c, l), (v[col], v[0]), textcoords='offset points', xytext=(4, -3), fontsize=7,
-                        color=color)
+            left = col == 2 and (c, l) == ('lz4hc', 9)          # next to LZ4HC 12 in decompression speed
+            ax.annotate(label(c, l), (v[col], v[0]), textcoords='offset points', xytext=(-3, 2) if left else (4, -3),
+                        ha='right' if left else 'left', fontsize=7, color=color)
         if col == 2 and names[0] == 'wlz4f' and checked:
             cp = [(v[0], checked[k]) for _, k, v in pts if k in checked]
             h, = ax.plot([x for _, x in cp], [y for y, _ in cp], marker=mk, color=color, linestyle=':',

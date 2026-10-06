@@ -11,9 +11,16 @@ while [ $i -lt "$n" ]; do
 	i=$((i + 1))
 	mkdir "$R/claims/$i" 2>/dev/null || continue
 	set -- $(sed -n "${i}p" "$R/queue.txt")
-	corpus=$1; codec=$2; level=$3; rounds=$4
+	if [ "$1" = B ]; then                                       # B corpus block-size codec level rounds: bench_blocks
+		eval "files=\$FILES_$2"
+		taskset -c "$CPU" ./bench_blocks "$4" "$5" "$3" "$6" $files > "$R/out/B.$2.$3.$4.$5.txt" 2> "$R/out/B.$2.$3.$4.$5.err"
+		continue
+	fi
+	corpus=$1; codec=$2; level=$3; rounds=$4; mode=${5:-}       # mode "checked": the bounds-checked decoders
 	eval "files=\$FILES_$corpus"
+	name="$corpus.$codec.$level${mode:+.$mode}"
 	start=$(date +%s)
-	taskset -c "$CPU" ./bench_all "$codec" "$level" "$rounds" 20 $files > "$R/out/$corpus.$codec.$level.txt" 2> "$R/out/$corpus.$codec.$level.err"
-	echo "$corpus $codec $level $(hostname) cpu$CPU $(( $(date +%s) - start ))s" >> "$R/out/$corpus.$codec.$level.txt"
+	if [ "$mode" = checked ]; then export CHECKED=1; else unset CHECKED; fi
+	taskset -c "$CPU" ./bench_all "$codec" "$level" "$rounds" 20 $files > "$R/out/$name.txt" 2> "$R/out/$name.err"
+	echo "$corpus $codec $level${mode:+ $mode} $(hostname) cpu$CPU $(( $(date +%s) - start ))s" >> "$R/out/$name.txt"
 done

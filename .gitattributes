@@ -12,3 +12,4 @@ tests/golden/*.sh text eol=lf
 
 # fuzzing regression inputs: exact bytes
 tests/fuzz/regressions/** -text
+*.sbatch text eol=lf

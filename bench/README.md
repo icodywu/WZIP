@@ -25,12 +25,52 @@ make          # bench_all.exe
 
 `bench_blocks.c` measures independent fixed-size blocks instead (storage pages): each file is cut into blocks,
 and each block is compressed and decompressed by its own call; `run_blocks.sh` reproduces the block tables of the
-top-level README, including the length-2 experiment (`make S_W2=4 bench_blocks.exe` builds WZIP_S with length-2
-matches within 16 bytes).
+top-level README on the laptop, including the length-2 experiment (`make S_W2=4 bench_blocks.exe` builds WZIP_S with
+length-2 matches within 16 bytes).
 
-## Reproducing the paper
+## Linux and the cluster runs
 
-Corpora: Silesia (https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia), Canterbury and Calgary
+The paper's and the README's numbers come from nodes of two AMD EPYC 9334 (Ubuntu 22.04, GCC 14.2). On Linux both
+harnesses pin themselves to the core in `BENCH_CPU` (or run as started, e.g. under `taskset`) and read the peak
+resident set from `/proc`; Zstandard is built with its assembly Huffman decoder, as its Linux builds are:
+
+```sh
+make deps deps-linux     # LZ4, Zstandard; Brotli 1.1.0 and xz 5.6.2 into deps/prefix
+make bench_all bench_blocks EXTRA_INC=-Ideps/prefix/include EXTRA_LIB=-Ldeps/prefix/lib
+```
+
+`cluster/` runs them on a Slurm cluster. `make_queue.py` writes a task list, one line per corpus, codec and level,
+slowest first; `node.sbatch`, submitted as an array of exclusive nodes, starts a worker on one core of each 8-core
+complex (`SLOTS`, by default all eight), so that no two runs share an L3 cache; each worker claims tasks from the
+shared list (an atomic `mkdir` per task) and runs it (`bench_all` with 20 decompression rounds); `collect.py` gathers the
+outputs into files in `bench_all`'s format and reports missing or failed tasks. The run directory holds the list
+(`queue.txt`) and `corpora.sh`, which sets `FILES_S`, `FILES_C`, `FILES_E8` and `FILES_E9` to the corpus files:
+
+```sh
+mkdir -p $RUN/claims $RUN/out $RUN/nodes            # and $RUN/corpora.sh
+(cd bench && python3 cluster/make_queue.py checked > $RUN/queue.txt)
+sbatch --array=0-14 --export=ALL,RUN=$RUN bench/cluster/node.sbatch      # from the repository root
+python3 bench/cluster/collect.py $RUN results/epyc
+```
+
+The results in `results/epyc_*` are three runs: every configuration with eight workers per node (`epyc_*`), WZIP's
+and WLZ4's bounds-checked decoders on Silesia (`epyc_checked_S`), and a control of everything with two workers per
+node (`SLOTS="4 36"`, `epyc_control_*`), whose speeds differed from the first run's by a median of 0.0%; each
+configuration keeps its best speeds of the runs. `make_queue.py blocks` lists the block benchmark (4 KB and 8 KB
+blocks of Silesia and of Canterbury+Calgary), run the same way, twice (`epyc_blocks_*`, `epyc_control_blocks_*`).
+The paper's tables and figure:
+
+```sh
+python gen_tables.py OUT S=../results/epyc_S.txt,../results/epyc_control_S.txt \
+  C=../results/epyc_C.txt,../results/epyc_control_C.txt E8=../results/epyc_e8.txt,../results/epyc_control_e8.txt \
+  E9=../results/epyc_e9.txt,../results/epyc_control_e9.txt
+python plots.py OUT/silesia_tradeoff.pdf ../results/epyc_S.txt ../results/epyc_control_S.txt
+```
+
+## Reproducing the paper on Windows
+
+The paper's first platform, a laptop (Intel Core i7-8850H, Windows 11): the files in `results/` without the `epyc_`
+prefix. Corpora: Silesia (https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia), Canterbury and Calgary
 (https://corpus.canterbury.ac.nz/), enwik8 and enwik9 (http://mattmahoney.net/dc/textdata.html).
 
 ```sh

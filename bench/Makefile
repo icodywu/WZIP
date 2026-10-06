@@ -2,7 +2,7 @@
 # MSYS2 MinGW-w64: LZ4 1.10.0 and Zstandard 1.5.6 from source (make deps), Brotli and liblzma from MSYS2
 # (pacman -S mingw-w64-x86_64-brotli mingw-w64-x86_64-xz).
 #   make deps     clones LZ4 and Zstandard at the benchmarked versions into deps/
-#   make          builds bench_all.exe; on Linux make deps deps-linux, then make bench_all (see below)
+#   make          builds bench_all.exe; on Linux make deps deps-linux, then make bench_all bench_blocks (see below)
 
 ifeq ($(origin CC),default)
 CC := gcc
@@ -29,6 +29,10 @@ bench_all: bench_all.c $(WZIP_SRC) $(LZ4_SRC)
 	$(CC) $(CFLAGS) -w -I../src -I$(LZ4) -I$(ZSTD) $(EXTRA_INC) bench_all.c $(WZIP_SRC) $(LZ4_SRC) $(ZSTD_SRC) \
 		$(ZSTD)/decompress/huf_decompress_amd64.S $(EXTRA_LIB) -lbrotlienc -lbrotlidec -lbrotlicommon -llzma -lm -o $@
 
+bench_blocks: bench_blocks.c $(WZIP_SRC) $(LZ4_SRC)
+	$(CC) $(CFLAGS) -w -I../src -I$(LZ4) -I$(ZSTD) -DS_W2_BITS=$(S_W2) bench_blocks.c $(WZIP_SRC) $(LZ4_SRC) $(ZSTD_SRC) \
+		$(ZSTD)/decompress/huf_decompress_amd64.S -lm -o $@
+
 # Brotli 1.1.0 and xz 5.6.2 from source, static, installed into deps/prefix
 deps-linux:
 	git clone --depth 1 --branch v1.1.0 https://github.com/google/brotli $(DEPS)/brotli
@@ -51,6 +55,6 @@ deps:
 	git clone --depth 1 --branch v1.5.6 https://github.com/facebook/zstd $(DEPS)/zstd
 
 clean:
-	rm -f bench_all.exe bench_blocks.exe bench_all
+	rm -f bench_all.exe bench_blocks.exe bench_all bench_blocks
 
 .PHONY: deps deps-linux clean
