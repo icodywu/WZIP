@@ -8,6 +8,13 @@ a WZ frame records its frame format version and its codec's format version (`doc
 - **Faster WZIP decoding of large inputs.** WZIP_L's decoders, checked and trusted, decode a block as a pipeline that
   prefetches each match's source when the previous block's matches often reached 1 MiB back or more: enwik8 44%
   and enwik9 62% faster at level 11 (AMD EPYC 9334), Silesia unchanged. Same format.
+- **WZIP_L dictionaries searched fully.** The optimal levels (7-13) found only matches of 3-6 bytes in a dictionary
+  (the nearest in each chain), never longer ones, which their binary tree finds in the input; they now insert the
+  dictionary's positions within each window into both chains and the tree. At every level a match may now run from
+  the dictionary into the input. Compressed with the 128 MiB before it as dictionary, a 128 MiB block of enwik9 now
+  loses 0.19% against one stream at level 11 (3.6% before). Without a dictionary the output is unchanged. Streams
+  with matches across the dictionary's end need the decoders of this version (the earlier trusted decoder copied
+  them wrongly).
 - **Fix:** WLZ4's encoders could read one byte past the input, after a literal run of 15 or 16 bytes before a match
   16 bytes from its end (found by fuzzing the round trip through 2 KB frame blocks).
 

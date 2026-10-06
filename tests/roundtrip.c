@@ -1,5 +1,5 @@
 /*
- * Round-trip test for WZIP (L/M through wzip_compress), WZIP_S and WLZ4.
+ * Round-trip test for WZIP (L/M through wzip_compress, and WZIP_L with a dictionary), WZIP_S and WLZ4.
  * Copyright (c) 2018-present, Yingquan (Cody) Wu. SPDX-License-Identifier: BSD-2-Clause
  *
  * usage: roundtrip [file ...]
@@ -81,6 +81,47 @@ static void test_wzip(const unsigned char* src, int n, const char* name)
 		}
 	}
 	free(cmp); free(dec);
+}
+
+/* WZIP_L with a dictionary: the first third of the data precedes the rest, either right before it in the same buffer
+   or in a buffer of its own; every level, both decoders (a match may start in the dictionary and run on into the
+   input) */
+static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
+{
+	if (n < 3 * 16384) return;                            /* WZIP_L takes inputs of 32 KB and more */
+	const int dictSize = n / 3, len = n - dictSize;
+	const int bound = WZIP_Cap_CmprSize(len);
+	unsigned char* cmp = guarded(bound);
+	unsigned char* dec = guarded(len);
+	unsigned char* own = guarded(dictSize);
+	memcpy(own, src, dictSize);
+	unsigned char* t = (unsigned char*)malloc((size_t)bound + WZIP_TRUSTED_SRC_PAD);
+	for (int sep = 0; sep <= 1; sep++) {
+		const unsigned char* const dict = sep ? own : src;
+		const char* const what = sep ? "wzip_l/dict" : "wzip_l/prefix";
+		for (int level = 0; level <= 13; level++) {
+			if (level >= 7 && len > (1 << 18) && level != 11) continue;   /* the slow levels: enough on smaller inputs */
+			WZIP_State_Str* s = WZIP_New_State_L(level, len, dict, dictSize);
+			const int c = s ? WZIP_Compress_L(s, src + dictSize, len, cmp, bound) : -1;
+			WZIP_Free_State(s);
+			checks++;
+			if (c < 0) { fail(what, name, level, "no state"); continue; }
+			if (!guard_ok(cmp, bound)) fail(what, name, level, "encoder wrote past its capacity");
+			if (c == 0) continue;                         /* did not fit: a caller would store the input */
+			memset(dec, 0, len);
+			int d = WZIP_Decompress_L(cmp, c, dec, len, (void*)dict, dictSize);
+			if (d != len || memcmp(src + dictSize, dec, len)) fail(what, name, level, "decoded data differs");
+			if (!guard_ok(dec, len)) fail(what, name, level, "decoder wrote past the decoded size");
+			if (!guard_ok(own, dictSize)) fail(what, name, level, "the dictionary was written to");
+			memcpy(t, cmp, c);
+			memset(t + c, 0, WZIP_TRUSTED_SRC_PAD);
+			memset(dec, 0, len);
+			d = WZIP_Decompress_L_Trusted(t, c, dec, len, (void*)dict, dictSize);
+			if (d != len || memcmp(src + dictSize, dec, len)) fail(what, name, level, "trusted mode differs");
+			if (!guard_ok(dec, len)) fail(what, name, level, "trusted mode wrote past the decoded size");
+		}
+	}
+	free(cmp); free(dec); free(own); free(t);
 }
 
 static void test_wzips(const unsigned char* src, int n, const char* name)
@@ -257,6 +298,7 @@ static void test_all(const unsigned char* src, int n, const char* name)
 {
 	const int before = failures;
 	test_wzip(src, n, name);
+	test_wzipl_dict(src, n, name);
 	if (n > 0) test_wzips(src, n, name);
 	test_wlz4(src, n, name);
 	test_frames(src, n, name);

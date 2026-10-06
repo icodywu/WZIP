@@ -12,8 +12,6 @@
 #include "Memry.h"
 #include "BitStream_Huffman.h"
 #include "WZIP.h"
-/* extension of a dictionary candidate stops at the dictionary end; input candidates are unlimited */
-#define DICT_LIMIT(p) ((dictSize && (const Uint8*)(p) >= (const Uint8*)dictEnd - dictSize && (const Uint8*)(p) < (const Uint8*)dictEnd) ? dictLastMatch : NULL)
 #include <stdio.h>
 #include <math.h>
 #define min(a, b) (((a) < (b)) ? (a) : (b))
@@ -230,6 +228,33 @@ ForceInlineTemplate Uint32 WLZ_Match_Count(const Uint8* srcPtr, const Uint8* mat
 
 	return matchLen;
 }
+
+/* Bytes that match at srcPtr against history starting in the dictionary at matchPtr. The dictionary is followed by the
+   input (positions -D..-1, then 0..), so a match that reaches the dictionary's end goes on from the input's start, as
+   both decoders copy it. srcLimit bounds the input side as in WLZ_Match_Count. */
+ForceInlineTemplate Uint32 Hist_Match_Count(const Uint8* srcPtr, const Uint8* matchPtr, const Uint8* const srcLimit,
+	const Uint8* const dictEnd, const Uint8* const source)
+{
+	Uint32 len = 0;
+	while (matchPtr + REG_SIZE <= dictEnd && srcPtr < srcLimit) {      /* whole words inside the dictionary */
+		const reg_t diff = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
+		if (diff) return len + N_ZeroBytes(diff);
+		srcPtr += REG_SIZE;
+		matchPtr += REG_SIZE;
+		len += REG_SIZE;
+	}
+	if (srcPtr >= srcLimit) return len;
+	for (; matchPtr < dictEnd; srcPtr++, matchPtr++, len++)            /* its last bytes */
+		if (*srcPtr != *matchPtr) return len;
+	return len + WLZ_Match_Count(srcPtr, source, srcLimit, NULL);       /* on from the input's start */
+}
+
+/* the length of the match at srcPtr with history at matchPtr, in the dictionary or the input (dictSize, dictEnd and
+   source in scope) */
+#define HIST_COUNT(srcPtr, matchPtr, srcLimit)  ((dictSize && (const Uint8*)(matchPtr) >= (const Uint8*)dictEnd - dictSize    \
+		&& (const Uint8*)(matchPtr) < (const Uint8*)dictEnd)                                                              \
+	? Hist_Match_Count((srcPtr), (matchPtr), (srcLimit), (const Uint8*)dictEnd, (const Uint8*)source)                     \
+	: WLZ_Match_Count((srcPtr), (matchPtr), (srcLimit), NULL))
 
 ForceInlineTemplate int Offset_Huffman_Index(int offset, int offMsb)
 {
@@ -517,19 +542,20 @@ ForceInlineTemplate int Pays_Off(int matchLen, Uint32 matchDist, const WLZ_Match
 		G_Byte * (matchLen - (int)best->len) > Offset_Cost(matchDist, lastOffset) - Offset_Cost(best->off, lastOffset);
 }
 
-/* Length of the match at distance `offset` from srcIdx, 0 when out of history. Dictionary positions after -16 are not
-   used, so that 8-byte reads and match extension stay inside the dictionary. */
+/* Length of the match at distance `offset` from srcIdx, 0 when out of history. A match in the dictionary may run on
+   into the input. */
 ForceInlineTemplate int Repeat_Match_Len(const Uint8* const source, Uint32 srcIdx, Uint32 offset, const int dictSize, const Uint8* const dictEnd,
 	const Uint8* const srcLastMatch, const Uint8* const dictLastMatch)
 {
+	(void)dictLastMatch;
 	if (offset == 0 || offset > srcIdx + (Uint32)dictSize) return 0;
 	const int histIdx = (int)srcIdx - (int)offset;
-	if (histIdx < 0 && histIdx > -16) return 0;
 	const Uint8* const srcPtr = source + srcIdx;
-	const Uint8* const matchPtr = histIdx < 0 ? dictEnd + histIdx : srcPtr - offset;
+	if (histIdx < 0) return (int)Hist_Match_Count(srcPtr, dictEnd + histIdx, srcLastMatch, dictEnd, source);
+	const Uint8* const matchPtr = srcPtr - offset;
 	const reg_t diff = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
 	if (diff) return (int)N_ZeroBytes(diff);
-	return REG_SIZE + (int)WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+	return REG_SIZE + (int)WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, NULL);
 }
 
 ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
@@ -622,7 +648,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				
 				diffPattern = currPattern ^ MemReadARCH(matchPtr);
 				if (0 == diffPattern) {
-					matchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+					matchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
 					break;
 				}
 
@@ -638,7 +664,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				matchPtr = (dictSize && match1Idx < 0) ? dictEnd + match1Idx : srcPtr - matchOffset;
 				diffPattern = currPattern ^ MemReadARCH(matchPtr);
 				if (0 == diffPattern) {
-					matchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+					matchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
 					break;
 				}
 				matchLen = N_ZeroBytes(diffPattern);
@@ -698,7 +724,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 			diffPattern = currPattern ^ MemReadARCH(matchPtr);
 
 			if (0 == diffPattern) {
-				lazyMatchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+				lazyMatchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
 			}
 			else {
 				lazyMatchLen = N_ZeroBytes(diffPattern);
@@ -718,7 +744,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				diffPattern = currPattern ^ MemReadARCH(matchPtr);
 
 				if (0 == diffPattern) {
-					lazyMatchLen = REG_SIZE + WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, DICT_LIMIT(matchPtr));
+					lazyMatchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
 				}
 				else {
 					lazyMatchLen = N_ZeroBytes(diffPattern);
@@ -1269,7 +1295,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 	while (matchIdx >= -dictSize && matchDist < off2Window && chainSearchCnt) {
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH((int)matchStr->len + 1)) {
-			matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr));
+			matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
 			if (matchLen > matchStr->len && matchDist < WINDOW(OffWidth[min(8, matchLen)]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
 				matchStr->len = matchLen;
 				matchStr->off = matchDist;
@@ -1329,7 +1355,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
 			const int need = bestGain + cost;               /* the candidate must reach G_Byte * length > need */
 			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1 - back)) {
-				matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr)) + back;
+				matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch) + back;
 				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
 					matchStr->len = matchLen;
 					matchStr->off = matchDist;
@@ -1356,7 +1382,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
 			const int need = bestGain + cost;
 			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1)) {
-				matchLen = 4 + WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch, DICT_LIMIT(matchPtr));
+				matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
 				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
 					matchStr->len = matchLen;
 					matchStr->off = matchDist;
@@ -1890,10 +1916,12 @@ static void Opt_Init_LenTab(Opt_LenTab* const t)
 /* Match finder of the optimal parser: three levels, each searched to the window of its longest length.
      A: lengths 3-4, 3-byte hash chain, to the window of length 4 (nearly exhaustive)
      B: lengths 5-6, 5-byte hash chain, to the window of length 6
-     C: lengths 7+,  7-byte hash binary tree over the full window (input positions only)
+     C: lengths 7+,  7-byte hash binary tree over the full window
    Chains are walked nearest first, so each length gets its nearest offset; each walk stops at the first match long
-   enough for the next level, which finds that match (or a nearer one) itself. The tree covers long matches cheaply. */
-#define   OPT_Nil              0xFFFFFFFFu
+   enough for the next level, which finds that match (or a nearer one) itself. The tree covers long matches cheaply.
+   A dictionary takes the positions before the input (-D..-1, the input following it): its positions within each
+   level's window (up to -16) are inserted before the input, so that every level finds matches in it. */
+#define   OPT_Nil              0x80000000u                       /* below any position, dictionary included */
 
 typedef struct {
 	int* headA, *headB, *headC;
@@ -1903,7 +1931,11 @@ typedef struct {
 	Uint32 nextA, nextB, nextC;                        /* next input position to insert */
 } Opt_Finder;
 
-static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize)
+ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, const int idx, int searchCnt,
+	const Uint8* const srcLastMatch, const Uint8* const dictEnd, const int dictSize, Opt_Cand* out);
+
+static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize, const Uint8* const source,
+	int searchCnt)
 {
 	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
 	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
@@ -1919,19 +1951,22 @@ static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict
 	memset(f->headB, 0x80, ((size_t)f->hMaskB + 1) * sizeof(int));
 	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
 	f->nextA = f->nextB = f->nextC = 0;
-	/* dictionary positions up to -16 (8-byte reads and match extension stay inside it) go into the chains */
+	/* dictionary positions up to -16 (hashing reads 8 bytes) within each level's window: older ones cannot be reached */
 	const Uint8* const dictEnd = dict ? dict + dictSize : NULL;
-	for (int i = -dictSize; i <= -16; i++) {
-		const Uint8* const p = dictEnd + i;
-		Uint32 h = Hash_3B(p) & f->hMaskA;
-		int prev = f->headA[h];
+	for (int i = -min(dictSize, f->winA); i <= -16; i++) {
+		const Uint32 h = Hash_3B(dictEnd + i) & f->hMaskA;
+		const int prev = f->headA[h];
 		f->chainA[(Uint32)i & f->maskA] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskA) ? (Uint32)(i - prev) : f->maskA + 1;
 		f->headA[h] = i;
-		h = Hash_5B(p) & f->hMaskB;
-		prev = f->headB[h];
+	}
+	for (int i = -min(dictSize, f->winB); i <= -16; i++) {
+		const Uint32 h = Hash_5B(dictEnd + i) & f->hMaskB;
+		const int prev = f->headB[h];
 		f->chainB[(Uint32)i & f->maskB] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskB) ? (Uint32)(i - prev) : f->maskB + 1;
 		f->headB[h] = i;
 	}
+	for (int i = -min(dictSize, f->winC); i <= -16; i++)
+		Opt_Tree_Insert(f, source, i, searchCnt, NULL, dictEnd, dictSize, NULL);
 	return 1;
 }
 
@@ -1940,30 +1975,35 @@ static void Opt_Finder_Free(Opt_Finder* f)
 	free(f->headA); free(f->headB); free(f->headC); free(f->chainA); free(f->chainB); free(f->bt);
 }
 
-/* level C: inserts idx into the tree and, when out is given, records each match longer than all found before */
-ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, Uint32 idx, int searchCnt,
-	const Uint8* const srcLastMatch, Opt_Cand* out)
+/* level C: inserts idx into the tree and, when out is given, records each match longer than all found before. Positions
+   below 0 are the dictionary's (inserted before the input, their compares kept inside the dictionary); a match there
+   may run on into the input. */
+ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, const int idx, int searchCnt,
+	const Uint8* const srcLastMatch, const Uint8* const dictEnd, const int dictSize, Opt_Cand* out)
 {
-	const Uint8* const ip = source + idx;
+	const Uint8* const ip = idx >= 0 ? source + idx : dictEnd + idx;
 	const Uint32 h = Hash_7B(ip) & f->hMaskC;
 	int matchIdx = f->headC[h];
-	f->headC[h] = (int)idx;
-	Uint32* smallerPtr = f->bt + 2 * (idx & f->maskC);
+	f->headC[h] = idx;
+	Uint32* smallerPtr = f->bt + 2 * ((Uint32)idx & f->maskC);
 	Uint32* largerPtr = smallerPtr + 1;
-	const int low = (int)idx - f->winC;
+	const int low = max(idx - f->winC, -dictSize - 1);
 	int commonSmaller = 0, commonLarger = 0, bestLen = MinMatchLen - 1, n = 0;
-	const Uint8* const countEnd = srcLastMatch - ip > MaxMatchLen ? ip + MaxMatchLen : srcLastMatch;   /* counts stop where the walk does */
-	while (searchCnt-- > 0 && matchIdx > low && matchIdx >= 0 && matchIdx < (int)idx) {
+	const Uint8* const limit = idx >= 0 ? srcLastMatch : dictEnd - REG_SIZE * 2;
+	const Uint8* const countEnd = limit - ip > MaxMatchLen ? ip + MaxMatchLen : limit;   /* counts stop where the walk does */
+	while (searchCnt-- > 0 && matchIdx > low && matchIdx < idx) {
 		Uint32* const nextPtr = f->bt + 2 * ((Uint32)matchIdx & f->maskC);
-		const Uint8* const match = source + matchIdx;
 		int len = min(commonSmaller, commonLarger);
-		len += (int)WLZ_Match_Count(ip + len, match + len, countEnd, NULL);
+		const int m = matchIdx + len;                            /* where the compare resumes */
+		len += (int)(m >= 0 ? WLZ_Match_Count(ip + len, source + m, countEnd, NULL)
+		                    : Hist_Match_Count(ip + len, dictEnd + m, countEnd, dictEnd, source));
 		if (len > bestLen) {
 			bestLen = len;
-			if (out) { out[n].len = min(len, MaxMatchLen); out[n].off = idx - (Uint32)matchIdx; n++; }
+			if (out) { out[n].len = min(len, MaxMatchLen); out[n].off = (Uint32)(idx - matchIdx); n++; }
 		}
-		if (len >= MaxMatchLen || ip + len >= srcLastMatch) break;      /* cannot be ordered: drop the rest */
-		if (match[len] < ip[len]) {
+		if (len >= MaxMatchLen || ip + len >= limit) break;     /* cannot be ordered: drop the rest */
+		const int mb = matchIdx + len;
+		if ((mb >= 0 ? source[mb] : dictEnd[mb]) < ip[len]) {
 			*smallerPtr = (Uint32)matchIdx;
 			commonSmaller = len;
 			smallerPtr = nextPtr + 1;
@@ -2020,7 +2060,6 @@ ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f,
 				tmp[nTmp].len = len; tmp[nTmp].off = matchDist; nTmp++;
 				if (len >= 5) break;
 			}
-			if (matchIdx < 0) break;                             /* dictionary links are not followed further */
 			matchDist += f->chainA[(Uint32)matchIdx & f->maskA];
 		}
 	}
@@ -2035,22 +2074,21 @@ ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f,
 			if (matchIdx < -dictSize) break;
 			matchPtr = matchIdx < 0 ? dictEnd + matchIdx : srcPtr - matchDist;
 			if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH(bestLen + 1)) {
-				const int len = 4 + (int)WLZ_Match_Count(srcPtr + 4, matchPtr + 4, srcLastMatch - srcPtr > MaxMatchLen ? srcPtr + MaxMatchLen : srcLastMatch, DICT_LIMIT(matchPtr));
+				const int len = 4 + (int)HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch - srcPtr > MaxMatchLen ? srcPtr + MaxMatchLen : srcLastMatch);
 				if (len > bestLen) {
 					bestLen = len;
 					tmp[nTmp].len = min(len, MaxMatchLen); tmp[nTmp].off = matchDist; nTmp++;
 					if (len >= 7) break;
 				}
 			}
-			if (matchIdx < 0) break;
 			matchDist += f->chainB[(Uint32)matchIdx & f->maskB];
 		}
 	}
 
 	/* C: lengths 7+, binary tree */
 	while (f->nextC < currIdx)                                     /* positions the parse skipped */
-		Opt_Tree_Insert(f, source, f->nextC++, searchCnt, srcLastMatch, NULL);
-	nTmp += Opt_Tree_Insert(f, source, currIdx, searchCnt, srcLastMatch, tmp + nTmp);
+		Opt_Tree_Insert(f, source, (int)f->nextC++, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
+	nTmp += Opt_Tree_Insert(f, source, (int)currIdx, searchCnt, srcLastMatch, dictEnd, dictSize, tmp + nTmp);
 	f->nextC = currIdx + 1;
 
 	/* nearest first; keep a candidate only if it is longer than all nearer ones and its window admits its length */
@@ -2134,7 +2172,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	Opt_Cand* const cand = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Cand* const tmp = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Finder finder;
-	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize);
+	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, maxSearchCnt);
 	Opt_Stats* const st = (Opt_Stats*)malloc(sizeof(Opt_Stats));
 	Opt_LenTab* const lenTab = (Opt_LenTab*)malloc(sizeof(Opt_LenTab));
 	Opt_Path* const path = (Opt_Path*)malloc(((OPT_Num + MaxMatchLen) / MinMatchLen + 2) * sizeof(Opt_Path));

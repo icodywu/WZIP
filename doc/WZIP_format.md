@@ -458,7 +458,14 @@ Three **repeat slots** `rep = (1, 4, 8)` initially. Each sequence:
 
 WZIP_L and WZIP_M (through `WZIP_New_State_L`/`_M` and `WZIP_Decompress_L`/`_M`) and WZIP_S (`WZIPS_createCDict`,
 `WZIPS_decompress_usingDict`) let a dictionary precede the input: positions `-D..-1` hold its last `D` bytes, and
-offsets reach into it as into earlier output (section 2). Only WZIP_S records in the block that one is needed.
+offsets reach into it as into earlier output (section 2). A match that starts in the dictionary may run on past its
+end into the output, as positions run on from `-1` to `0`. Only WZIP_S records in the block that one is needed.
+
+The reference encoder of WZIP_L searches a dictionary at every level: the hash-chain levels from tables built over
+it, and the optimal levels by inserting its positions within each window into their two chains and their binary tree
+before the input. (Before October 2026 the optimal levels found only matches of 3-6 bytes in a dictionary, and no
+level let a match run past its end.) Splitting enwik9 into blocks of 128 MiB, each compressed at level 11 with the
+128 MiB before it as its dictionary, costs 0.19% of the ratio of one stream; without the dictionaries, 3.8%.
 
 ## 9. Reference decoders (informative)
 
