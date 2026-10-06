@@ -1,7 +1,8 @@
 /* One benchmark for all codecs of the paper: each file compressed whole (one call), single thread pinned to core 2,
-   high priority. Ratio = total input / total output; speeds = total input / total time, compression best of
+   high priority (on Linux: pinned to the core in env BENCH_CPU, else run with the affinity it is started with, e.g.
+   by taskset). Ratio = total input / total output; speeds = total input / total time, compression best of
    <crounds>, decompression best of <drounds>; every file is verified. Encoder memory = peak working set during
-   compression minus the working set before it (all buffers allocated and touched beforehand).
+   compression minus the working set before it (all buffers allocated and touched beforehand; on Linux, VmHWM).
    Usage: bench_all <codec> <level> <crounds> <drounds> file...
    codecs: wzip (0-13), zstd (1-22; negative: --fast), brotli (0-11, window 2^24), xz (0-9, add 100 for extreme),
            lz4 (acceleration), lz4hc (1-12), wlz4f (acceleration), wlz4l (lazy; level ignored), wlz4hc (0-12)
@@ -11,11 +12,19 @@
    Env STREAMS=<dir>: decompression only, from compressed streams saved in <dir> (<file>.<codec><level>); a missing
    stream is compressed (untimed) and saved first. The compression speed and memory then print as 0; with
    STREAMS_ONLY=1 the program only prepares the streams, unpinned, so that several can be prepared in parallel. */
+#ifndef _WIN32
+#  define _GNU_SOURCE                                    /* sched_setaffinity */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
-#include <psapi.h>
+#ifdef _WIN32
+#  include <windows.h>
+#  include <psapi.h>
+#else
+#  include <sched.h>
+#  include <time.h>
+#endif
 #include <zstd.h>
 #include <brotli/encode.h>
 #include <brotli/decode.h>
@@ -25,6 +34,7 @@
 #include "WZIP.h"
 #include "WLZ4.h"
 
+#ifdef _WIN32
 static double now(void) { LARGE_INTEGER f, t; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t); return (double)t.QuadPart / f.QuadPart; }
 static double wsMB(int peak)
 {
@@ -32,6 +42,30 @@ static double wsMB(int peak)
     GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc);
     return (peak ? pmc.PeakWorkingSetSize : pmc.WorkingSetSize) / 1048576.0;
 }
+static void pin(void)
+{
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
+}
+#else
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec * 1e-9; }
+static double wsMB(int peak)                             /* the resident set (peak: VmHWM), from /proc */
+{
+    char line[256];
+    double mb = 0;
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, peak ? "VmHWM:" : "VmRSS:", 6)) { mb = atof(line + 6) / 1024.0; break; }
+    fclose(f);
+    return mb;
+}
+static void pin(void)
+{
+    const char* c = getenv("BENCH_CPU");
+    if (c) { cpu_set_t set; CPU_ZERO(&set); CPU_SET(atoi(c), &set); sched_setaffinity(0, sizeof set, &set); }
+}
+#endif
 
 static const char* codec;
 static int level;
@@ -82,10 +116,7 @@ int main(int argc, char** argv)
 {
     const char* const streams = getenv("STREAMS");
     const int streamsOnly = streams && getenv("STREAMS_ONLY") != NULL;
-    if (!streamsOnly) {
-        SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-        SetThreadAffinityMask(GetCurrentThread(), 1 << 2);
-    }
+    if (!streamsOnly) pin();
     codec = argv[1]; level = atoi(argv[2]);
     checked = getenv("CHECKED") != NULL;
     const int crounds = atoi(argv[3]), drounds = atoi(argv[4]), nf = argc - 5;
