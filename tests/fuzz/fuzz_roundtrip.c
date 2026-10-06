@@ -89,12 +89,13 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 		free(e); free(f);
 		break;
 	}
-	case 5: {                                           /* WZIP_L with a dictionary: the input's first part, own buffer */
+	case 5: {                                           /* WZIP_L with a dictionary: the input's first part, in a buffer
+		                                                   of its own or (bit 4 of the level byte) right before the rest */
 		const size_t dn = n / 4 + (lv & 15) * 977 % (n / 4 + 1);
 		if (n - dn < 32768 || n > 262144) break;
-		const int level = (int)(lv % 14), len = (int)(n - dn);
-		unsigned char* dict = exact(in, dn);
-		unsigned char* body = exact(in + dn, len);
+		const int level = (int)(lv % 14), len = (int)(n - dn), prefix = (lv >> 4) & 1;
+		unsigned char* dict = prefix ? in : exact(in, dn);
+		unsigned char* body = prefix ? in + dn : exact(in + dn, len);
 		const int cap = WZIP_Cap_CmprSize(len);
 		unsigned char* c = (unsigned char*)malloc(cap);
 		WZIP_State_Str* s = WZIP_New_State_L(level, len, dict, (int)dn);
@@ -103,10 +104,15 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 		if (cs < 0 || cs > cap) abort();
 		if (cs > 0) {                                   /* 0: did not fit, a caller stores the input */
 			unsigned char* e = exact(c, cs);
-			if (WZIP_Decompress_L(e, cs, out, len, dict, (int)dn) != len || memcmp(body, out, len)) abort();
+			if (prefix) {                               /* decoded right after a copy of the dictionary */
+				memcpy(out, in, dn);
+				if (WZIP_Decompress_L(e, cs, out + dn, len, out, (int)dn) != len || memcmp(in, out, n)) abort();
+			}
+			else if (WZIP_Decompress_L(e, cs, out, len, dict, (int)dn) != len || memcmp(body, out, len)) abort();
 			free(e);
 		}
-		free(c); free(dict); free(body);
+		free(c);
+		if (!prefix) { free(dict); free(body); }
 		break;
 	}
 	}

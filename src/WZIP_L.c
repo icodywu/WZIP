@@ -262,9 +262,10 @@ ForceInlineTemplate Uint32 Hist_Match_Count(const Uint8* srcPtr, const Uint8* ma
 }
 
 /* the length of the match at srcPtr with history at matchPtr, in the dictionary or the input (dictSize, dictEnd and
-   source in scope) */
-#define HIST_COUNT(srcPtr, matchPtr, srcLimit)  ((dictSize && (const Uint8*)(matchPtr) >= (const Uint8*)dictEnd - dictSize    \
-		&& (const Uint8*)(matchPtr) < (const Uint8*)dictEnd)                                                              \
+   source in scope). A dictionary that ends where the input starts (a prefix in the same buffer) is counted through as
+   one piece of memory. */
+#define HIST_COUNT(srcPtr, matchPtr, srcLimit)  ((dictSize && (const Uint8*)dictEnd != (const Uint8*)source              \
+		&& (const Uint8*)(matchPtr) >= (const Uint8*)dictEnd - dictSize && (const Uint8*)(matchPtr) < (const Uint8*)dictEnd) \
 	? Hist_Match_Count((srcPtr), (matchPtr), (srcLimit), (const Uint8*)dictEnd, (const Uint8*)source)                     \
 	: WLZ_Match_Count((srcPtr), (matchPtr), (srcLimit), NULL))
 
@@ -563,8 +564,8 @@ ForceInlineTemplate int Repeat_Match_Len(const Uint8* const source, Uint32 srcId
 	if (offset == 0 || offset > srcIdx + (Uint32)dictSize) return 0;
 	const int histIdx = (int)srcIdx - (int)offset;
 	const Uint8* const srcPtr = source + srcIdx;
-	if (histIdx < 0) return (int)Hist_Match_Count(srcPtr, dictEnd + histIdx, srcLastMatch, dictEnd, source);
-	const Uint8* const matchPtr = srcPtr - offset;
+	if (histIdx < 0 && dictEnd != source) return (int)Hist_Match_Count(srcPtr, dictEnd + histIdx, srcLastMatch, dictEnd, source);
+	const Uint8* const matchPtr = srcPtr - offset;                /* in the input, or in a dictionary just before it */
 	const reg_t diff = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
 	if (diff) return (int)N_ZeroBytes(diff);
 	return REG_SIZE + (int)WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, NULL);
@@ -1258,7 +1259,7 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 	int matchDist = chain1Table[currIdx & chain1Mask];
 	matchIdx = currIdx - matchDist;
 	while (matchIdx >= -dictSize && matchDist < off1Window && chainSearchCnt) {
-		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
+		if (matchIdx < 0 && matchIdx > -16 && dictEnd != source) break;   /* a stale link (see L_InsertAhead) */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		diffPattern = currPattern ^ MemReadARCH(matchPtr);
 		matchLen = diffPattern ? N_ZeroBytes(diffPattern) : REG_SIZE;
@@ -1306,7 +1307,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 	int matchDist = chain2Table[currIdx & chain2Mask];
 	matchIdx = currIdx - matchDist;
 	while (matchIdx >= -dictSize && matchDist < off2Window && chainSearchCnt) {
-		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
+		if (matchIdx < 0 && matchIdx > -16 && dictEnd != source) break;   /* a stale link (see L_InsertAhead) */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH((int)matchStr->len + 1)) {
 			matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
@@ -1362,7 +1363,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 	int searchCnt = chainSearchCnt * 3 / 4 + 4;
 	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
 		matchIdx = currIdx - matchDist;
-		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
+		if (matchIdx < 0 && matchIdx > -16 && dictEnd != source) break;   /* a stale link (see L_InsertAhead) */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr)) {
 			const int backIdx = (matchIdx >= 2 || (matchIdx < 0 && matchIdx >= 2 - (int)dictSize)) ? (back0 == *(matchPtr - 1)) ^ ((back1 == *(matchPtr - 2)) << 1) : 0;   /* never extend before the history start */
@@ -1392,7 +1393,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 	searchCnt = 2 + chainSearchCnt / 4;
 	while (matchDist < off2Window && matchDist <= currIdx + dictSize && searchCnt) {
 		matchIdx = currIdx - matchDist;
-		if (matchIdx < 0 && matchIdx > -16) break;    /* a stale link (see L_InsertAhead): never a dictionary position */
+		if (matchIdx < 0 && matchIdx > -16 && dictEnd != source) break;   /* a stale link (see L_InsertAhead) */
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr)) {
 			const int cost = Offset_Cost(matchDist, lastOffset) + G_Delay[maxBack - back];
@@ -1951,7 +1952,7 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 	const Uint8* const srcLastMatch, const Uint8* const dictEnd, const int dictSize, Opt_Cand* out);
 
 static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize, const Uint8* const source,
-	int searchCnt)
+	const Uint8* const srcLastMatch, int searchCnt)
 {
 	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
 	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
@@ -1967,22 +1968,24 @@ static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict
 	memset(f->headB, 0x80, ((size_t)f->hMaskB + 1) * sizeof(int));
 	memset(f->headC, 0x80, ((size_t)f->hMaskC + 1) * sizeof(int));
 	f->nextA = f->nextB = f->nextC = 0;
-	/* dictionary positions up to -16 (hashing reads 8 bytes) within each level's window: older ones cannot be reached */
+	/* dictionary positions within each level's window (older ones cannot be reached), up to -16, as hashing and compares
+	   read 8 bytes, or, for a dictionary just before the input, to its end */
 	const Uint8* const dictEnd = dict ? dict + dictSize : NULL;
-	for (int i = -min(dictSize, f->winA); i <= -16; i++) {
+	const int lastDict = dictEnd == source ? -1 : -16;
+	for (int i = -min(dictSize, f->winA); i <= lastDict; i++) {
 		const Uint32 h = Hash_3B(dictEnd + i) & f->hMaskA;
 		const int prev = f->headA[h];
 		f->chainA[(Uint32)i & f->maskA] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskA) ? (Uint32)(i - prev) : f->maskA + 1;
 		f->headA[h] = i;
 	}
-	for (int i = -min(dictSize, f->winB); i <= -16; i++) {
+	for (int i = -min(dictSize, f->winB); i <= lastDict; i++) {
 		const Uint32 h = Hash_5B(dictEnd + i) & f->hMaskB;
 		const int prev = f->headB[h];
 		f->chainB[(Uint32)i & f->maskB] = (prev >= -dictSize && i - prev > 0 && i - prev <= (int)f->maskB) ? (Uint32)(i - prev) : f->maskB + 1;
 		f->headB[h] = i;
 	}
-	for (int i = -min(dictSize, f->winC); i <= -16; i++)
-		Opt_Tree_Insert(f, source, i, searchCnt, NULL, dictEnd, dictSize, NULL);
+	for (int i = -min(dictSize, f->winC); i <= lastDict; i++)
+		Opt_Tree_Insert(f, source, i, searchCnt, srcLastMatch, dictEnd, dictSize, NULL);
 	return 1;
 }
 
@@ -1997,6 +2000,7 @@ static void Opt_Finder_Free(Opt_Finder* f)
 ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const source, const int idx, int searchCnt,
 	const Uint8* const srcLastMatch, const Uint8* const dictEnd, const int dictSize, Opt_Cand* out)
 {
+	const int contig = dictEnd == source;                       /* a dictionary just before the input: one memory */
 	const Uint8* const ip = idx >= 0 ? source + idx : dictEnd + idx;
 	const Uint32 h = Hash_7B(ip) & f->hMaskC;
 	int matchIdx = f->headC[h];
@@ -2005,13 +2009,13 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 	Uint32* largerPtr = smallerPtr + 1;
 	const int low = max(idx - f->winC, -dictSize - 1);
 	int commonSmaller = 0, commonLarger = 0, bestLen = MinMatchLen - 1, n = 0;
-	const Uint8* const limit = idx >= 0 ? srcLastMatch : dictEnd - REG_SIZE * 2;
+	const Uint8* const limit = idx >= 0 || contig ? srcLastMatch : dictEnd - REG_SIZE * 2;
 	const Uint8* const countEnd = limit - ip > MaxMatchLen ? ip + MaxMatchLen : limit;   /* counts stop where the walk does */
 	while (searchCnt-- > 0 && matchIdx > low && matchIdx < idx) {
 		Uint32* const nextPtr = f->bt + 2 * ((Uint32)matchIdx & f->maskC);
 		int len = min(commonSmaller, commonLarger);
 		const int m = matchIdx + len;                            /* where the compare resumes */
-		len += (int)(m >= 0 ? WLZ_Match_Count(ip + len, source + m, countEnd, NULL)
+		len += (int)(m >= 0 || contig ? WLZ_Match_Count(ip + len, source + m, countEnd, NULL)
 		                    : Hist_Match_Count(ip + len, dictEnd + m, countEnd, dictEnd, source));
 		if (len > bestLen) {
 			bestLen = len;
@@ -2188,7 +2192,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	Opt_Cand* const cand = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Cand* const tmp = (Opt_Cand*)malloc((2 * maxSearchCnt + 32) * sizeof(Opt_Cand));
 	Opt_Finder finder;
-	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, maxSearchCnt);
+	const int finderOk = Opt_Finder_Init(S_, &finder, dictSize ? dictEnd - dictSize : NULL, dictSize, source, srcLastMatch, maxSearchCnt);
 	Opt_Stats* const st = (Opt_Stats*)malloc(sizeof(Opt_Stats));
 	Opt_LenTab* const lenTab = (Opt_LenTab*)malloc(sizeof(Opt_LenTab));
 	Opt_Path* const path = (Opt_Path*)malloc(((OPT_Num + MaxMatchLen) / MinMatchLen + 2) * sizeof(Opt_Path));
@@ -2504,6 +2508,8 @@ static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* cons
    widest (on Silesia: +0.7% at level 11 over the default windows, which suit the greedy and lazy parsers better) */
 static const int WideWinGap[3] = { 7, 3, 1 };
 
+static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const int to);
+
 int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSize, void* const wzipStream, int wzipCapSize)
 {
 	SCHED(wzipStr);
@@ -2515,6 +2521,9 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 	const int cap = wzipCapSize - WIN_HeaderSize;
 	Uint32 size;
 	LitRunTooLong = 0;
+	/* a dictionary just before the input: its last 15 positions too, whose compares run on into the input */
+	if (wzipStr->dictSize && wzipStr->dictEnd == (Uint8*)source && wzipStr->compressLevel <= 6)
+		WZL_Insert_Dict(wzipStr, -min(wzipStr->dictSize, 15), -1);
 	if (0 == wzipStr->compressLevel && 0 == wzipStr->dictSize)      /* the fast mode; with a dictionary, level 1's loop */
 		size = WLZ2_Compress_Fast1(wzipStr, (Uint8*)source, srcSize, stream, cap);
 	else if (wzipStr->compressLevel <= 1)
@@ -2526,6 +2535,44 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 		size = WLZ2_Compress(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt);
 	if (LitRunTooLong) size = 0;                         /* a literal run the format cannot code: the caller stores */
 	return size ? (int)size + WIN_HeaderSize : 0;
+}
+
+/* Inserts the dictionary positions from..to (negative) into the hash tables and chains of levels 0-6. */
+static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const int to)
+{
+	int* hash0Table = (int*)wzipStr->hash0Table;
+	int* hash1Table = (int*)wzipStr->hash1Table;
+	int* hash2Table = (int*)wzipStr->hash2Table;
+	Uint32* chain1Table = (Uint32*)wzipStr->chain1Table;
+	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
+	const Uint32 chain1Mask = wzipStr->chain1Mask;
+	const Uint32 chain2Mask = wzipStr->chain2Mask;
+	const int hash1Len = wzipStr->hash1Len;
+	const int hash2Len = wzipStr->hash2Len;
+
+	int hashV, dist, matchIdx;
+	const Uint8* dictPtr = wzipStr->dictEnd + from;
+	for (int i = from; i <= to; i++, dictPtr++) {
+		hashV = WLZ_Hash0(dictPtr) & wzipStr->hash0Mask;
+		matchIdx = hash0Table[hashV];
+		hash0Table[hashV] = i;
+
+		hashV = WLZ_Hash1(dictPtr) & wzipStr->hash1Mask;
+		matchIdx = hash1Table[hashV];
+		hash1Table[hashV] = i;
+		if (chain1Mask) {
+			dist = i - matchIdx;
+			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
+		}
+
+		hashV = WLZ_Hash2(dictPtr) & wzipStr->hash2Mask;
+		matchIdx = hash2Table[hashV];
+		hash2Table[hashV] = i;
+		if (chain2Mask) {
+			dist = i - matchIdx;
+			chain2Table[(Uint32)i & chain2Mask] = (dist > 0 && dist < chain2Mask) ? dist : chain2Mask;
+		}
+	}
 }
 
 WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int dictSize)
@@ -2607,41 +2654,7 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	if (dictSize == 0 || dict == NULL)
 		return wzipStr;
 
-	// pre-build dictionary 
-	int* hash0Table = (int*)wzipStr->hash0Table;
-	int* hash1Table = (int*)wzipStr->hash1Table;
-	int* hash2Table = (int*)wzipStr->hash2Table;
-	Uint32* chain1Table = (Uint32*)wzipStr->chain1Table;
-	Uint32* chain2Table = (Uint32*)wzipStr->chain2Table;
-	const Uint32 chain1Mask = wzipStr->chain1Mask;
-	const Uint32 chain2Mask = wzipStr->chain2Mask;
-	const int hash1Len = wzipStr->hash1Len;
-	const int hash2Len = wzipStr->hash2Len;
-
-	int hashV, dist, matchIdx;
-	const Uint8* dictPtr = (Uint8*)dict;
-	/* positions up to -16 only: 8-byte compares and match extension then stay inside the dictionary */
-	for (int i = -dictSize; i <= -16; i++, dictPtr++) {
-		hashV = WLZ_Hash0(dictPtr) & wzipStr->hash0Mask;
-		matchIdx = hash0Table[hashV];
-		hash0Table[hashV] = i;
-
-		hashV = WLZ_Hash1(dictPtr) & wzipStr->hash1Mask;
-		matchIdx = hash1Table[hashV];
-		hash1Table[hashV] = i;
-		if (chain1Mask) {
-			dist = i - matchIdx;
-			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
-		}
-
-		hashV = WLZ_Hash2(dictPtr) & wzipStr->hash2Mask;
-		matchIdx = hash2Table[hashV];
-		hash2Table[hashV] = i;
-		if (chain2Mask) {
-			dist = i - matchIdx;
-			chain2Table[(Uint32)i & chain2Mask] = (dist > 0 && dist < chain2Mask) ? dist : chain2Mask;
-		}
-	}
+	WZL_Insert_Dict(wzipStr, -dictSize, -16);  /* to -16: 8-byte compares stay inside a dictionary in a buffer of its own */
 	return wzipStr;
 }
 
@@ -2753,7 +2766,7 @@ ForceInlineTemplate void Execute_Sequence(Uint8** destRef, Uint8** litRef, const
    the output's end once every sequence decoded so far is executed */
 #define SEQ_DISPATCH()  {                                                                                          \
 		if (pipelined) {                                                                                           \
-			if ((Uint32)(decEnd - (Uint8*)dest) >= matchOffset) PREFETCH_L1(decEnd - matchOffset);                 \
+			if (!dictSep || (Uint32)(decEnd - (Uint8*)dest) >= matchOffset) PREFETCH_L1(decEnd - matchOffset);     \
 			const Uint32 t_ = (rHead + rCount) & (SEQ_Lookahead - 1);                                              \
 			rLit[t_] = litRun; rLen[t_] = matchLen; rOff[t_] = matchOffset;                                        \
 			decEnd += matchLen;                                                                                    \
@@ -2762,12 +2775,12 @@ ForceInlineTemplate void Execute_Sequence(Uint8** destRef, Uint8** litRef, const
 			rHead = (rHead + 1) & (SEQ_Lookahead - 1); rCount--;                                                   \
 		}                                                                                                          \
 		else decEnd += matchLen;                                                                                   \
-		Execute_Sequence(&destPtr, &lzLitBufPtr, litRun, matchLen, matchOffset, (Uint8*)dest, destEnd, dictEnd, dictSize); }
+		Execute_Sequence(&destPtr, &lzLitBufPtr, litRun, matchLen, matchOffset, (Uint8*)dest, destEnd, dictEnd, dictSep); }
 
 /* executes the sequences left in the ring, then the block's closing literal run, if it ends the output */
 #define SEQ_DRAIN()  {                                                                                             \
 		for (; rCount; rCount--, rHead = (rHead + 1) & (SEQ_Lookahead - 1))                                        \
-			Execute_Sequence(&destPtr, &lzLitBufPtr, rLit[rHead], rLen[rHead], rOff[rHead], (Uint8*)dest, destEnd, dictEnd, dictSize); \
+			Execute_Sequence(&destPtr, &lzLitBufPtr, rLit[rHead], rLen[rHead], rOff[rHead], (Uint8*)dest, destEnd, dictEnd, dictSep); \
 		if (ended) {                                                                                               \
 			memcpy(destPtr, lzLitBufPtr, lastLit);             /* exact: the output buffer may end right here */   \
 			destPtr += lastLit;                                                                                    \
@@ -2790,6 +2803,9 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
 	Uint32 far = 0, lastLit = 0;
 	int ended = 0;
+	/* a dictionary in a buffer of its own is copied from through Copy_Dict_Match; one just before the output (a prefix
+	   of the same buffer) is copied from as earlier output */
+	const int dictSep = dictSize && dictEnd != (Uint8*)dest ? dictSize : 0;
 
 	static const ExtHuffman_Lit extHuf[] = {
 	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */
@@ -3119,6 +3135,9 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	Uint32 rLit[SEQ_Lookahead], rLen[SEQ_Lookahead], rOff[SEQ_Lookahead], rHead = 0, rCount = 0;   /* the pipeline's ring */
 	Uint32 far = 0, lastLit = 0;
 	int ended = 0;
+	/* a dictionary in a buffer of its own is copied from through Copy_Dict_Match; one just before the output (a prefix
+	   of the same buffer) is copied from as earlier output */
+	const int dictSep = dictSize && dictEnd != (Uint8*)dest ? dictSize : 0;
 
 	static const ExtHuffman_Lit extHuf[] = {
 	{16, 1},  {17, 1}, {18, 1}, {19, 1},    {20, 1}, {21, 1}, {22, 1}, {23, 1},     {24, 1}, {25, 1}, {26, 1}, {27, 1},      {28, 1}, {29, 1}, {30, 1}, {31, 1},      /* 32-47:  32 - 63 */

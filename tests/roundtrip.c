@@ -84,8 +84,8 @@ static void test_wzip(const unsigned char* src, int n, const char* name)
 }
 
 /* WZIP_L with a dictionary: the first third of the data precedes the rest, either right before it in the same buffer
-   or in a buffer of its own; every level, both decoders (a match may start in the dictionary and run on into the
-   input) */
+   or in a buffer of its own; every level, both decoders, into a buffer of its own and (encoded with the dictionary
+   just before the input) right after the dictionary (a match may start in the dictionary and run on into the input) */
 static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
 {
 	if (n < 3 * 16384) return;                            /* WZIP_L takes inputs of 32 KB and more */
@@ -96,6 +96,7 @@ static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
 	unsigned char* own = guarded(dictSize);
 	memcpy(own, src, dictSize);
 	unsigned char* t = (unsigned char*)malloc((size_t)bound + WZIP_TRUSTED_SRC_PAD);
+	unsigned char* joint = guarded(n);                    /* the dictionary, then the output */
 	for (int sep = 0; sep <= 1; sep++) {
 		const unsigned char* const dict = sep ? own : src;
 		const char* const what = sep ? "wzip_l/dict" : "wzip_l/prefix";
@@ -119,9 +120,17 @@ static void test_wzipl_dict(const unsigned char* src, int n, const char* name)
 			d = WZIP_Decompress_L_Trusted(t, c, dec, len, (void*)dict, dictSize);
 			if (d != len || memcmp(src + dictSize, dec, len)) fail(what, name, level, "trusted mode differs");
 			if (!guard_ok(dec, len)) fail(what, name, level, "trusted mode wrote past the decoded size");
+			for (int trusted = 0; trusted <= 1; trusted++) {  /* into the same buffer, right after the dictionary */
+				memcpy(joint, src, dictSize);
+				memset(joint + dictSize, 0, len);
+				d = trusted ? WZIP_Decompress_L_Trusted(t, c, joint + dictSize, len, joint, dictSize)
+				            : WZIP_Decompress_L(cmp, c, joint + dictSize, len, joint, dictSize);
+				if (d != n - dictSize || memcmp(src, joint, n)) fail(what, name, level, trusted ? "trusted, after its dictionary, differs" : "after its dictionary, differs");
+				if (!guard_ok(joint, n)) fail(what, name, level, "decoder wrote past the output after its dictionary");
+			}
 		}
 	}
-	free(cmp); free(dec); free(own); free(t);
+	free(cmp); free(dec); free(own); free(t); free(joint);
 }
 
 static void test_wzips(const unsigned char* src, int n, const char* name)
