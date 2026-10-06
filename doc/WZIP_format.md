@@ -488,8 +488,8 @@ offsets reach into it as into earlier output (section 2). Only WZIP_S records in
 
 ![Greedy, lazy and minimum-cost parses](figures/parsers.svg)
 
-*Figure 11 (from the IEEE Trans. IT paper, `papers/WLZ.pdf`). Three parses of one input, with literals of 9 bits
-(shaded) and matches of 20 bits: greedy, lazy and minimum cost. WZIP's levels 2-3 parse greedily, 4-6 lazily, and
+*Figure 11 (from the IEEE Trans. IT paper, [arXiv:2610.06530](https://arxiv.org/abs/2610.06530), `papers/WLZ.pdf`).
+Three parses of one input, with literals of 9 bits (shaded) and matches of 20 bits: greedy, lazy and minimum cost. WZIP's levels 2-3 parse greedily, 4-6 lazily, and
 7-13 approximate the minimum-cost parse with prices from running symbol statistics.*
 
 ![Hash-chain search with one window and with length-dependent windows](figures/indexes.svg)

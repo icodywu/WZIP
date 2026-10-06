@@ -163,8 +163,8 @@ WZIP_S keeps them in a reusable context.
   Data Compression Conference ([preprint PDF](papers/WZIP_WLZ4_DCC.pdf)). Describes both codecs, their optimal
   parser and the measurements above.
 - Y. Wu, "Improved LZ77 compression with match-length-dependent sliding windows," submitted to IEEE Transactions on
-  Information Theory ([preprint PDF](papers/WLZ.pdf)). Analyzes the scheme: universality of greedy parsing, schedule
-  calibration, run and period gains, and exact minimum-cost parsing.
+  Information Theory, [arXiv:2610.06530](https://arxiv.org/abs/2610.06530) ([PDF](papers/WLZ.pdf)). Analyzes the
+  scheme: universality of greedy parsing, schedule calibration, run and period gains, and exact minimum-cost parsing.
 - Y. Wu, "Improved LZ77 compression," in Proc. Data Compression Conference, 2021, p. 377. Introduces the scheme.
 
 ## Format specifications

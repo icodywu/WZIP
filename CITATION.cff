@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use WZIP or WLZ4, please cite the paper below."
+title: "WZIP and WLZ4"
+type: software
+authors:
+  - family-names: Wu
+    given-names: "Yingquan (Cody)"
+version: 1.0.0
+license: BSD-2-Clause
+repository-code: "https://github.com/icodywu/WZIP"
+preferred-citation:
+  type: article
+  title: "Improved LZ77 Compression with Match-Length-Dependent Sliding Windows"
+  authors:
+    - family-names: Wu
+      given-names: "Yingquan (Cody)"
+  year: 2026
+  identifiers:
+    - type: other
+      value: "arXiv:2610.06530"
+  url: "https://arxiv.org/abs/2610.06530"

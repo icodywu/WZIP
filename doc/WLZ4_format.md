@@ -235,8 +235,8 @@ grows by at most 15 bytes including the header (LZ4: about `n/255`). The output 
 
 ![Greedy, lazy and minimum-cost parses](figures/parsers.svg)
 
-*Figure 5 (from the IEEE Trans. IT paper, `papers/WLZ.pdf`). Three parses of one input, with literals of 9 bits
-(shaded) and matches of 20 bits. Greedy parsing takes the longest match at each position; lazy parsing defers by one
+*Figure 5 (from the IEEE Trans. IT paper, [arXiv:2610.06530](https://arxiv.org/abs/2610.06530), `papers/WLZ.pdf`).
+Three parses of one input, with literals of 9 bits (shaded) and matches of 20 bits. Greedy parsing takes the longest match at each position; lazy parsing defers by one
 literal when the next position offers a longer match; the minimum-cost parse is a shortest path over all phrases.
 WLZ4's fast level is greedy, its lazy and hash-chain levels lazy, and levels 8-12 approximate the minimum-cost parse
 with exact byte prices.*
