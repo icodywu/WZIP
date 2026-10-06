@@ -325,8 +325,10 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 		}
 
 		matchLen = min(matchLen, MaxMatchLen);
-		
-		for (i = 2; i < matchLen; i++) {
+
+		/* index the match's later positions; those from srcLastMatch on are never searched (and a hash there would
+		   read past the input when the match ends near it) */
+		for (i = 2; i < matchLen && srcPtr + i < srcLastMatch; i++) {
 			hashV0 = WLZ_Hash0(srcPtr + i) & wzipStr->hash0Mask;
 			hashV1 = WLZ_Hash1(srcPtr + i) & wzipStr->hash1Mask;
 			hash0Table[hashV0] = srcIdx + i;

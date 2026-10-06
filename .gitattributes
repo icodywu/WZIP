@@ -9,3 +9,6 @@ tests/golden/*.sh text eol=lf
 
 # patches applied by scripts: exact line endings
 *.patch text eol=lf
+
+# fuzzing regression inputs: exact bytes
+tests/fuzz/regressions/** -text

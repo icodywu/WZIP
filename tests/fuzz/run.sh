@@ -24,6 +24,8 @@ mkdir -p "$W/roundtrip/corpus"
 $CC -O2 -Isrc tests/fuzz/make_seeds.c $SRC -lm -o "$W/make_seeds"
 "$W/make_seeds" "$W" tests/golden/small.txt tests/golden/text.txt tests/golden/bin.dat
 cp tests/golden/*.wz tests/golden/*.wlz4 "$W/frame/corpus/"
+# inputs that once failed, named <target>-<what>, so that every run tries them first
+for f in tests/fuzz/regressions/*; do t=$(basename "$f"); cp "$f" "$W/${t%%-*}/corpus/"; done
 for t in $NAMES roundtrip; do
 	(cd "$W/$t" && "../fuzz_$t" -max_total_time="$T" -fork="$J" -ignore_crashes=1 -max_len=262144 \
 	    -rss_limit_mb=4096 -timeout=60 corpus > log.txt 2>&1 || true) &
