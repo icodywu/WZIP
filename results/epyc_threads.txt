@@ -1,54 +1,54 @@
 == S7 (taskset: one 8-core complex)
-level 7 dict 0 KB: 211938580 -> 56880769 (3.7260), outputs identical, decoded ok
-  workers 1: 35.3 s, 6.00 MB/s, x1.00
-  workers 2: 32.0 s, 6.63 MB/s, x1.10
-  workers 3: 19.6 s, 10.81 MB/s, x1.80
-  workers 4: 16.5 s, 12.85 MB/s, x2.14
-  workers 5: 14.6 s, 14.48 MB/s, x2.42
-  workers 6: 14.6 s, 14.48 MB/s, x2.42
-  workers 7: 14.6 s, 14.48 MB/s, x2.42
+level 7 dict 0 KB: 211938580 -> 56884072 (3.7258), outputs identical, decoded ok
+  workers 1: 35.4 s, 5.99 MB/s, x1.00
+  workers 2: 31.8 s, 6.66 MB/s, x1.11
+  workers 3: 20.5 s, 10.34 MB/s, x1.73
+  workers 4: 18.2 s, 11.63 MB/s, x1.95
+  workers 5: 15.7 s, 13.47 MB/s, x2.25
+  workers 6: 15.8 s, 13.41 MB/s, x2.24
+  workers 7: 15.6 s, 13.58 MB/s, x2.27
 == S9 (taskset: one 8-core complex)
-level 9 dict 0 KB: 211938580 -> 54110666 (3.9168), outputs identical, decoded ok
-  workers 1: 63.7 s, 3.33 MB/s, x1.00
-  workers 2: 54.1 s, 3.92 MB/s, x1.18
-  workers 3: 31.2 s, 6.80 MB/s, x2.04
-  workers 4: 27.6 s, 7.68 MB/s, x2.31
-  workers 5: 20.4 s, 10.41 MB/s, x3.12
-  workers 6: 19.9 s, 10.66 MB/s, x3.20
-  workers 7: 20.1 s, 10.56 MB/s, x3.17
+level 9 dict 0 KB: 211938580 -> 54113773 (3.9165), outputs identical, decoded ok
+  workers 1: 63.9 s, 3.32 MB/s, x1.00
+  workers 2: 54.2 s, 3.91 MB/s, x1.18
+  workers 3: 31.2 s, 6.79 MB/s, x2.05
+  workers 4: 27.7 s, 7.66 MB/s, x2.31
+  workers 5: 20.4 s, 10.38 MB/s, x3.13
+  workers 6: 20.0 s, 10.60 MB/s, x3.19
+  workers 7: 20.1 s, 10.54 MB/s, x3.18
 == S11 (taskset: one 8-core complex)
-level 11 dict 0 KB: 211938580 -> 51962511 (4.0787), outputs identical, decoded ok
-  workers 1: 127.1 s, 1.67 MB/s, x1.00
-  workers 2: 90.4 s, 2.34 MB/s, x1.41
-  workers 3: 58.7 s, 3.61 MB/s, x2.17
-  workers 4: 53.2 s, 3.99 MB/s, x2.39
-  workers 5: 44.4 s, 4.77 MB/s, x2.86
-  workers 6: 42.7 s, 4.96 MB/s, x2.98
-  workers 7: 42.9 s, 4.94 MB/s, x2.96
+level 11 dict 0 KB: 211938580 -> 51965515 (4.0784), outputs identical, decoded ok
+  workers 1: 127.5 s, 1.66 MB/s, x1.00
+  workers 2: 91.0 s, 2.33 MB/s, x1.40
+  workers 3: 61.1 s, 3.47 MB/s, x2.09
+  workers 4: 56.5 s, 3.75 MB/s, x2.26
+  workers 5: 47.1 s, 4.50 MB/s, x2.71
+  workers 6: 45.0 s, 4.71 MB/s, x2.83
+  workers 7: 45.0 s, 4.71 MB/s, x2.83
 == S11dict (taskset: one 8-core complex)
-level 11 dict 8192 KB: 178384148 -> 43004311 (4.1481), outputs identical, decoded ok
+level 11 dict 8192 KB: 178384148 -> 43007008 (4.1478), outputs identical, decoded ok
   workers 1: 115.0 s, 1.55 MB/s, x1.00
-  workers 2: 82.5 s, 2.16 MB/s, x1.39
-  workers 3: 56.0 s, 3.19 MB/s, x2.05
-  workers 4: 51.4 s, 3.47 MB/s, x2.24
+  workers 2: 83.1 s, 2.15 MB/s, x1.38
+  workers 3: 56.2 s, 3.17 MB/s, x2.05
+  workers 4: 51.3 s, 3.47 MB/s, x2.24
   workers 5: 42.4 s, 4.21 MB/s, x2.71
-  workers 6: 40.0 s, 4.46 MB/s, x2.88
-  workers 7: 39.9 s, 4.47 MB/s, x2.88
+  workers 6: 40.1 s, 4.44 MB/s, x2.87
+  workers 7: 40.1 s, 4.45 MB/s, x2.87
 == S13 (taskset: one 8-core complex)
-level 13 dict 0 KB: 211938580 -> 51723963 (4.0975), outputs identical, decoded ok
-  workers 1: 272.5 s, 0.78 MB/s, x1.00
-  workers 2: 191.6 s, 1.11 MB/s, x1.42
-  workers 3: 135.5 s, 1.56 MB/s, x2.01
-  workers 4: 124.4 s, 1.70 MB/s, x2.19
-  workers 5: 114.2 s, 1.86 MB/s, x2.39
-  workers 6: 113.9 s, 1.86 MB/s, x2.39
-  workers 7: 114.6 s, 1.85 MB/s, x2.38
+level 13 dict 0 KB: 211938580 -> 51726956 (4.0973), outputs identical, decoded ok
+  workers 1: 273.1 s, 0.78 MB/s, x1.00
+  workers 2: 192.9 s, 1.10 MB/s, x1.42
+  workers 3: 140.8 s, 1.51 MB/s, x1.94
+  workers 4: 129.9 s, 1.63 MB/s, x2.10
+  workers 5: 118.3 s, 1.79 MB/s, x2.31
+  workers 6: 117.6 s, 1.80 MB/s, x2.32
+  workers 7: 118.5 s, 1.79 MB/s, x2.30
 == E8_11 (taskset: one 8-core complex)
-level 11 dict 0 KB: 100000000 -> 25638193 (3.9004), outputs identical, decoded ok
-  workers 1: 84.8 s, 1.18 MB/s, x1.00
-  workers 2: 70.7 s, 1.41 MB/s, x1.20
-  workers 3: 36.9 s, 2.71 MB/s, x2.30
+level 11 dict 0 KB: 100000000 -> 25639824 (3.9002), outputs identical, decoded ok
+  workers 1: 84.7 s, 1.18 MB/s, x1.00
+  workers 2: 71.1 s, 1.41 MB/s, x1.19
+  workers 3: 37.2 s, 2.69 MB/s, x2.28
   workers 4: 36.2 s, 2.76 MB/s, x2.34
-  workers 5: 23.5 s, 4.25 MB/s, x3.61
-  workers 6: 23.5 s, 4.26 MB/s, x3.61
-  workers 7: 23.4 s, 4.28 MB/s, x3.62
+  workers 5: 23.4 s, 4.26 MB/s, x3.62
+  workers 6: 23.7 s, 4.22 MB/s, x3.57
+  workers 7: 23.7 s, 4.23 MB/s, x3.57

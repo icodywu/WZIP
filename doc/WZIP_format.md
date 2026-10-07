@@ -151,7 +151,8 @@ The reference encoder stores inputs below 32 bytes and every input that compress
 
 *Figure 4. (a) The three forms of a one-call stream. (b) A WZIP_L payload (section 5): the window header, the
 literal count, the literal stream and the sequence blocks. (c) A sequence block (section 5.4): a header bit stream
-with the block's coding bit, which codes it reuses, and the code tables it sends, then up to 16384 sequences.*
+with the block's coding bit, which codes it reuses, and the code tables it sends, then the size of stream A and the
+two sequence streams, A with the even sequences and B with the odd ones.*
 
 ### 4.2 The literal stream
 
@@ -279,7 +280,11 @@ natural grouping, and `min(m, 5) + [m >= 7] + [m >= 13]` with fine grouping.
 
 ### 5.4 Sequence blocks
 
-A sequence block is a header bit stream, aligned, then a sequence bit stream of up to 16384 sequences, aligned.
+A sequence block is a header bit stream, aligned; a `u24` size `S`; then two sequence bit streams, each aligned at
+its end: **A**, of `S` bytes, holding the block's sequences 0, 2, 4, ..., and **B**, holding sequences 1, 3, 5, ...
+(up to 16384 sequences in all, each with all its fields). The next block follows B. A stream A that does not end
+exactly `S` bytes after its start is invalid. (The codes of one bit stream decode one after another, as each code
+starts where the previous one ends; two streams let a decoder decode two sequences at once.)
 
 The header:
 
@@ -300,7 +305,7 @@ lengths under the weight code.)
 
 ### 5.5 Sequences
 
-Each sequence reads, in this order:
+Each sequence reads, in this order, from its stream (A or B, section 5.4):
 
 1. **Joint symbol** `j`, giving a cache slot or "new" `t` (0-3, or 4), a literal-run class `k` (0-2) and a length
    symbol `m` (0-67):

@@ -30,6 +30,17 @@ a WZ frame records its frame format version and its codec's format version (`doc
   fewer bits with it than with a code of their own plus its lengths, as on a short last block; the decoder then reads
   no lengths and keeps the table it built. Ratios rise by about 0.02% (Silesia 4.0787 at level 11, was 4.0783). The
   reference decoder (`doc/wzip_decode.py`) follows.
+- **Two sequence streams** (WZIP_L format, as above: codec format version 1, golden frames written again). A
+  sequence block's sequences alternate between two bit streams, A (sequences 0, 2, 4, ...) and B (1, 3, 5, ...),
+  after a `u24` size of A (`doc/WZIP_format.md`, 5.4). A Huffman code starts where the previous one ends, so the
+  codes of one stream decode one after another: three dependent table lookups a sequence, about 25-30 cycles on AMD
+  EPYC 9334 (enwik8, sequences alone) against Zstandard's 15-16, whose FSE states make its three lookups
+  independent. With two streams the decoder decodes two sequences at once (its two readers swap after each
+  sequence): decoding alone falls to 18-22 cycles, and whole decoding gains 6-16% on Silesia, 14-25% on the small
+  files (Canterbury and Calgary) and 0-24% on enwik8; on enwik9 13% at level 0, 6-7% at levels 3 and 9 and -2% to 0%
+  at levels 11-13. The cost is 3 bytes and an alignment a block (ratios about 0.01% lower).
+  (Splitting the fields instead, literal runs, lengths and offsets in three streams, had been slower: the offset
+  still waits for the length, and each field needs its own reload.)
 - **Literals decoded as needed.** WZIP_L's decoders decoded the whole literal stream into a buffer of its size (the
   checked decoder: of the output's size) before the first sequence. Up to 32 MiB of literals, which stay in the
   last-level cache, they still do (into a buffer of the literals' size); a stream with more is decoded a 32 KiB block
@@ -41,7 +52,7 @@ a WZ frame records its frame format version and its codec's format version (`doc
   chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser, and from 5 threads on the
   tree, a tree per hash bucket, splits among 2 to 4 threads by bucket (`WZIP_WORKERS_MAX`, 7): `wzip -T#`,
   `wzip_compress_mt`, `WZIP_Set_Workers`, `WZF_params.nbWorkers`. The output is byte for byte that of one thread;
-  level 11 compresses Silesia 2.80 times as fast with 6 threads, enwik8 3.42 times with 7 (AMD EPYC 9334, one 8-core
+  level 11 compresses Silesia 2.83 times as fast with 6 threads, enwik8 3.57 times with 7 (AMD EPYC 9334, one 8-core
   complex). With a dictionary all the threads index it at once. When the history outgrows the tree's 2^27-byte
   window, the window now stops 32 KiB short, with any number of threads, so that the tree's threads never reuse a
   node another still reads: enwik9 at level 11 grows by 0.008%. Built by default with make and CMake

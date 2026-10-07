@@ -8,21 +8,18 @@ unless a file name says `checked`.
 ## AMD EPYC 9334 (the paper's and the README's numbers)
 
 Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see `bench/README.md`), one run per
-8-core complex, on 2026-10-07: every codec with the code of commit 37c074a; then WZIP and WLZ4 again with the level
-windows (each level its own window, `CHANGELOG.md`), in both runs, whose lines replace theirs (enwik9 also gained
-WZIP 12); then WZIP once more, in both runs, with its final code (`CHANGELOG.md`: no sequence buffer of the
-input's size, reused Huffman codes, literals decoded as needed beyond 32 MiB). The other codecs' lines are those of
-the first runs. The paper's tables are `gen_tables.py` applied to
-`epyc_*` and `epyc_control_*` together:
+8-core complex, on 2026-10-07: every codec, in both runs, with the final code (`CHANGELOG.md`, up to and including
+WZIP_L's two sequence streams). The paper's tables are `gen_tables.py` applied to `epyc_*` and `epyc_control_*`
+together:
 
 | File | Contents |
 |---|---|
 | `epyc_S.txt`, `epyc_C.txt`, `epyc_e8.txt`, `epyc_e9.txt` | every configuration on Silesia (with Zstandard's negative levels), Canterbury+Calgary, enwik8 and enwik9; eight runs per node |
 | `epyc_checked_S.txt` | WZIP's and WLZ4's bounds-checked decoders on Silesia |
-| `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.1%) |
+| `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.2%, 90% within 1.2%) |
 | `epyc_log.txt`, `epyc_control_log.txt` | node, core and seconds of each task |
 | `epyc_zstd_asm.txt` | Zstandard's decompression with (`asm`) and without (`noasm`, `-DZSTD_DISABLE_ASM`) its assembly Huffman decoder, three interleaved passes from saved streams: levels -1 to 22 on Silesia, then 1 to 22 on enwik9; the assembly gains 0.1-2.2% |
-| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-06 |
+| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-07 with the final code |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.
 

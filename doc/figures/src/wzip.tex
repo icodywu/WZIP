@@ -32,10 +32,13 @@
 \node[fld, fill=tab, minimum width=18mm, right=of wc, align=center] (t1) {literal-run\\[-1pt]code};
 \node[fld, fill=tab, minimum width=16mm, right=of t1, align=center] (t2) {joint\\[-1pt]code};
 \node[fld, fill=tab, minimum width=22mm, right=of t2, align=center] (t3) {offset codes\\[-1pt]\footnotesize one per group};
-\node[fld, fill=tok, minimum width=40mm, right=3mm of t3, align=center] (sq) {sequences\\[-1pt]\footnotesize up to 16\,384};
+\node[fld, fill=hdr, minimum width=11mm, right=3mm of t3, align=center] (sz) {$S$\\[-1pt]\footnotesize 3 bytes};
+\node[fld, fill=tok, minimum width=21mm, right=of sz, align=center] (sq) {stream A\\[-1pt]\footnotesize seq.\ 0, 2, 4, \ldots};
+\node[fld, fill=tok, minimum width=21mm, right=of sq, align=center] (sb) {stream B\\[-1pt]\footnotesize seq.\ 1, 3, 5, \ldots};
 \draw[brc] (sj.north west) -- (t3.north east) node[midway, above=4pt, font=\footnotesize] {header bit stream, aligned};
 \draw[mbrc] (wc.south west) -- (t3.south east) node[midway, below=4pt, font=\footnotesize] {only the codes the block sends};
-\draw[brc] (sq.north west) -- (sq.north east) node[midway, above=4pt, font=\footnotesize] {bit stream, aligned};
+\draw[brc] (sq.north west) -- (sb.north east) node[midway, above=4pt, font=\footnotesize] {two bit streams, each aligned};
+\draw[mbrc] (sq.south west) -- (sq.south east) node[midway, below=4pt, font=\footnotesize] {$S$ bytes};
 \node[below=1.5mm of sj, font=\footnotesize, align=center] {slot-joint\\or classic};
 \end{tikzpicture}
 

@@ -412,10 +412,14 @@ ForceInlineTemplate WLZ_Set* Store_Run(WZL_Sched* const S_, WLZ_Set* seq, const 
 	return seq + 1;
 }
 
-ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+/* Codes the sequences into two bit streams, alternately: A (the block's sequences 0, 2, 4, ...) at zipBuffer and B
+   (1, 3, 5, ...) at zipBufferB, so that a decoder decodes two at once; returns the size of A, *sizeB that of B */
+ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer,
+	Uint8* zipBufferB, Uint32* sizeB, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
 {
-	Uint32 litRunHufIdx, mchLenHufIdx, offHufIdx, offGroup;
-	register Bit_Stream bitStream = { 0, 0, zipBuffer };
+	Uint32 litRunHufIdx, mchLenHufIdx, offHufIdx, offGroup, nDone = 0;
+	register Bit_Stream bitStream = { 0, 0, zipBuffer };      /* the stream of the next sequence */
+	Bit_Stream otherStream = { 0, 0, zipBufferB };
 
 
 #ifdef WZIP_DEBUG 
@@ -464,6 +468,8 @@ ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Se
 		if (mchLenHufIdx >= LitRunDirect - MinMatchLen && mchLenHufIdx != RunSym) {
 			BITStream_Write(bitStream, wlzSeqPtr->mchLen >> 8, ExtHufMchLen[mchLenHufIdx].lsBits);
 		}
+		{ const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* the next sequence: the other stream */
+		nDone++;
 
 
 #ifdef WZIP_DEBUG 
@@ -476,7 +482,10 @@ ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Se
 #endif
 
 	}
+	if (nDone & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
 	BITStream_Write_FlushEnd(bitStream);
+	BITStream_Write_FlushEnd(otherStream);
+	*sizeB = (Uint32)(otherStream.streamPtr - zipBufferB);
 
 #ifdef WZIP_DEBUG 
 	fclose(fptr);
@@ -485,10 +494,11 @@ ForceInlineTemplate Uint32 Huffman_Compress_Seq_Body(WZL_Sched* const S_, WLZ_Se
 }
 
 
-static Uint32 Huffman_Compress_Seq_Kernel(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
+static Uint32 Huffman_Compress_Seq_Kernel(WZL_Sched* const S_, WLZ_Set* wlzSeq, WLZ_Set* const wlzSeqEnd, Uint8* zipBuffer,
+	Uint8* zipBufferB, Uint32* sizeB, WLZ_HufCode_Set* hufCodeSet, const int slotJoint)
 {
-	return slotJoint ? Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 1)
-	                 : Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, hufCodeSet, 0);
+	return slotJoint ? Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, zipBufferB, sizeB, hufCodeSet, 1)
+	                 : Huffman_Compress_Seq_Body(S_, wlzSeq, wlzSeqEnd, zipBuffer, zipBufferB, sizeB, hufCodeSet, 0);
 }
 
 /* coded size of a table's symbols in bits, with about 4 bits of table header per used symbol */
@@ -640,10 +650,16 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wl
 	if (!reuse[1]) { prev->haveMchLen = 1; prev->mchLenSlotJoint = slotJoint; }
 	for (i = 0; i < MchOffGroup; i++)
 		if (!reuse[2 + i]) prev->haveOff[i] = 1;
-	assert((Uint64)(wzipBufPtr - wzipBuffer) + bodyBits / 8 <= wzipBufSize);   /* the callers give it a whole block of room (SEQ_BlockBound) */
-	(void)wzipBufSize;
+	assert((Uint64)(wzipBufPtr - wzipBuffer) + 3 + bodyBits / 8 <= wzipBufSize);   /* the callers give it a whole block of room (SEQ_BlockBound), twice */
 
-	wzipBufPtr += Huffman_Compress_Seq_Kernel(S_, wlzSeq, wlzSeqEnd, wzipBufPtr, &hufCodeSet, slotJoint);
+	/* the size of stream A (u24), A, then B, coded behind the buffer's first SEQ_BlockBound bytes and moved up */
+	Uint32 sizeB;
+	Uint8* const scratchB = wzipBuffer + wzipBufSize;
+	const Uint32 sizeA = Huffman_Compress_Seq_Kernel(S_, wlzSeq, wlzSeqEnd, wzipBufPtr + 3, scratchB, &sizeB, &hufCodeSet, slotJoint);
+	wzipBufPtr[0] = (Uint8)sizeA; wzipBufPtr[1] = (Uint8)(sizeA >> 8); wzipBufPtr[2] = (Uint8)(sizeA >> 16);
+	wzipBufPtr += 3 + sizeA;
+	memmove(wzipBufPtr, scratchB, sizeB);
+	wzipBufPtr += sizeB;
 
 	return (Uint32)(wzipBufPtr - wzipBuffer);
 }
@@ -756,7 +772,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	WLZ_Set* wlzSeqPtr = wlzSeq;
 	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
 
-	Uint8* wlzStream = (Uint8*)malloc(SEQ_BlockBound + 64);             /* one coded block of sequences */
+	Uint8* wlzStream = (Uint8*)malloc(2 * SEQ_BlockBound + 64);         /* one coded block of sequences, and room for its stream B */
 	Uint8* const litScratch = (Uint8*)malloc(HUF_BlockSize + LIT_BlockSlack + 64);
 	Seq_Stack seqStack;
 	const int stackOk = Seq_Stack_Init(&seqStack, wzipStream + wzipCapSize);
@@ -1175,7 +1191,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	WLZ_Set* wlzSeqPtr = wlzSeq;
 	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
 
-	Uint8* wlzStream = (Uint8*)malloc(SEQ_BlockBound + 64);             /* one coded block of sequences */
+	Uint8* wlzStream = (Uint8*)malloc(2 * SEQ_BlockBound + 64);         /* one coded block of sequences, and room for its stream B */
 	Uint8* const litScratch = (Uint8*)malloc(HUF_BlockSize + LIT_BlockSlack + 64);
 	Seq_Stack seqStack;
 	const int stackOk = Seq_Stack_Init(&seqStack, wzipStream + wzipCapSize);
@@ -1617,7 +1633,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 	WLZ_Set* wlzSeqPtr = wlzSeq;
 	WLZ_Set* const wlzSeqEnd = wlzSeq + SEQ_BlockSize;
 
-	Uint8* wlzStream = (Uint8*)malloc(SEQ_BlockBound + 64);             /* one coded block of sequences */
+	Uint8* wlzStream = (Uint8*)malloc(2 * SEQ_BlockBound + 64);         /* one coded block of sequences, and room for its stream B */
 	Uint8* const litScratch = (Uint8*)malloc(HUF_BlockSize + LIT_BlockSlack + 64);
 	Seq_Stack seqStack;
 	const int stackOk = Seq_Stack_Init(&seqStack, wzipStream + wzipCapSize);
@@ -2564,7 +2580,7 @@ static Uint32 WLZ2_Compress_Opt_Pass(
 	memset(&huffmanSet, 0, sizeof(WLZ_Huffman_Set));
 	Uint8* const lzLitBuffer = (Uint8*)malloc(HUF_BlockSize);
 	WLZ_Set* const wlzSeq = (WLZ_Set*)malloc(SEQ_BlockSize * sizeof(WLZ_Set));
-	Uint8* wlzStream = (Uint8*)malloc(SEQ_BlockBound + 64);             /* one coded block of sequences */
+	Uint8* wlzStream = (Uint8*)malloc(2 * SEQ_BlockBound + 64);         /* one coded block of sequences, and room for its stream B */
 	Uint8* const litScratch = (Uint8*)malloc(HUF_BlockSize + LIT_BlockSlack + 64);
 	Seq_Stack seqStack;
 	const int stackOk = Seq_Stack_Init(&seqStack, wzipStream + wzipCapSize);
@@ -3229,6 +3245,9 @@ static void Copy_Dict_Match(Uint8* destPtr, const Uint8* dest, const Uint32 prod
    output (16 per KB). On AMD EPYC 9334 this decodes enwik8 49% and enwik9 72% faster at level 11; on inputs whose
    matches stay in cache, where the rule keeps the plain loop, the pipeline would cost up to 8%. */
 #define   SEQ_Lookahead        16
+/* a sequence block: its tables, the u24 size of stream A, stream A (its sequences 0, 2, 4, ...), stream B (1, 3, 5, ...);
+   each stream holds at most 8192 sequences of at most 105 bits, so A at most this */
+#define   SEQ_MaxSizeA         ((SEQ_BlockSize / 2) * 14 + 16)
 #define   FAR_Offset           (1u << 20)
 #define   FAR_BytesPerMatch    64
 #ifndef WZL_PIPELINE
@@ -3444,10 +3463,18 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	};
 
 	register ExtHuffman_Lit extHufRes;
-	register Bit_Stream bitStream;
+	/* the sequences alternate between streams A and B, so that two decode at once: bitStream reads the next
+	   sequence's stream, otherStream the other, and the two swap after each sequence (register renaming, not copies) */
+	Uint8* const seqA = *wzipSeqStart + 3;
+	const Uint32 sizeA = MemReadLE2(*wzipSeqStart) | (Uint32)(*wzipSeqStart)[2] << 16;
+	if (sizeA > SEQ_MaxSizeA) return -1;              /* corrupt: the caller made only so much readable */
+	register Bit_Stream bitStream, otherStream;
 	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(*wzipSeqStart);
-	bitStream.streamPtr = *wzipSeqStart;
+	bitStream.container = MemReadBE8(seqA);
+	bitStream.streamPtr = seqA;
+	otherStream.nUsedBits = 0;
+	otherStream.container = MemReadBE8(seqA + sizeA);
+	otherStream.streamPtr = seqA + sizeA;
 	Uint8* lzLitBufPtr = lits->exec;                 /* the next literal to output */
 	size_t litLeft = (size_t)(lits->avail - lzLitBufPtr);   /* decoded literals no sequence has claimed yet */
 #ifdef WZIP_DEBUG
@@ -3470,7 +3497,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	const Uint32 lastOffGroup = MchOffGroup - 1;
 	(void)hufWtSet;
 
-	for(int seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+	int seqNo;
+	for(seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
 
 		Uint32 litClass, slotSel;
 		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
@@ -3563,6 +3591,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
 #endif
+		{ const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* the next sequence: the other stream */
 		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 		SEQ_DISPATCH();
 	}
@@ -3572,8 +3601,11 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 #endif
 
 	lits->exec = lzLitBufPtr;
+	if (seqNo & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
 	BITStream_Read_FlushEnd(bitStream);
-	*wzipSeqStart = bitStream.streamPtr;
+	BITStream_Read_FlushEnd(otherStream);
+	if (bitStream.streamPtr != seqA + sizeA) return -1;   /* corrupt: stream A is not of its stated size */
+	*wzipSeqStart = otherStream.streamPtr;
 	return (int)(destPtr - dest);
 }
 
@@ -3615,7 +3647,8 @@ static int CPU_Has_Bmi2(void)
 #  define WZIP_DYNAMIC_BMI2 0
 #endif
 
-/* a block of sequences reads at most this from its start: its code tables, then at most 105 bits a sequence */
+/* a block of sequences reads at most this from its start: its code tables, the size of stream A, then streams A and B
+   (A at most SEQ_MaxSizeA bytes, B at most 105 bits a sequence) */
 #define   SEQ_ReadSpan         ((size_t)SEQ_BlockSize * 14 + 8192)
 
 /* Returns destSize, or 0 if the stream is corrupt: every size, offset and code table is checked, and no read or write
@@ -3747,10 +3780,17 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	};
 
 	register ExtHuffman_Lit extHufRes;
-	register Bit_Stream bitStream;
+	/* the sequences alternate between streams A and B, so that two decode at once: bitStream reads the next
+	   sequence's stream, otherStream the other, and the two swap after each sequence (register renaming, not copies) */
+	Uint8* const seqA = *wzipSeqStart + 3;
+	const Uint32 sizeA = MemReadLE2(*wzipSeqStart) | (Uint32)(*wzipSeqStart)[2] << 16;
+	register Bit_Stream bitStream, otherStream;
 	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(*wzipSeqStart);
-	bitStream.streamPtr = *wzipSeqStart;
+	bitStream.container = MemReadBE8(seqA);
+	bitStream.streamPtr = seqA;
+	otherStream.nUsedBits = 0;
+	otherStream.container = MemReadBE8(seqA + sizeA);
+	otherStream.streamPtr = seqA + sizeA;
 	Uint8* lzLitBufPtr = lits->exec;                 /* the next literal to output */
 	size_t litLeft = (size_t)(lits->avail - lzLitBufPtr);   /* decoded literals no sequence has claimed yet */
 #ifdef WZIP_DEBUG
@@ -3772,7 +3812,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	(void)hufWtSet;
 	const Uint32 lastOffGroup = MchOffGroup - 1;
 
-	for(int seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+	int seqNo;
+	for(seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
 
 		Uint32 litClass, slotSel;
 		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
@@ -3863,6 +3904,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		fprintf(fptr, "matchLen=%d,  matchOff=%d\n", matchLen, matchOffset);
 		fflush(fptr);
 #endif
+		{ const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* the next sequence: the other stream */
 		/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Execute LZ Sequence ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
 		SEQ_DISPATCH();
 	}
@@ -3872,8 +3914,9 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 #endif
 
 	lits->exec = lzLitBufPtr;
-	BITStream_Read_FlushEnd(bitStream);
-	*wzipSeqStart = bitStream.streamPtr;
+	if (seqNo & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
+	BITStream_Read_FlushEnd(otherStream);
+	*wzipSeqStart = otherStream.streamPtr;
 	return (Uint32)(destPtr - dest);
 }
 

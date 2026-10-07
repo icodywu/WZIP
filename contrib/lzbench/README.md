@@ -53,9 +53,9 @@ line: edit `lzbench.patch` if the release differs).
 
 1. Fork lzbench on GitHub, clone the fork, run `add_to_lzbench.sh` on it, build and run as above.
 2. Commit as one change ("Add wlz4 1.0.0 and wzip 1.0.0"), push, and open a pull request against
-   `inikep/lzbench`, saying what each entry is for (the top-level README has the numbers): WLZ4 decodes at 3.0-3.4
+   `inikep/lzbench`, saying what each entry is for (the top-level README has the numbers): WLZ4 decodes at 3.0-3.5
    GB/s with its checked decoder, 1.6-2.4 times as fast as Zstandard at equal ratio, with ratios from 13% above
    LZ4's default mode to Zstandard 3's (16% above LZ4HC 12's), though Zstandard compresses faster at every ratio;
-   WZIP compresses Silesia 0.8-1.3% more than Zstandard 22 and decodes at 86% of its speed in trusted mode (the
-   checked decoder lzbench uses is 3-4% slower), and on enwik9 passes xz -9e's ratio while decoding about as fast as
+   WZIP compresses Silesia 0.8-1.3% more than Zstandard 22 and decodes at 91% of its speed in trusted mode (the
+   checked decoder lzbench uses is 5-7% slower), and on enwik9 passes xz -9e's ratio while decoding about as fast as
    Zstandard 22; it compresses more slowly than Zstandard 22.

@@ -341,9 +341,12 @@ def decode_l(data, n, dictionary=b''):
             for g in range(len(gsize)):
                 if not reuse[2 + g]:
                     off_codes[g] = read_table(bits, wcode, gsize[g], 10)
-        bits = Bits(data, bits.align())
+        pos = bits.align()                               # the size of stream A, then A (sequences 0, 2, ...), B (1, 3, ...)
+        size_a = int.from_bytes(data[pos:pos + 3], 'little')
+        streams = [Bits(data, pos + 3), Bits(data, pos + 3 + size_a)]
         done = False
-        for _ in range(16384):
+        for k in range(16384):
+            bits = streams[k & 1]
             j = joint.decode(bits)
             if slot_joint:
                 slot, cls, m = j // 204, j // 68 % 3, j % 68
@@ -390,7 +393,9 @@ def decode_l(data, n, dictionary=b''):
             if length > n - len(out):
                 raise ValueError('match past the output')
             copy_match(out, dictionary, off, length)
-        pos = bits.align()
+        if streams[0].align() != pos + 3 + size_a:
+            raise ValueError('stream A is not of its stated size')
+        pos = streams[1].align()
         if pos > len(data):
             raise ValueError('sequence block past the input')
         if done:
