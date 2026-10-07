@@ -2087,10 +2087,8 @@ ForceInlineTemplate int Opt_Tree_Insert(Opt_Finder* const f, const Uint8* const 
 	return n;
 }
 
-/* chain A: inserts the positions up to currIdx, then lists the candidates of lengths 3-4, nearest first, until a match
-   of length 5 */
-ForceInlineTemplate int Opt_Search_A(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
-	const Uint8* const dictEnd, const int searchCnt, Opt_Cand* const out)
+/* chains A and B: insert the positions up to currIdx */
+ForceInlineTemplate void Opt_Insert_A(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize)
 {
 	for (; f->nextA <= currIdx; f->nextA++) {
 		const Uint32 h = Hash_3B(source + f->nextA) & f->hMaskA;
@@ -2098,6 +2096,23 @@ ForceInlineTemplate int Opt_Search_A(Opt_Finder* const f, const Uint8* const sou
 		f->chainA[f->nextA & f->maskA] = (prev >= -dictSize && d > 0 && d <= (int)f->maskA) ? (Uint32)d : f->maskA + 1;
 		f->headA[h] = (int)f->nextA;
 	}
+}
+
+ForceInlineTemplate void Opt_Insert_B(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize)
+{
+	for (; f->nextB <= currIdx; f->nextB++) {
+		const Uint32 h = Hash_5B(source + f->nextB) & f->hMaskB;
+		const int prev = f->headB[h], d = (int)f->nextB - prev;
+		f->chainB[f->nextB & f->maskB] = (prev >= -dictSize && d > 0 && d <= (int)f->maskB) ? (Uint32)d : f->maskB + 1;
+		f->headB[h] = (int)f->nextB;
+	}
+}
+
+/* chain A (its positions inserted up to currIdx): the candidates of lengths 3-4, nearest first, until a match of
+   length 5 */
+ForceInlineTemplate int Opt_Search_A(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
+	const Uint8* const dictEnd, const int searchCnt, Opt_Cand* const out)
+{
 	const Uint8* const srcPtr = source + currIdx;
 	const reg_t currPattern = MemReadARCH(srcPtr);
 	Uint32 matchDist = f->chainA[currIdx & f->maskA];
@@ -2118,18 +2133,12 @@ ForceInlineTemplate int Opt_Search_A(Opt_Finder* const f, const Uint8* const sou
 	return n;
 }
 
-/* chain B: inserts the positions up to currIdx, then lists the candidates of lengths 5-6, nearest first, until a match
-   of length 7 */
+/* chain B (its positions inserted up to currIdx): the candidates of lengths 5-6, nearest first, until a match of
+   length 7 */
 ForceInlineTemplate int Opt_Search_B(Opt_Finder* const f, const Uint8* const source, const Uint32 currIdx, const int dictSize,
 	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, const int searchCnt,
 	Opt_Cand* const out)
 {
-	for (; f->nextB <= currIdx; f->nextB++) {
-		const Uint32 h = Hash_5B(source + f->nextB) & f->hMaskB;
-		const int prev = f->headB[h], d = (int)f->nextB - prev;
-		f->chainB[f->nextB & f->maskB] = (prev >= -dictSize && d > 0 && d <= (int)f->maskB) ? (Uint32)d : f->maskB + 1;
-		f->headB[h] = (int)f->nextB;
-	}
 	const Uint8* const srcPtr = source + currIdx;
 	const Uint32 currPattern = MemRead4(srcPtr);
 	Uint32 matchDist = f->chainB[currIdx & f->maskB];
@@ -2188,6 +2197,8 @@ ForceInlineTemplate int Opt_Candidates(WZL_Sched* const S_, Opt_Finder* const f,
 	const Uint8* const dictEnd, const Uint8* const srcLastMatch, const Uint8* const dictLastMatch, int searchCnt,
 	Opt_Cand* const cand, Opt_Cand* const tmp)
 {
+	Opt_Insert_A(f, source, currIdx, dictSize);
+	Opt_Insert_B(f, source, currIdx, dictSize);
 	int nTmp = Opt_Search_A(f, source, currIdx, dictSize, dictEnd, searchCnt, tmp);
 	nTmp += Opt_Search_B(f, source, currIdx, dictSize, dictEnd, srcLastMatch, dictLastMatch, searchCnt, tmp + nTmp);
 	nTmp += Opt_Search_C(f, source, currIdx, dictSize, dictEnd, srcLastMatch, searchCnt, tmp + nTmp);
@@ -2280,6 +2291,8 @@ WZ_THREAD_FN(Opt_MT_Producer_Main, arg)
 			}
 			c->start[i] = (Uint32)used;
 			const Uint32 idx = base + i;
+			if (p->mask & 1) Opt_Insert_A(f, mt->source, idx, mt->dictSize);
+			if (p->mask & 2) Opt_Insert_B(f, mt->source, idx, mt->dictSize);
 			if (p->mask & 1) used += Opt_Search_A(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->searchCnt, c->pool + used);
 			if (p->mask & 2) used += Opt_Search_B(f, mt->source, idx, mt->dictSize, mt->dictEnd, mt->srcLastMatch, mt->dictLastMatch,
 			                                      mt->searchCnt, c->pool + used);
