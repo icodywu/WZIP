@@ -49,7 +49,8 @@ def compress(data, codec="wzip", level=None, block_log=0, checksum=True, threads
     default). block_log: blocks of at most 2**block_log bytes (10-31; 0, the default: the whole input up to 1 GiB, one
     block). checksum: append an XXH32 checksum of the content. threads: at WZIP levels 7-13 up to 7 search a block,
     with the frame of one thread; with more (at levels 0-6, more than 1) and block_log 0, WZIP content over 64 MiB is
-    cut into blocks of 64 MiB, compressed at once, each referring to the 128 MiB before it. decompress() reads any."""
+    cut into blocks of 64 MiB, compressed at once, each referring to the level's window before it (2**21 to 2**27
+    bytes, one bit per level: levels 0-6 and 7-13). decompress() reads any."""
     if codec not in _CODECS:
         raise ValueError("codec must be 'wzip' or 'wlz4'")
     if block_log and not 10 <= block_log <= 31:

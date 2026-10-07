@@ -258,7 +258,12 @@ Optimal-level parameters (chain steps in the 64 KiB, 256 B and far windows; a ma
 | 11 | 256 | 32 | 64 | 128 |
 | 12 | 4096 | 64 | 256 | 4096 |
 
-The far chain dominates the time of the optimal levels; their encoder memory is about 40 MB (the 8 MiB chain).
+The far chain dominates the time of the optimal levels. Each `WLZhc_Compress` level reaches at most its own far
+window: the format's 8 MiB (2^23 bytes) at the top level of each parser (7 and 12) and one bit less per level below
+it, so 2^16 (64 KiB, no far matches) at level 0 and 2^19 at level 8. It sizes the far tables (the 6-byte chain of the
+optimal levels, about 4 bytes per byte of window, and the 8-byte table of levels 0-7), so that memory follows the
+level: about 41 MB at level 12, 7.5 MB at level 8 (Silesia). An input no larger than a level's window compresses as at the top
+level of its parser. `WLZ_Compress_Fast` and `WLZ_Compress` keep the full 8 MiB.
 `WLZ_Compress_wDict` compresses with a dictionary (section 7); the hash-chain and optimal levels do not use one.
 Measurements are in the paper (`papers/WZIP_WLZ4_DCC.pdf`) and in `results/`.
 

@@ -104,6 +104,10 @@ WLZLIB_API const char* WLZ_versionString (void);   /**< library version string; 
 #define WLZhc_HASH1BITS   13
 #define WLZhc_HASH2BITS   16
 #define WLZhc_FAR8BITS    20        /* at most: the table takes one entry per 4 input bytes */
+/* WLZhc_Compress's window at each level: the top level of each parser (7 and 12) reaches the format's 2^23 bytes, each
+   level below it one bit less (levels 0-7: 2^16-2^23, levels 8-12: 2^19-2^23). It caps the far matches (lengths 6+
+   beyond 64K) and the tables that find them; inputs no larger than a level's window compress as before. */
+#define WLZhc_LEVEL_WINDOW_LOG(level) ((level) >= 8 ? (level) + 11 : (level) + 16)
 
 #if defined(__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
 #include <stdint.h>
@@ -127,6 +131,7 @@ struct WLZhc_State_Str {
 	uint32_t *far8Prev;          /* per position (a 64K ring): the previous position of its 8-byte hash */
 	uint32_t *far8Head;          /* the latest position of each 8-byte hash */
 	uint32_t far8Bits;           /* the size of far8Head in use (log2), by the input size */
+	uint32_t farWindow;          /* the far matches' reach, by the level (WLZhc_LEVEL_WINDOW_LOG) */
 	uint32_t dictSize;
 	const uint8_t* dictEnd;
 };
@@ -152,6 +157,7 @@ struct WLZhc_State_Str {
 	unsigned int *far8Prev;
 	unsigned int *far8Head;
 	unsigned int far8Bits;
+	unsigned int farWindow;
 	unsigned int dictSize;
 	const unsigned char* dictEnd;
 };

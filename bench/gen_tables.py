@@ -113,8 +113,8 @@ if E8 and E9:
     open(os.path.join(outdir, 'tab_enwik.tex'), 'w').write(table(
         'Large inputs: ' + cap('enwik8 (100\\,MB)', 'enwik9 (1\\,GB)', 'enwik9'), 'tab:enwik',
         [[('lz4', 1), ('lz4hc', 12)],
-         [('wlz4hc', 2), ('wlz4hc', 10), ('wlz4hc', 12)],
+         [('wlz4hc', 6), ('wlz4hc', 10), ('wlz4hc', 12)],
          [('zstd', l) for l in (19, 22)],
-         [('wzip', l) for l in (9, 11, 13)],
+         [('wzip', l) for l in (11, 12, 13)],
          [('brotli', 11), ('xz', 109)]], E8, E9, ('enwik8', 'enwik9'), '!htb'))
 print('wrote tables to', outdir)

@@ -92,7 +92,8 @@ static void usage(FILE* f)
 "  -B#        blocks of at most 2^# bytes (10-31; default: the whole file, up to 1 GiB)\n"
 "  -T#        threads (default 1). WZIP levels 7-13 use up to 7 in a block, with the output of one thread;\n"
 "             with more (at levels 0-6, more than 1), content over 64 MiB is cut into blocks of 64 MiB,\n"
-"             compressed at once, each referring to the 128 MiB before it. -d needs no option either way\n"
+"             compressed at once, each referring to the level's window before it. -d needs no option\n"
+"             Windows by level: WZIP 2^21 (0, 7) to 2^27 (6, 13), WLZ4 2^16 (0) to 2^23 (7, 12)\n"
 "  --no-check no content checksum\n"
 "  -b         benchmark the level (in memory, no files written); -e# up to level #\n"
 "  -q, -v     fewer, more messages       -h  this help    -V  version\n",

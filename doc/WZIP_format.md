@@ -506,6 +506,15 @@ incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each c
 | WZIP_M | 0, 1-9, 10-12 | fast, hash-chain, optimal (the one-call interface uses levels up to 12) |
 | WZIP_S | 1-9 | greedy (1-2) or lazy parsing with a 3-byte hash chain of 4 to 4096 steps |
 
+Each level of WZIP_L searches at most its own window: 2^27 bytes at the top level of each parser (6 and 13) and one
+bit less per level below it, so 2^21 at levels 0 and 7 (level 0 searches 1 MiB in any case). It caps the widest of
+the windows of section 5.2, which the input's size sets, and each narrower window moves down just enough to stay
+below the next wider one, so that the windows keep their order (on enwik9, lengths 3, 4, 5-7 and 8+: 2^19, 2^23,
+2^25, 2^27 at level 13; 2^19, 2^23, 2^24, 2^25 at level 11; 2^18, 2^19, 2^20, 2^21 at level 7). These windows size
+the encoder's tables, so that memory follows the level. The stream keeps the windows of section 5.2 (its offset
+codes), so decoders need no level, and an input no larger than a level's window compresses as at the top level of
+its parser.
+
 ![Greedy, lazy and minimum-cost parses](figures/parsers.svg)
 
 *Figure 11 (from the IEEE Trans. IT paper, [arXiv:2610.06530](https://arxiv.org/abs/2610.06530), `papers/WLZ.pdf`).

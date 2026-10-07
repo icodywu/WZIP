@@ -880,7 +880,7 @@ ForceInlineTemplate void WLZhc_Search_HashChain(WLZhc_State_Str* const wlzStr, c
 	matchDist = chain2Table[(Uint16)currIdx];
 	if (matchDist >= WLZ_MAX_DIST) {                                /* nothing within 64K: the previous position, if in the far window */
 		const Uint32 farDist = wlzStr->farLink[(Uint16)currIdx];
-		if (farDist >= WLZ_MAX_DIST && farDist < WLZ_FAR_WINDOW && (int)farDist <= currIdx && currPattern == MemRead4(srcPtr - farDist)) {
+		if (farDist >= WLZ_MAX_DIST && farDist < wlzStr->farWindow && (int)farDist <= currIdx && currPattern == MemRead4(srcPtr - farDist)) {
 			matchLen = 4 + WLZ_Match_Count(srcPtr + 4, srcPtr - farDist + 4, srcLastMatch, NULL);
 			if (matchLen >= WLZ_KERNEL_FARLEN && WLZ_GAIN(matchLen, farDist) > WLZ_GAIN(matchStr->len, matchStr->off)) {
 				matchStr->len = matchLen;
@@ -903,7 +903,7 @@ ForceInlineTemplate void WLZhc_Search_HashChain(WLZhc_State_Str* const wlzStr, c
 	}
 	{   /* the previous position of the 8 bytes here, when beyond the two-byte window */
 		const Uint32 p8 = wlzStr->far8Prev[(Uint16)currIdx], farDist = (Uint32)currIdx - p8;
-		if (p8 && farDist >= WLZ_SHORT_WINDOW && farDist < WLZ_FAR_WINDOW && MemReadLE8(srcPtr) == MemReadLE8(srcPtr - farDist)) {
+		if (p8 && farDist >= WLZ_SHORT_WINDOW && farDist < wlzStr->farWindow && MemReadLE8(srcPtr) == MemReadLE8(srcPtr - farDist)) {
 			matchLen = 8 + WLZ_Match_Count(srcPtr + 8, srcPtr - farDist + 8, srcLastMatch, NULL);
 			if (WLZ_GAIN(matchLen, farDist) > WLZ_GAIN(matchStr->len, matchStr->off)) {
 				matchStr->len = matchLen;
@@ -1123,7 +1123,6 @@ _last_literals:
 #define WLZ_OPT_TRAILING    3
 #define WLZ_OPT_INF         (1 << 30)
 #define WLZ_FAR_HASHBITS    20
-#define WLZ_FAR_MASK        (WLZ_FAR_WINDOW - 1)     /* the far links are a ring over the window */
 
 typedef struct {
 	int price;                                      /* bytes to code the input up to here */
@@ -1166,7 +1165,8 @@ ForceInlineTemplate int WLZ_Seq_Price(int litLen, int matchLen, Uint32 off)
 /* the far window: 6-byte hashes, links of 32 bits */
 typedef struct {
 	int* head;
-	Uint32* link;                                   /* link[pos & WLZ_FAR_MASK]: distance to the previous position of the hash */
+	Uint32* link;                                   /* link[pos & (window - 1)]: distance to the previous position of the hash */
+	Uint32 window;                                  /* the level's far window (a power of two): the links are a ring over it */
 } WLZ_Far_Finder;
 
 ForceInlineTemplate Uint32 WLZ_Hash6(const Uint8* const p)
@@ -1198,7 +1198,7 @@ ForceInlineTemplate void WLZ_Opt_Insert(WLZhc_State_Str* const s, const Uint8* c
 			WLZ_PREFETCH_W(&far->head[WLZ_Hash6(src + idx + 8)]);   /* the head slot 8 positions on (a likely miss) */
 			const Uint32 h6 = WLZ_Hash6(src + idx);
 			const int prev = far->head[h6];
-			far->link[idx & WLZ_FAR_MASK] = prev ? (Uint32)(idx - prev) : WLZ_FAR_WINDOW;
+			far->link[idx & (far->window - 1)] = prev ? (Uint32)(idx - prev) : far->window;
 			far->head[h6] = idx;
 		}
 	}
@@ -1269,10 +1269,10 @@ ForceInlineTemplate void WLZ_Opt_Find(WLZhc_State_Str* const s, const Uint8* con
 
 	/* the far window beyond 64K, by the 6-byte chain: only worth it past what the 64K window reaches */
 	if (far->head && midM->len < par->sufficientLen) {
-		Uint32 dist = far->link[idx & WLZ_FAR_MASK];
+		Uint32 dist = far->link[idx & (far->window - 1)];
 		int n = par->nbFar;
 		int bestLen = max(midM->len, WLZ_FAR_MINLEN - 1);
-		while (dist < WLZ_FAR_WINDOW && (int)dist <= idx && n--) {
+		while (dist < far->window && (int)dist <= idx && n--) {
 			const Uint8* const mp = ip - dist;
 			if (dist >= WLZ_MID_WINDOW && mp[bestLen] == ip[bestLen] && MemRead4(mp) == pattern4) {
 				const int len = 4 + WLZ_Match_Count((Uint8*)ip + 4, (Uint8*)mp + 4, srcLastMatch, NULL);
@@ -1281,7 +1281,7 @@ ForceInlineTemplate void WLZ_Opt_Find(WLZhc_State_Str* const s, const Uint8* con
 					if (len >= par->sufficientLen) break;
 				}
 			}
-			dist += far->link[(idx - dist) & WLZ_FAR_MASK];
+			dist += far->link[(idx - dist) & (far->window - 1)];
 		}
 	}
 }
@@ -1309,15 +1309,15 @@ static Uint32 WLZhc_Compress_Optimal(WLZhc_State_Str* const wlzStr, const char* 
 	Uint8* destPtr = (Uint8*)destiny;
 	Uint8 chain1[WLZ_NEAR_WINDOW] = { 0 };
 	WLZ_Opt_Node* const opt = (WLZ_Opt_Node*)malloc((WLZ_OPT_NUM + WLZ_OPT_TRAILING + 64) * sizeof(WLZ_Opt_Node));
-	WLZ_Far_Finder far = { NULL, NULL };
+	WLZ_Far_Finder far = { NULL, NULL, wlzStr->farWindow };
 	WLZ_Match tinyM, nearM, shortM, midM, farM;
 	const int sufficientLen = min(par->sufficientLen, WLZ_OPT_NUM - 1);
 	Uint32 litLen, extraLitLen;
 
 	if ((Uint32)srcSize > (Uint32)WLZ_MAX_INPUT_SIZE || opt == NULL) { free(opt); return 0; }
-	if (srcSize > (int)WLZ_MID_WINDOW && par->nbFar) {             /* the far window only when the input reaches past 64K */
+	if (srcSize > (int)WLZ_MID_WINDOW && far.window > WLZ_MID_WINDOW && par->nbFar) {   /* the far window only when the input reaches past 64K */
 		far.head = (int*)calloc((size_t)1 << WLZ_FAR_HASHBITS, sizeof(int));
-		far.link = (Uint32*)malloc((size_t)min((Uint32)srcSize, WLZ_FAR_WINDOW) * sizeof(Uint32));
+		far.link = (Uint32*)malloc((size_t)min((Uint32)srcSize, far.window) * sizeof(Uint32));
 		if (far.head == NULL || far.link == NULL) { free(far.head); free(far.link); far.head = NULL; far.link = NULL; }
 	}
 	destPtr = WLZ_Write_Size(destPtr, (Uint32)srcSize);
@@ -1466,6 +1466,7 @@ WLZhc_State_Str *WLZhc_New_State()
 	wlzStr->far8Prev = (Uint32 *)calloc(WLZ_MATCH2_WINDOW, sizeof(Uint32));
 	wlzStr->far8Head = (Uint32 *)calloc((size_t)1 << WLZhc_FAR8BITS, sizeof(Uint32));
 	wlzStr->far8Bits = WLZhc_FAR8BITS;
+	wlzStr->farWindow = WLZ_FAR_WINDOW;
 	if (wlzStr->hash2Table == NULL || wlzStr->chain2Table == NULL || wlzStr->farLink == NULL || wlzStr->far8Prev == NULL || wlzStr->far8Head == NULL) {
 		WLZhc_Free_State(wlzStr);
 		return NULL;
@@ -1559,13 +1560,16 @@ unsigned WLZhc_Compress(WLZhc_State_Str *wlzStr, const char* source, char* desti
 		return 0;
 	}
 	
-	/* the 8-byte far table of the lazy levels: one entry per 4 input bytes, from 2^10 to 2^WLZhc_FAR8BITS */
-	wlzStr->far8Bits = min(WLZhc_FAR8BITS, max(10, (int)High_Bit32(srcSize | 1) - 2));
+	/* levels 0-7: lazy parsing, 8-12: optimal parsing; the far window by the level (WLZhc_LEVEL_WINDOW_LOG) */
+	if (level < 0) level = 0;
+	if (level > WLZhc_LEVEL_MAX) level = WLZhc_LEVEL_MAX;
+	wlzStr->farWindow = 1u << WLZhc_LEVEL_WINDOW_LOG(level);
+	/* the 8-byte far table of the lazy levels: one entry per 4 bytes of the input within the window, from 2^10 to
+	   2^WLZhc_FAR8BITS */
+	wlzStr->far8Bits = min(WLZhc_FAR8BITS, max(10, (int)High_Bit32(min(srcSize, wlzStr->farWindow) | 1) - 2));
 	WLZhc_Init_State(wlzStr);
 
-	/* levels 0-7: lazy parsing, 8-12: optimal parsing */
-	if (level < 0) level = 0;
-	if (level >= WLZhc_OPT_LEVEL_MIN) return WLZhc_Compress_Optimal(wlzStr, source, destiny, (int)srcSize, &WLZ_Opt_Level[min(level, WLZhc_LEVEL_MAX) - WLZhc_OPT_LEVEL_MIN]);
+	if (level >= WLZhc_OPT_LEVEL_MIN) return WLZhc_Compress_Optimal(wlzStr, source, destiny, (int)srcSize, &WLZ_Opt_Level[level - WLZhc_OPT_LEVEL_MIN]);
 	return WLZhc_Compress_Kernel(wlzStr, source, destiny, srcSize, Search_Level_Map[level]);
 }
 

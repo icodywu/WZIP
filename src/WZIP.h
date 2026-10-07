@@ -30,6 +30,13 @@ const char* wzip_versionString(void);
 #define WZIP_MEM_OVERHEAD         256
 #define WZIP_MAX_OFF_WIDTH        27          /* the window of lengths 8+ covers the input up to 2^27 bytes */
 #define WZIP_SHORT_OFF_WIDTH      26          /* the windows of lengths 3-7 stop at 2^26 */
+/* The encoder's window at each level: the top level of each parser (6 and 13) reaches 2^27 bytes, each level below
+   it one bit less (levels 0-6: 2^21-2^27, levels 7-13: 2^21-2^27), so that memory follows the level. It caps the
+   widest of the windows the input size sets (which cover the input), and each narrower one moves down just enough to
+   stay below the next wider one, so that the windows keep their order. It limits only the encoder's search: streams
+   keep the windows of their size, so decoders need no level. Inputs no larger than a level's window compress as
+   before. */
+#define WZIP_LEVEL_WINDOW_LOG(level)  ((level) >= 7 ? (level) + 14 : (level) + 21)
 
 
 /* hash3Table and chain3Table are currently unutilized */

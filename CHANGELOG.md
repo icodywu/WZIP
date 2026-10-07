@@ -5,6 +5,16 @@ a WZ frame records its frame format version and its codec's format version (`doc
 
 ## Unreleased
 
+- **A window per level.** Each level searches at most its own window, so that memory follows the level: WZIP
+  2^27 bytes at the top level of each parser (6 and 13) and one bit less per level below it (2^21 at levels 0 and
+  7; `WZIP_LEVEL_WINDOW_LOG`), WLZ4's hash-chain and optimal levels the format's 2^23 at levels 7 and 12, down to 2^16
+  at level 0 and 2^19 at level 8 (`WLZhc_LEVEL_WINDOW_LOG`). WZIP's cap applies to the widest of the windows the
+  input size sets, and each narrower window moves down just enough to stay below the next wider one, so that the
+  windows keep their order. Only the encoders change: streams keep the windows of their size, decoders need no level,
+  and an input no larger than a level's window compresses exactly as before. On Silesia WZIP 11 needs 566 MB instead
+  of 948 MB (Zstandard 22: 642 MB) at 0.04% lower ratio; on enwik9, where the windows bind, levels 11 and 12 reach
+  4.505 and 4.644 (11 reached 4.744) and level 13 keeps 4.759. The levels just above the top of the lazy parser now compress large inputs less than
+  it (WZIP 7-8 below 6, WLZ4 8 below 7). Linked blocks in WZ frames take the level's window.
 - **Threads in compression.** At WZIP's optimal levels (7-13) the three match-finder indexes (chain of lengths 3-4,
   chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser, and from 5 threads on the
   tree, a tree per hash bucket, splits among 2 to 4 threads by bucket (`WZIP_WORKERS_MAX`, 7): `wzip -T#`,

@@ -34,7 +34,7 @@ const char* WZF_versionString(void);
 #define WZF_BLOCKLOG_MIN       10
 #define WZF_BLOCKLOG_MAX       31
 #define WZF_WINDOWLOG_MIN      10               /* linked blocks (WZIP): each refers to up to 2^windowLog bytes before it */
-#define WZF_WINDOWLOG_MAX      27               /* WZIP's widest window, and the window of linked blocks by default */
+#define WZF_WINDOWLOG_MAX      27               /* WZIP's widest window; linked blocks have their level's by default */
 #define WZF_LINKED_BLOCKLOG    26               /* the blocks of WZIP content split by the threads */
 
 enum { WZF_CODEC_WZIP = 0, WZF_CODEC_WLZ4 = 1 };
@@ -70,8 +70,9 @@ typedef struct {
 	int windowLog;      /* WZIP's linked blocks, each referring to up to 2^windowLog bytes of content before it.
 	                       0 (the default): with blockLog 0, WZIP content is one block (up to 1 GiB), unless the threads
 	                       outnumber those one block uses (levels 0-6: 1; 7-13: WZIP_WORKERS_MAX): then content over
-	                       64 MiB, or of unknown size, is cut into blocks of 64 MiB, compressed at once and linked with a
-	                       128 MiB window (independent at level 0, whose window is 1 MiB). -1: independent blocks.
+	                       64 MiB, or of unknown size, is cut into blocks of 64 MiB, compressed at once and linked with
+	                       the level's window, 2^WZIP_LEVEL_WINDOW_LOG(level) bytes (independent at level 0, which
+	                       searches 1 MiB). -1: independent blocks.
 	                       10-27: linked blocks (blockLog 0: of 64 MiB at most). Decoders need no parameter */
 } WZF_params;
 

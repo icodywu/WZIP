@@ -156,9 +156,10 @@ unless asked not to. Their blocks:
   content of unknown size (a pipe) uses `b = 27` (128 MiB) for WZIP and `b = 23` (8 MiB) for WLZ4, the codecs'
   widest windows;
 - with more threads than one WZIP block uses (more than 1 at levels 0-6, more than 7 at levels 7-13), WZIP content
-  over 64 MiB, or of unknown size, is cut into blocks of 64 MiB (`b = 26`), compressed at once and linked with a
-  window of 128 MiB (`W = 27`, WZIP's widest), each primed with the content before it; at level 0, whose window is
-  1 MiB, they are independent;
+  over 64 MiB, or of unknown size, is cut into blocks of 64 MiB (`b = 26`), compressed at once and linked with the
+  level's window (`W` from 21 at levels 1 and 7, one more per level, to 27 at levels 6 and 13; see
+  `doc/WZIP_format.md`, section 10), each primed with the content before it; at level 0, which searches 1 MiB, they
+  are independent;
 - a block size given by the caller (`WZF_params.blockLog`, the tool's `-B`) makes independent blocks of that size.
 
 A block that does not shrink is written raw. Up to 7 threads search one WZIP block at levels 7-13 (its match

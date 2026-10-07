@@ -16,6 +16,7 @@ wzip 0 3
 wzip 3 1
 wzip 9 1
 wzip 11 1
+wzip 12 1
 wzip 13 1
 brotli 9 1
 brotli 11 1

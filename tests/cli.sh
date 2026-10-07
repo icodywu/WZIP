@@ -55,7 +55,7 @@ for src in file pipe; do
 done
 "$WZIP" -q -c -7 -T8 < "$T/big3m" > "$T/t8.wz"; "$WZIP" -q -c -7 -T16 < "$T/big3m" > "$T/t16.wz"
 same "$T/t8.wz" "$T/t16.wz" "pipe -T8"
-"$WZIP" -l "$T/t16.wz" | grep -q " 26  27 " && ok || bad "-l of linked blocks"
+"$WZIP" -l "$T/t16.wz" | grep -q " 26  21 " && ok || bad "-l of linked blocks (level 7: window 2^21)"
 "$WZIP" -q -c -3 -T2 "$T/big3m" | "$WZIP" -l - | grep -q " 25   - " && ok || bad "-l of one block (-T2, 21 MB)"
 "$WZIP" -q -c -3 < "$T/big3m" | "$WZIP" -l - | grep -q " 27   - " && ok || bad "-l of a pipe, one thread"
 

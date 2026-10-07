@@ -111,7 +111,8 @@
    each decoding call holds its own (so that WZIP_L runs in several threads at once); the functions reach it through a
    pointer S_, under the names below. */
 typedef struct {
-	int   offWidth[9];
+	int   offWidth[9];                                 /* the windows of the input (its offset codes), as decoders derive them */
+	int   srchWidth[9];                                /* the encoder's: offWidth capped by the level's window */
 	int   nHufMchOff[MaxMchOffGroup];
 	int   mchOffGroup;
 	int   offGroupsFine;                               /* 1: the eight-group layout (lengths 3, 4, 5, 6, 7, 8-9, 10-15, 16+) */
@@ -119,6 +120,7 @@ typedef struct {
 	int   litRunTooLong;                               /* set by the encoder: a literal run the format cannot code */
 } WZL_Sched;
 #define   OffWidth             (S_->offWidth)
+#define   SrchWidth            (S_->srchWidth)
 #define   N_HufMchOff          (S_->nHufMchOff)
 #define   MchOffGroup          (S_->mchOffGroup)
 #define   OffGroupsFine        (S_->offGroupsFine)
@@ -577,7 +579,7 @@ ForceInlineTemplate int Repeat_Match_Len(const Uint8* const source, Uint32 srcId
 /* A match of whole words read at once (diff 0): on 64-bit targets 8 bytes or more, in the widest window, which the
    candidates were taken from; with the 4-byte words of 32-bit targets it may be shorter than hash2Len, whose window
    is narrower (constant true on 64-bit targets) */
-#define WORD_MATCH_FITS(len, off)   (REG_SIZE >= 8 || (len) > hash2Len || (off) < WINDOW(OffWidth[len]))
+#define WORD_MATCH_FITS(len, off)   (REG_SIZE >= 8 || (len) > hash2Len || (off) < WINDOW(SrchWidth[len]))
 
 ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	WZIP_State_Str* const wzipStr,
@@ -613,7 +615,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	int litRun;
 	int* hash1Table = (int *)wzipStr->hash1Table;
 	int* hash2Table = (int *)wzipStr->hash2Table;
-	const Uint32 offWindow = WINDOW(OffWidth[8]);
+	const Uint32 offWindow = WINDOW(SrchWidth[8]);
 	int litRunMsb, litRunHufIdx, matchLenMsb, mchLenHufIdx, offsetMsb, offsetHufIdx;
 	const int hash1Len = wzipStr->hash1Len;
 	const int hash2Len = wzipStr->hash2Len;
@@ -675,7 +677,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				}
 				else {
 					matchLen = N_ZeroBytes(diffPattern);
-					if ( matchLen <= hash2Len && matchOffset>= WINDOW(OffWidth[matchLen]) )
+					if ( matchLen <= hash2Len && matchOffset>= WINDOW(SrchWidth[matchLen]) )
 						matchLen = 0;
 				}
 				matchLen2 = matchLen;
@@ -693,7 +695,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				}
 				else {
 					matchLen = N_ZeroBytes(diffPattern);
-					if ( matchLen <= hash2Len && matchOffset >= WINDOW(OffWidth[matchLen]) )
+					if ( matchLen <= hash2Len && matchOffset >= WINDOW(SrchWidth[matchLen]) )
 						matchLen = 0;
 				}
 				if (matchLen > matchLen2) {
@@ -755,7 +757,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 			}
 			else {
 				lazyMatchLen = N_ZeroBytes(diffPattern);
-				if (lazyMatchOffset >= WINDOW(OffWidth[lazyMatchLen]) ) lazyMatchLen = 0;
+				if (lazyMatchOffset >= WINDOW(SrchWidth[lazyMatchLen]) ) lazyMatchLen = 0;
 			}
 
 			if (lazyMatchLen > matchLen) {
@@ -776,7 +778,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				}
 				else {
 					lazyMatchLen = N_ZeroBytes(diffPattern);
-					if (lazyMatchOffset >= WINDOW(OffWidth[lazyMatchLen]) ) lazyMatchLen = 0;
+					if (lazyMatchOffset >= WINDOW(SrchWidth[lazyMatchLen]) ) lazyMatchLen = 0;
 				}
 
 				if (lazyMatchLen > matchLen) {
@@ -1100,7 +1102,7 @@ static Uint32 WLZ2_Compress_Fast1(
 	int fHashLog = L0F_HashLog;
 	const int fMls = L0F_MinMatch, fStep = L0F_SkipLog, fWinLog = L0F_WindowLog;
 	fHashLog = min(fHashLog, (int)High_Bit32(wzipStr->hash1Mask + 1));           /* within the allocated table */
-	const Uint32 fWindow = min(WINDOW(fWinLog), WINDOW(OffWidth[fMls]));        /* every match of fMls bytes or more is in its window */
+	const Uint32 fWindow = min(WINDOW(fWinLog), WINDOW(SrchWidth[fMls]));        /* every match of fMls bytes or more is in its window */
 	const int fShift = 64 - 8 * fMls, fHashShift = 64 - fHashLog;
 	int* const fTable = hash1Table;
 	memset(fTable, 0xFF, ((size_t)1 << fHashLog) * sizeof(int));
@@ -1253,7 +1255,7 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 	int matchLen, matchIdx;
 	const int dictSize = wzipStr->dictSize;
 	Uint8* const dictEnd = wzipStr->dictEnd;
-	const Uint32 off1Window = WINDOW(OffWidth[maxMatchLen]);  
+	const Uint32 off1Window = WINDOW(SrchWidth[maxMatchLen]);  
 	const int hash1Len = wzipStr->hash1Len;
 	
 	srcPtr = (Uint8*)source + wzipStr->curr1Idx;
@@ -1278,7 +1280,7 @@ ForceInlineTemplate void WZIP_Search_Hash1Chain(WZIP_State_Str* const wzipStr, c
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		diffPattern = currPattern ^ MemReadARCH(matchPtr);
 		matchLen = diffPattern ? N_ZeroBytes(diffPattern) : REG_SIZE;
-		if (matchLen > matchStr->len && matchDist< WINDOW(OffWidth[matchLen]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
+		if (matchLen > matchStr->len && matchDist< WINDOW(SrchWidth[matchLen]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
 			matchStr->len = matchLen;
 			matchStr->off = matchDist;
 			if (matchLen >= maxMatchLen) break;
@@ -1300,7 +1302,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 	int matchLen, matchIdx;
 	const int dictSize = wzipStr->dictSize;
 	Uint8* const dictEnd = wzipStr->dictEnd;
-	const Uint32 off2Window = WINDOW(OffWidth[8]);
+	const Uint32 off2Window = WINDOW(SrchWidth[8]);
 	const int hash2Len = wzipStr->hash2Len;
 
 	srcPtr = (Uint8*)source + wzipStr->curr2Idx;
@@ -1326,7 +1328,7 @@ ForceInlineTemplate void WZIP_Search_Hash2Chain(WZIP_State_Str* const wzipStr, c
 		matchPtr = (dictSize && matchIdx < 0) ? dictEnd + matchIdx : srcPtr - matchDist;
 		if (currPattern == MemRead4(matchPtr) && !CANNOT_REACH((int)matchStr->len + 1)) {
 			matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
-			if (matchLen > matchStr->len && matchDist < WINDOW(OffWidth[min(8, matchLen)]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
+			if (matchLen > matchStr->len && matchDist < WINDOW(SrchWidth[min(8, matchLen)]) && Pays_Off(matchLen, matchDist, matchStr, lastOffset)) {
 				matchStr->len = matchLen;
 				matchStr->off = matchDist;
 			}
@@ -1353,7 +1355,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 	static const int backTable[4] = { 0, 1, 0, 2 };
 	const int dictSize = wzipStr->dictSize;
 	Uint8* const dictEnd = wzipStr->dictEnd;
-	const Uint32 off2Window = WINDOW(OffWidth[8]);
+	const Uint32 off2Window = WINDOW(SrchWidth[8]);
 	const int hash2Len = wzipStr->hash2Len;
 	int bestGain = Match_Gain(matchStr, lastOffset);
 
@@ -1387,7 +1389,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 			const int need = bestGain + cost;               /* the candidate must reach G_Byte * length > need */
 			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1 - back)) {
 				matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch) + back;
-				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
+				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(SrchWidth[min(8, matchLen)])) {
 					matchStr->len = matchLen;
 					matchStr->off = matchDist;
 					optBack = back;
@@ -1415,7 +1417,7 @@ ForceInlineTemplate int WZIP_Search_Hash2Chain_2D(WZIP_State_Str* const wzipStr,
 			const int need = bestGain + cost;
 			if (need < 0 || !CANNOT_REACH(need / G_Byte + 1)) {
 				matchLen = 4 + HIST_COUNT(srcPtr + 4, matchPtr + 4, srcLastMatch);
-				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(OffWidth[min(8, matchLen)])) {
+				if (G_Byte * matchLen - cost > bestGain && matchDist < WINDOW(SrchWidth[min(8, matchLen)])) {
 					matchStr->len = matchLen;
 					matchStr->off = matchDist;
 					optBack = back;
@@ -1550,12 +1552,12 @@ ForceInlineTemplate Uint32 WLZ2_Compress(
 					int match0Idx = hash0Table[hashV];
 					int offset = srcIdx - match0Idx;   // note curr0Idx=srcIdx
 					hash0Table[hashV] = curr0Idx++; 
-					if ( match0Idx >= -dictSize && offset > 0 && offset < WINDOW(OffWidth[hash2Len]) ) {
+					if ( match0Idx >= -dictSize && offset > 0 && offset < WINDOW(SrchWidth[hash2Len]) ) {
 						const Uint8* matchPtr = (dictSize && match0Idx < 0) ? dictEnd + match0Idx : srcPtr - offset;
 						reg_t diffPattern = MemReadARCH(srcPtr) ^ MemReadARCH(matchPtr);
 						matchStr.len = diffPattern? N_ZeroBytes(diffPattern) : REG_SIZE;
 						matchStr.off = offset;
-						if (matchStr.len <= hash2Len && offset >= WINDOW(OffWidth[matchStr.len]) )
+						if (matchStr.len <= hash2Len && offset >= WINDOW(SrchWidth[matchStr.len]) )
 							matchStr.len = 0;
 					}
 				}
@@ -1976,14 +1978,14 @@ static void Opt_Prime_Tree(Opt_Finder* const f, const Uint8* dict, int dictSize,
 static int Opt_Finder_Init(WZL_Sched* const S_, Opt_Finder* f, const Uint8* dict, int dictSize, const Uint8* const source,
 	const Uint8* const srcLastMatch, int searchCnt, const int prime)
 {
-	f->maskA = BitMask[OffWidth[4]]; f->maskB = BitMask[OffWidth[6]]; f->maskC = BitMask[OffWidth[8]];
-	f->winA = WINDOW(OffWidth[4]); f->winB = WINDOW(OffWidth[6]); f->winC = WINDOW(OffWidth[8]);
+	f->maskA = BitMask[SrchWidth[4]]; f->maskB = BitMask[SrchWidth[6]]; f->maskC = BitMask[SrchWidth[8]];
+	f->winA = WINDOW(SrchWidth[4]); f->winB = WINDOW(SrchWidth[6]); f->winC = WINDOW(SrchWidth[8]);
 	/* The tree's nodes are those of the positions modulo 2^w(8): a position takes over the node of the one 2^w(8)
 	   before it. The threads that split the tree (Opt_MT) insert up to OPT_TreeLead positions apart, so when the
 	   positions span more than 2^w(8), the tree's window stops OPT_TreeLead short of it, with one thread as with many:
 	   no walk then reaches a node that another thread may already have taken over. */
 	if ((long long)min(dictSize, f->winC) + (srcLastMatch - source) > (long long)f->maskC + 1) f->winC -= OPT_TreeLead;
-	f->hMaskA = BitMask[min(OffWidth[4] + 2, 20)]; f->hMaskB = BitMask[OffWidth[6]]; f->hMaskC = BitMask[OffWidth[8]];
+	f->hMaskA = BitMask[min(SrchWidth[4] + 2, 20)]; f->hMaskB = BitMask[SrchWidth[6]]; f->hMaskC = BitMask[SrchWidth[8]];
 	f->headA = (int*)malloc(((size_t)f->hMaskA + 1) * sizeof(int));
 	f->headB = (int*)malloc(((size_t)f->hMaskB + 1) * sizeof(int));
 	f->headC = (int*)malloc(((size_t)f->hMaskC + 1) * sizeof(int));
@@ -2843,9 +2845,9 @@ static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const
 	const Uint32 chain2Mask = wzipStr->chain2Mask;
 	const int hash1Len = wzipStr->hash1Len;
 	const int hash2Len = wzipStr->hash2Len;
-	const int reach0 = min(WINDOW(OffWidth[3]), WZL_PrimeBytes);
-	const int reach1 = chain1Mask ? WINDOW(OffWidth[hash2Len - 1]) : min(WINDOW(OffWidth[hash2Len - 1]), WZL_PrimeBytes);
-	const int reach2 = chain2Mask ? WINDOW(OffWidth[8]) : min(WINDOW(OffWidth[8]), WZL_PrimeBytes);
+	const int reach0 = min(WINDOW(SrchWidth[3]), WZL_PrimeBytes);
+	const int reach1 = chain1Mask ? WINDOW(SrchWidth[hash2Len - 1]) : min(WINDOW(SrchWidth[hash2Len - 1]), WZL_PrimeBytes);
+	const int reach2 = chain2Mask ? WINDOW(SrchWidth[8]) : min(WINDOW(SrchWidth[8]), WZL_PrimeBytes);
 	const int from0 = max(from, -reach0), from1 = max(from, -reach1), from2 = max(from, -reach2);
 
 	int hashV, dist, matchIdx;
@@ -2906,6 +2908,19 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	while (n > 0 && OffWidth[n] == OffWidth[n - 1]) 
 		n--;
 	wzipStr->hash2Len = n;
+	/* The encoder searches the input's windows under the level's cap (WZIP_LEVEL_WINDOW_LOG): the widest window is cut
+	   to the cap, and each narrower one moves down just enough to stay below the next wider one, so that the windows
+	   keep their order (lengths with equal windows keep them equal, and longer matches reach further). Its tables and
+	   match finders follow SrchWidth; the stream keeps the input's windows, which set its offset codes, so decoders need
+	   no level. With SrchWidth <= OffWidth for every length, every match found fits its length's window. */
+	{
+		int prev = WZIP_LEVEL_WINDOW_LOG(level) + 1;              /* the cut of the next wider window, plus one */
+		for (int k = 8; k >= 3; k--) {
+			if (k == 8 || OffWidth[k] != OffWidth[k + 1]) prev = min(OffWidth[k], prev - 1);
+			SrchWidth[k] = prev;
+		}
+		SrchWidth[0] = SrchWidth[1] = SrchWidth[2] = 0;
+	}
 	
 
 	if (wzipStr->hash2Len>=7) {
@@ -2918,9 +2933,9 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 	Set_Offset_Groups(S_, wzipStr->hash2Len - MinMatchLen + 1, OffGroupsFine);
 	
 
-	wzipStr->hash0Mask = BitMask[OffWidth[3] + 4];
-	wzipStr->hash1Mask = BitMask[level > 1 ? OffWidth[wzipStr->hash2Len-1] : min(OffWidth[wzipStr->hash2Len-1], L0_HashLog)];
-	wzipStr->hash2Mask = BitMask[level > 1 ? OffWidth[8] : min(OffWidth[8], L0_HashLog)];
+	wzipStr->hash0Mask = BitMask[SrchWidth[3] + 4];
+	wzipStr->hash1Mask = BitMask[level > 1 ? SrchWidth[wzipStr->hash2Len-1] : min(SrchWidth[wzipStr->hash2Len-1], L0_HashLog)];
+	wzipStr->hash2Mask = BitMask[level > 1 ? SrchWidth[8] : min(SrchWidth[8], L0_HashLog)];
 	if (level <= 1 && level >= 0) {		
 		wzipStr->chain1Mask = 0;
 		wzipStr->chain2Mask = 0;
@@ -2930,8 +2945,8 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 		   optimal parser at equal speed) */
 		static const int lazyDepth[7] = { 0, 0, 4, 16, 8, 16, 64 };
 		wzipStr->maxSearchCnt = level >= 7 ? OPT_LevelDepth[level - 7] : lazyDepth[level];
-		wzipStr->chain1Mask = level > 3 ? BitMask[OffWidth[wzipStr->hash2Len - 1]] : 0;
-		wzipStr->chain2Mask = BitMask[OffWidth[8]];
+		wzipStr->chain1Mask = level > 3 ? BitMask[SrchWidth[wzipStr->hash2Len - 1]] : 0;
+		wzipStr->chain2Mask = BitMask[SrchWidth[8]];
 	}
 	else {
 		fprintf(stderr, "compression level must be in [0, 13]\n");

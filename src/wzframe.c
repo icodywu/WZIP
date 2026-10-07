@@ -149,7 +149,7 @@ static int frame_windowLog(const WZF_params* p, unsigned long long contentSize)
 {
 	if (p->codec != WZF_CODEC_WZIP || p->windowLog < 0) return 0;
 	if (p->windowLog) return p->windowLog;
-	return split_by_threads(p, contentSize) && p->level > 0 ? WZF_WINDOWLOG_MAX : 0;
+	return split_by_threads(p, contentSize) && p->level > 0 ? WZIP_LEVEL_WINDOW_LOG(p->level) : 0;   /* the level's window */
 }
 
 /* blockLog 0: one block for the content, up to 1 GiB, or for content of unknown size the codec's widest window; blocks

@@ -8,8 +8,9 @@ unless a file name says `checked`.
 ## AMD EPYC 9334 (the paper's and the README's numbers)
 
 Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see `bench/README.md`), one run per
-8-core complex, on 2026-10-07: every codec with the code of commit 37c074a, then WZIP again with c538931 (its
-finder's single-thread fix), whose lines replace WZIP's. The paper's tables are `gen_tables.py` applied to
+8-core complex, on 2026-10-07: every codec with the code of commit 37c074a; then WZIP and WLZ4 again with the level
+windows (each level its own window, `CHANGELOG.md`), in both runs, whose lines replace theirs (enwik9 also gained
+WZIP 12). The other codecs' lines are those of the first runs. The paper's tables are `gen_tables.py` applied to
 `epyc_*` and `epyc_control_*` together:
 
 | File | Contents |
@@ -27,8 +28,8 @@ Threads (not in the paper's tables; the README's "Threads"):
 
 | File | Contents |
 |---|---|
-| `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's |
-| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB beyond); then one 64 MiB block of enwik9 with and without its 128 MiB dictionary, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10) |
+| `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's (level windows) |
+| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB with the level's window beyond); then one 64 MiB block of enwik9 at level 11 without a dictionary, with its level's 32 MiB window and with 128 MiB, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10); all with the level windows |
 
 ## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)
 
