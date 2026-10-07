@@ -162,6 +162,7 @@ def read_table(bits, wcode, n, cap):
 def decode_literals(data, pos, count):
     """count literals in blocks of 32768; returns (literals, position after the stream)"""
     out = bytearray()
+    code = None                                          # the code of the last block of type 1
     while len(out) < count:
         size = min(32768, count - len(out))
         if pos >= len(data):
@@ -173,13 +174,18 @@ def decode_literals(data, pos, count):
             out += data[pos + 1:pos + 1 + size]
             pos += 1 + size
             continue
+        if kind > 2:
+            raise ValueError('reserved literal block type')
         body_size = int.from_bytes(data[pos + 1:pos + 3], 'little')
         bits = Bits(data, pos + 3)
-        wcode = read_weight_code(bits)
-        lengths = read_lengths_by_code(bits, wcode, 256)
-        if check_code(lengths, 12) <= 0:
-            raise ValueError('empty literal code')
-        code = Code(lengths)
+        if kind == 1:                                    # a code of its own
+            wcode = read_weight_code(bits)
+            lengths = read_lengths_by_code(bits, wcode, 256)
+            if check_code(lengths, 12) <= 0:
+                raise ValueError('empty literal code')
+            code = Code(lengths)
+        elif code is None:                               # 2: the code of the last block of type 1
+            raise ValueError('a literal block reuses a code before any')
         body = bits.align()
         end = body + body_size
         if end > len(data):
@@ -319,13 +325,22 @@ def decode_l(data, n, dictionary=b''):
     lp = 0
     out = bytearray()
     cache = [0x7F7F7F7F] * 4
+    lr_code, joint, joint_sj, off_codes = None, None, None, [None] * len(gsize)    # the codes last sent
     while len(out) < n:                                  # sequence blocks (5.4)
         bits = Bits(data, pos)
         slot_joint = bits.read(1)
-        wcode = read_weight_code(bits)
-        lr_code = read_table(bits, wcode, 71, 11)
-        joint = read_table(bits, wcode, 1020 if slot_joint else 204, 11)
-        off_codes = [read_table(bits, wcode, gsize[g], 10) for g in range(len(gsize))]
+        reuse = [bits.read(1) for _ in range(2 + len(gsize))]
+        if (reuse[0] and lr_code is None) or (reuse[1] and joint_sj != slot_joint) or                 any(reuse[2 + g] and off_codes[g] is None for g in range(len(gsize))):
+            raise ValueError('a sequence block reuses a code not sent before')
+        if not all(reuse):
+            wcode = read_weight_code(bits)
+            if not reuse[0]:
+                lr_code = read_table(bits, wcode, 71, 11)
+            if not reuse[1]:
+                joint, joint_sj = read_table(bits, wcode, 1020 if slot_joint else 204, 11), slot_joint
+            for g in range(len(gsize)):
+                if not reuse[2 + g]:
+                    off_codes[g] = read_table(bits, wcode, gsize[g], 10)
         bits = Bits(data, bits.align())
         done = False
         for _ in range(16384):

@@ -27,15 +27,16 @@
 \draw[brc] (sb1.north west) -- (sb3.north east) node[midway, above=4pt, font=\footnotesize] {until $n$ bytes are decoded};
 \node[anchor=west] at (-0.1,-5.9) {(c) a sequence block};
 \node[fld, fill=hdr, minimum width=10mm, align=center] (sj) at (0.5,-7.45) {1\\[-1pt]\footnotesize bit};
-\node[fld, fill=tab, minimum width=18mm, right=of sj, align=center] (wc) {weight\\[-1pt]code};
+\node[fld, fill=hdr, minimum width=14mm, right=of sj, align=center] (ru) {reuse\\[-1pt]\footnotesize 1 bit a code};
+\node[fld, fill=tab, minimum width=18mm, right=of ru, align=center] (wc) {weight\\[-1pt]code};
 \node[fld, fill=tab, minimum width=18mm, right=of wc, align=center] (t1) {literal-run\\[-1pt]code};
 \node[fld, fill=tab, minimum width=16mm, right=of t1, align=center] (t2) {joint\\[-1pt]code};
 \node[fld, fill=tab, minimum width=22mm, right=of t2, align=center] (t3) {offset codes\\[-1pt]\footnotesize one per group};
 \node[fld, fill=tok, minimum width=40mm, right=3mm of t3, align=center] (sq) {sequences\\[-1pt]\footnotesize up to 16\,384};
 \draw[brc] (sj.north west) -- (t3.north east) node[midway, above=4pt, font=\footnotesize] {header bit stream, aligned};
+\draw[mbrc] (wc.south west) -- (t3.south east) node[midway, below=4pt, font=\footnotesize] {only the codes the block sends};
 \draw[brc] (sq.north west) -- (sq.north east) node[midway, above=4pt, font=\footnotesize] {bit stream, aligned};
 \node[below=1.5mm of sj, font=\footnotesize, align=center] {slot-joint\\or classic};
-\node[below=1.5mm of t2, font=\footnotesize, align=center] {1020 or 204\\symbols};
 \end{tikzpicture}
 
 %% 2. wzip-parse: a parse, its literal stream and its sequences
@@ -127,7 +128,7 @@
 \node[anchor=west] at (-0.1,1.0) {(a) a stored block};
 \node[fld, fill=hdr, minimum width=8mm] (s0) at (0.4,0) {\texttt{0}};
 \node[fld, fill=lit, minimum width=70mm, right=of s0] {the literals (up to 32\,768)};
-\node[anchor=west] at (-0.1,-1.3) {(b) a Huffman block};
+\node[anchor=west] at (-0.1,-1.3) {(b) a Huffman block of type 1};
 \node[fld, fill=hdr, minimum width=8mm] (h0) at (0.4,-2.3) {\texttt{1}};
 \node[fld, fill=hdr, minimum width=12mm, right=of h0, align=center] (hb) {$B$\\[-1pt]\footnotesize 2 bytes};
 \node[fld, fill=tab, minimum width=40mm, right=of hb, align=center] (hc) {weight code; 256 literal\\[-1pt]code lengths; aligned};
@@ -139,7 +140,7 @@
 \draw[brc] (he.north west) -- (q3.north east) node[midway, above=4pt, font=\footnotesize] {body: $B$ bytes};
 \draw[mbrc] (q0.south west) -- (q2.south east) node[midway, below=4pt, font=\footnotesize] {$q = (\mathit{size} \gg 4) \ll 2$ literals each};
 \draw[mbrc] (q3.south west) -- (q3.south east) node[midway, below=4pt, font=\footnotesize, align=center] {the other\\$\mathit{size}-3q$};
-\node[anchor=west, font=\footnotesize, align=left] at (-0.1,-4.25) {$e_0 \le e_1 \le e_2$ ($u16$ each): the ends of streams 0--2, counted from byte 6 of the body, where stream 0 starts.\\A block of fewer than 512 literals has one stream and no $e_k$. Each stream is a bit stream of literal codes, aligned at its end.};
+\node[anchor=west, font=\footnotesize, align=left] at (-0.1,-4.25) {$e_0 \le e_1 \le e_2$ ($u16$ each): the ends of streams 0--2, counted from byte 6 of the body, where stream 0 starts.\\A block of fewer than 512 literals has one stream and no $e_k$. Each stream is a bit stream of literal codes, aligned at its end.\\A block of type \texttt{2} lacks the code lengths: it reuses the code of the stream's last block of type \texttt{1}.};
 \end{tikzpicture}
 
 %% 6. wzip-codes: a canonical code, and code lengths coded by the weight code

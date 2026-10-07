@@ -330,6 +330,29 @@ int Count_Huffman_Weight_Frequency(HufCode_Str* litHuf, const Uint32 hufCodeSize
 	return (Uint32)(hufWtSeqPtr - hufWtSeq);
 }
 
+/* the bits Write_Huffman_Header_byHuffman writes for the weight sequence hufWtSeq[0, seqSize) */
+Uint32 Huffman_Header_Bits(const HufCode_Str* hufLenHufStr, const Uint8* hufWtSeq, int seqSize)
+{
+	const Uint32 repZeroSym = MAX_HufWeight + 2;
+	const Uint32 repLenSym = MAX_HufWeight + 1;
+	const Uint8* p = hufWtSeq;
+	const Uint8* const end = hufWtSeq + seqSize;
+	Uint32 bits = 0;
+	while (p < end) {
+		const Uint32 nBits = *p++;
+		bits += hufLenHufStr[nBits].nbits;
+		if (repZeroSym == nBits) {
+			const Uint32 repZero = 1 + *p++;
+			bits += 3 + (repZero >= 9 ? 6 + (repZero - 9 >= 63 ? 8 : 0) : 0);
+		}
+		else if (repLenSym == nBits) {
+			const Uint32 repLen = *p++ - 2u;
+			bits += 2 + (repLen >= 3 ? 4 + (repLen - 3 >= 15 ? 8 : 0) : 0);
+		}
+	}
+	return bits;
+}
+
 /*Write Huffman header which is also Huffman coded.
   It contains two special elements, one is the number of repeated zeros (at least 2).
   The other is the number of repeated non-zero elements (at least 2). */
@@ -464,38 +487,68 @@ Uint32  Huffman_Compress4X_Kernel(const void* srcStart, Uint32 srcSize, void* de
 	return resSegSize[3] + 6;
 }
 
-Uint32  Huffman_Compress_Block(const void* srcStart, Uint32 srcSize, void* dest, Huffman_Str* litHuf, Uint32 nLits, Uint32 litHufCapBits)
+/* bits of the symbols counted in h under code; UINT64_MAX if code lacks one of them */
+Uint64 Huffman_Code_Bits(const Huffman_Str* h, const HufCode_Str* code, const Uint32 n)
+{
+	Uint64 bits = 0;
+	for (Uint32 k = 0; k < n; k++)
+		if (h[k].freq) {
+			if (0 == code[k].nbits) return UINT64_MAX;
+			bits += (Uint64)h[k].freq * code[k].nbits;
+		}
+	return bits;
+}
+
+/* Codes a block of literals: stored (type 0), with a code of its own whose lengths the block carries (type 1), or
+   with the code of the last type-1 block of the stream, prev (type 2), whichever is smallest; a type-1 block becomes
+   prev. litHuf: the block's literal counts. prev may be NULL (no type 2). */
+Uint32 Huffman_Compress_Block_Rep(const void* srcStart, Uint32 srcSize, void* dest, Huffman_Str* litHuf, Uint32 nLits,
+	Uint32 litHufCapBits, Huffman_Prev* prev)
 {
 	HufCode_Str litHufCode[MAX_HufSize];
 	Huffman_Str hufHufStr[MAX_HufWeight + 3] = { 0 };
 	HufCode_Str hufHufCode[MAX_HufWeight + 3];
 	Uint8 hufWtSeq[MAX_HufSize];
+	Uint8 header[HUF_HeaderBound];
 	Uint8* destPtr = (Uint8*)dest;
 	Uint32 comprSize;
 
 	const Uint32 estSize = (Uint32)Build_Huffman_Table(litHuf, nLits, litHufCapBits, litHufCode);    /* coded size in bytes, no header */
-	if ( estSize >= srcSize || srcSize<64 ) {     /* incompressible scenario */
-		*destPtr++ = 0; 
+	const Uint64 prevBits = prev && prev->valid ? Huffman_Code_Bits(litHuf, prev->code, nLits) : UINT64_MAX;
+	Uint32 headerSize = 0;
+	if (estSize < srcSize && srcSize >= 64) {            /* the header of a code of its own */
+		const Uint32 seqSize = Count_Huffman_Weight_Frequency(litHufCode, nLits, hufHufStr, hufWtSeq);
+		Build_Huffman_Table(hufHufStr, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCode);
+		Bit_Stream bitStream = { 0, 0, header };
+		Write_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCode);
+		Write_Huffman_Header_byHuffman(&bitStream, hufHufCode, hufWtSeq, seqSize);
+		BITStream_Write_FlushEnd(bitStream);
+		headerSize = (Uint32)(bitStream.streamPtr - header);
+	}
+	/* sizes past the type byte and body size: the previous code's, a new one's; the previous code also where a
+	   new one would not pay for its header (as on a short last block) */
+	const Uint64 repSize = prevBits == UINT64_MAX ? UINT64_MAX : (prevBits + 7) / 8;
+	const Uint64 newSize = headerSize ? (Uint64)headerSize + estSize : UINT64_MAX;
+	const int useRep = repSize <= newSize;
+	if ((useRep ? repSize : newSize) >= srcSize) {       /* incompressible scenario */
+		*destPtr++ = 0;
 		MemWildCopy( destPtr, srcStart, destPtr + srcSize );
 		return srcSize + 1;
 	}
 
 	/*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Huffman Compression ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-	*destPtr++ = 1;                        /* note the remaining 7 bits are unused for now */
-	Uint32 seqSize = Count_Huffman_Weight_Frequency(litHufCode, nLits, hufHufStr, hufWtSeq);
-	Build_Huffman_Table(hufHufStr, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCode);
-	Bit_Stream bitStream = { 0, 0, destPtr + 2 };         /* the first 2 bytes are reserved to record the compressed size */
-	Write_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCode);
-	Write_Huffman_Header_byHuffman(&bitStream, hufHufCode, hufWtSeq, seqSize);
-	BITStream_Write_FlushEnd(bitStream);
-
-	destPtr = bitStream.streamPtr;
-
+	*destPtr++ = useRep ? 2 : 1;
+	destPtr += 2;                                        /* the body's size */
+	if (!useRep) {
+		memcpy(destPtr, header, headerSize);
+		destPtr += headerSize;
+	}
+	const HufCode_Str* const code = useRep ? prev->code : litHufCode;
 	if (srcSize >= MinStream4XSize) {
-		comprSize = Huffman_Compress4X_Kernel(srcStart, srcSize, destPtr, litHufCode);
+		comprSize = Huffman_Compress4X_Kernel(srcStart, srcSize, destPtr, (HufCode_Str*)code);
 	}
 	else {
-		comprSize = Huffman_Compress1X_Kernel(srcStart, srcSize, destPtr, litHufCode);
+		comprSize = Huffman_Compress1X_Kernel(srcStart, srcSize, destPtr, (HufCode_Str*)code);
 	}
 
 	if ( comprSize >= (Uint32)(0.99 * srcSize) ) {    /* nearly incompressible, then abandon compression */
@@ -508,8 +561,17 @@ Uint32  Huffman_Compress_Block(const void* srcStart, Uint32 srcSize, void* dest,
 	assert(comprSize < (1u << 16));                      /* below 0.99 of a block of at most 64K literals */
 	MemWriteLE2((Uint8*)dest+1, (Uint16)comprSize);            /* Record the compressed literal size, excluding Huffman header */
 	destPtr += comprSize;                              /* it is used to determine the decompressor type  */
+	if (!useRep && prev) {
+		memcpy(prev->code, litHufCode, nLits * sizeof(HufCode_Str));
+		prev->valid = 1;
+	}
 
 	return (Uint32)(destPtr - (Uint8*)dest);            /* The second part is the size of the Huffman header */
+}
+
+Uint32  Huffman_Compress_Block(const void* srcStart, Uint32 srcSize, void* dest, Huffman_Str* litHuf, Uint32 nLits, Uint32 litHufCapBits)
+{
+	return Huffman_Compress_Block_Rep(srcStart, srcSize, dest, litHuf, nLits, litHufCapBits, NULL);
 }
 
 Uint32 Huffman_Compress(const void* srcStart, Uint32 srcSize, void* dest, Uint32 nLits, Uint32 litHufCapBits)

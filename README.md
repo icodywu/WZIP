@@ -9,8 +9,8 @@ before offsets, so the decoder knows each match's window and no extra field is s
 - **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only), in three formats, because what pays on a
   large input costs too much on a small one ([comparison](#the-three-wzip-variants)):
   - **WZIP_L**, for inputs of 32 KB and more, sizes its windows to the input (up to 128 MB) and sends fresh Huffman
-    tables, among them a 1020-symbol joint code, every 16,384 sequences: rich statistics whose description pays off
-    on a large input.
+    tables, among them a 1020-symbol joint code, every 16,384 sequences, or reuses the last ones where they cost
+    fewer bits: rich statistics whose description pays off on a large input.
   - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
     that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
   - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
@@ -57,7 +57,7 @@ twice, on identical nodes; speeds are the best of both runs (of 3 compressions f
 raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
 them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
 `results/`), gave the same ratios at lower speeds. WZIP and WLZ4 decode in their trusted mode here, as in the paper
-(see Usage); their default, bounds-checked decoders are 5-8% (WZIP) and at most 9% (WLZ4) slower on Silesia.
+(see Usage); their default, bounds-checked decoders are 3-4% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress | Memory (MB) |
 |---|---:|---:|---:|---:|
@@ -66,8 +66,8 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | **WLZ4 12** | 3.186 | 1.71 | 3504 | 41 |
 | Zstandard 19 | 4.005 | 3.54 | 1389 | 82 |
 | Zstandard 22 | 4.045 | 2.53 | 1310 | 642 |
-| **WZIP 11** | 4.078 | 1.70 | 1121 | 566 |
-| **WZIP 13** | 4.097 | 0.78 | 1062 | 952 |
+| **WZIP 11** | 4.079 | 1.69 | 1124 | 566 |
+| **WZIP 13** | 4.097 | 0.77 | 1059 | 949 |
 | Brotli 11 | 4.276 | 0.68 | 505 | 241 |
 | xz -9e | 4.374 | 2.42 | 149 | 505 |
 
@@ -75,9 +75,9 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 |---|---:|---:|---:|---:|
 | Zstandard 22 | 4.676 | 1.41 | 966 | 649 |
 | xz -9e | 4.722 | 1.42 | 166 | 674 |
-| **WZIP 11** | 4.505 | 1.23 | 1115 | 745 |
-| **WZIP 12** | 4.644 | 0.90 | 1056 | 1256 |
-| **WZIP 13** | 4.759 | 0.47 | 958 | 2102 |
+| **WZIP 11** | 4.506 | 1.21 | 1114 | 550 |
+| **WZIP 12** | 4.645 | 0.88 | 1047 | 1062 |
+| **WZIP 13** | 4.760 | 0.47 | 955 | 1911 |
 
 Memory is the encoder's (the growth of the peak resident set while compressing). **Each level has its own window**,
 which sizes the encoder's tables: WZIP searches 2^27 bytes back at the top level of each parser (lazy 6, optimal 13)
@@ -216,9 +216,9 @@ class of lengths, each with its own window: a 3-byte chain for lengths 3-4, a 5-
 binary tree for lengths 7 and up. They depend only on the input, not on the parse, so with `-T` each runs in a thread
 of its own, ahead of the parser, which takes their candidates in order; the tree, the slowest, is one tree per hash
 bucket, and splits further among up to four threads by bucket. The input is not cut, and the output is byte for byte
-that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.38 times as
-fast with 4 threads and 2.97 times with 6, and enwik8 2.20 and 3.43 times with 4 and 6; level 7 Silesia 2.25 times,
-level 13 2.33 times. With 5 threads or more the parser is the slowest stage.
+that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.39 times as
+fast with 4 threads and 2.98 times with 6, and enwik8 2.34 and 3.61 times with 4 and 6; level 7 Silesia 2.42 times,
+level 13 2.39 times. With 5 threads or more the parser is the slowest stage.
 
 More threads than one block uses (at levels 0-6, more than one) go to blocks: content over 64 MiB, or from a pipe,
 is cut into blocks of 64 MiB, compressed at once, each **linked** to the content before it within the level's window,
@@ -229,12 +229,12 @@ EPYC 9334, threads unpinned:
 
 | enwik9 | 1 thread | 8 threads | 16 threads | 105 threads | ratio, one stream / blocks |
 |---|---|---|---|---|---|
-| level 1 | 122 MB/s | 714 MB/s | 1432 MB/s | | 3.3437 / 3.3428 |
-| level 5 | 8.44 MB/s | 37.3 MB/s | 61.1 MB/s | | 4.0916 / 4.0915 |
-| level 11 | 1.21 MB/s | 6.90 MB/s | 10.8 MB/s | 21.1 MB/s | 4.5053 / 4.5050 |
-| level 13 | 0.47 MB/s | | | 6.41 MB/s | 4.7592 / 4.7585 |
+| level 1 | 124 MB/s | 719 MB/s | 1415 MB/s | | 3.3446 / 3.3436 |
+| level 5 | 8.43 MB/s | 38.6 MB/s | 55.5 MB/s | | 4.0929 / 4.0928 |
+| level 11 | 1.22 MB/s | 7.12 MB/s | 10.3 MB/s | 21.4 MB/s | 4.5062 / 4.5059 |
+| level 13 | 0.47 MB/s | | | 6.56 MB/s | 4.7596 / 4.7589 |
 
-(Level 13 with one thread: the benchmark above.) Linked blocks decode in one thread, 2-5% slower than one stream,
+(Level 13 with one thread: the benchmark above.) Linked blocks decode in one thread, 2-4% slower than one stream,
 with the level's window and a block in memory (`results/epyc_linked.txt`).
 
 ## Python
@@ -343,7 +343,7 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 5-8% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
+On Silesia the trusted mode decodes 3-4% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
 on the laptop). Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
@@ -352,9 +352,9 @@ a prepared WZIP_S dictionary may be shared.
 
 ## Limitations
 
-- WZIP's encoder memory follows the level's window: on a 50 MB input about 570 MB at level 11 and 950 MB at 12-13,
-  on enwik9 0.75, 1.3 and 2.1 GB at levels 11, 12 and 13 (Zstandard 22: 0.65 GB). The ratio of a large input drops
-  with the window (enwik9: 4.759, 4.644, 4.505 at levels 13, 12, 11). A codec stream holds at most 2 GB, and windows
+- WZIP's encoder memory follows the level's window: on a 50 MB input about 570 MB at level 11 and 940-950 MB at
+  12-13, on enwik9 0.55, 1.06 and 1.9 GB at levels 11, 12 and 13 (Zstandard 22: 0.65 GB). The ratio of a large input drops
+  with the window (enwik9: 4.760, 4.645, 4.506 at levels 13, 12, 11). A codec stream holds at most 2 GB, and windows
   reach 128 MB; the WZ frame stores larger content as several blocks.
 - A WZIP_L literal run holds at most 2^24 - 1 bytes: an input with about 16 MB in which no match is found (and data
   after it worth compressing) is stored rather than compressed.

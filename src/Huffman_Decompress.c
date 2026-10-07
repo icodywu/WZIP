@@ -991,40 +991,110 @@ void Huffman_Decompress_Block_Body(Uint8* litHufCodeBits, int nLits, Uint32 maxL
 
 #define HUF_HeaderSpan   1024        /* the code-length header of a block reads fewer bytes than this */
 
-/* Decodes a Huffman-coded block from src, which is readable up to src + span; avail: the bytes of the input there.
-   Returns the bytes the block takes, or -1 if it is corrupt. */
-static int Huffman_Decode_Block(const Uint8* const src, const size_t avail, Uint8* dest, const Uint32 destSize, const int nLits)
+/* Decodes a block's body with the state's code, reusing the table built from it where that serves: a new code gets
+   the table the block's sizes favour, and blocks that reuse the code keep it (either table decodes a four-stream
+   block; a one-stream block needs x1). */
+static void Huffman_Decompress_Body_State(Huffman_DecState* const st, const int nLits, Uint8* cmprBuffer, const Uint32 cmprSize,
+	Uint8* decBuffer, const Uint32 decSize)
+{
+	if (decSize < MinStream4XSize) {                     /* one stream */
+		if (st->table != 1) {
+			Build_Huffman_DecTableX1(nLits, st->maxBits, st->bits, st->x1);
+			st->table = 1;
+		}
+		HUF_KERNEL(Huffman_DecompressX1_Kernel)(cmprBuffer, decBuffer, decSize, st->maxBits, st->x1);
+		return;
+	}
+	if (0 == st->table) {
+		Uint32 bitsX2 = st->maxBits;
+		if (Huffman_Select_Decompressor(cmprSize, decSize, st->maxBits, &bitsX2)) {
+			Build_Huffman_DecTableX2(nLits, st->maxBits, st->bits, st->x2, bitsX2);
+			st->table = 2;
+			st->tableBits = bitsX2;
+		}
+		else {
+			Build_Huffman_DecTableX1(nLits, st->maxBits, st->bits, st->x1);
+			st->table = 1;
+		}
+	}
+	if (2 == st->table) HUF_KERNEL(Huffman_Decompress4X2_Kernel)(cmprBuffer, decBuffer, decSize, st->tableBits, st->x2);
+	else HUF_KERNEL(Huffman_Decompress4X1_Kernel)(cmprBuffer, decBuffer, decSize, st->maxBits, st->x1);
+}
+
+static Huffman_DecState* Huffman_DecState_New(void)
+{
+	Huffman_DecState* const st = (Huffman_DecState*)malloc(sizeof(Huffman_DecState));
+	if (st) { st->valid = 0; st->table = 0; }
+	return st;
+}
+
+/* Checks the body of the block at src, bodyOff bytes in: its size (MemReadLE2(src + 1)) within avail, and the starts
+   of its streams. Returns bodyOff, or -1 if the block is corrupt. */
+static int Huffman_Check_Body(const Uint8* const src, const size_t avail, const Uint32 destSize, const size_t bodyOff)
 {
 	const Uint32 comprSize = MemReadLE2(src + 1);
-	Bit_Stream bitStream;
-	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(src + 3);
-	bitStream.streamPtr = (Uint8*)src + 3;
-	Uint8 hufHufCodeBits[MAX_HufWeight + 3], litHufCodeBits[MAX_HufSize];
-	Huffman_DemapX1 hufHufCodeDemapX1[1 << MAX_HufHufWt];
-	const int maxHufHufCodeBits = Huffman_Read_Code(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCodeBits);
-	if (maxHufHufCodeBits <= 0) return -1;
-	Build_Huffman_DecTableX1(MAX_HufWeight + 3, (Uint32)maxHufHufCodeBits, hufHufCodeBits, hufHufCodeDemapX1);
-	const int maxHufCodeBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxHufHufCodeBits, hufHufCodeDemapX1, (Uint32)nLits,
-		MAX_HufWeight, litHufCodeBits);
-	if (maxHufCodeBits <= 0) return -1;
-
-	BITStream_Read_FlushEnd(bitStream);
-	const Uint8* const body = bitStream.streamPtr;
-	if ((size_t)(body - src) + comprSize > avail) return -1;
+	if (bodyOff + comprSize > avail) return -1;
 	if (destSize >= MinStream4XSize) {                   /* four streams: the starts of the last three, in order */
+		const Uint8* const body = src + bodyOff;
 		if (comprSize < 6) return -1;
 		const Uint32 s0 = MemReadLE2(body), s1 = MemReadLE2(body + 2), s2 = MemReadLE2(body + 4);
 		if (s0 > s1 || s1 > s2 || s2 > comprSize - 6) return -1;
 	}
-	Huffman_Decompress_Block_Body(litHufCodeBits, nLits, (Uint32)maxHufCodeBits, -1, (Uint8*)body, comprSize, dest, destSize);
-	return (int)(body + comprSize - src);
+	return (int)bodyOff;
+}
+
+/* Reads and checks the header of a block of type 1 at src, which is readable up to src + 3 + HUF_HeaderSpan; avail:
+   the bytes of the input there. Returns the offset of the block's body from src, with the code lengths in
+   litHufCodeBits and their maximum in *maxBits, or -1 if the block is corrupt. */
+static int Huffman_Block_Header(const Uint8* const src, const size_t avail, const Uint32 destSize, const int nLits,
+	Uint8* litHufCodeBits, int* maxBits)
+{
+	Bit_Stream bitStream;
+	bitStream.nUsedBits = 0;
+	bitStream.container = MemReadBE8(src + 3);
+	bitStream.streamPtr = (Uint8*)src + 3;
+	Uint8 hufHufCodeBits[MAX_HufWeight + 3];
+	Huffman_DemapX1 hufHufCodeDemapX1[1 << MAX_HufHufWt];
+	const int maxHufHufCodeBits = Huffman_Read_Code(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCodeBits);
+	if (maxHufHufCodeBits <= 0) return -1;
+	Build_Huffman_DecTableX1(MAX_HufWeight + 3, (Uint32)maxHufHufCodeBits, hufHufCodeBits, hufHufCodeDemapX1);
+	*maxBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxHufHufCodeBits, hufHufCodeDemapX1, (Uint32)nLits,
+		MAX_HufWeight, litHufCodeBits);
+	if (*maxBits <= 0) return -1;
+	BITStream_Read_FlushEnd(bitStream);
+	return Huffman_Check_Body(src, avail, destSize, (size_t)(bitStream.streamPtr - src));
+}
+
+/* Decodes a Huffman-coded block (type 1 or 2) from src, which is readable up to src + span; avail: the bytes of the
+   input there. Returns the bytes the block takes, or -1 if it is corrupt. */
+static int Huffman_Decode_Block(const Uint8* const src, const size_t avail, Uint8* dest, const Uint32 destSize, const int nLits,
+	Huffman_DecState* const st)
+{
+	int bodyOff;
+	if (1 == src[0]) {                                   /* a code of its own */
+		int maxBits;
+		st->valid = 0;
+		bodyOff = Huffman_Block_Header(src, avail, destSize, nLits, st->bits, &maxBits);
+		if (bodyOff < 0) return -1;
+		st->maxBits = (Uint32)maxBits;
+		st->valid = 1;
+		st->table = 0;
+	}
+	else {                                               /* the code of the last type-1 block */
+		if (!st->valid) return -1;
+		bodyOff = Huffman_Check_Body(src, avail, destSize, 3);
+		if (bodyOff < 0) return -1;
+	}
+	const Uint32 comprSize = MemReadLE2(src + 1);
+	Huffman_Decompress_Body_State(st, nLits, (Uint8*)src + bodyOff, comprSize, dest, destSize);
+	return bodyOff + (int)comprSize;
 }
 
 /* A corrupt stream consumes at most 12 bits a literal (the longest code), so a block reads at most its header, its
    body and 1.5 destSize + 64 bytes more: a block nearer than that to the end of the input is decoded from a
    zero-padded copy, and no decoder loop needs a bounds check. */
-static int Huffman_Decompress_Block(const Uint8* const src, const Uint8* const srcEnd, Uint8* dest, const Uint32 destSize, const int nLits)
+static int Huffman_Decompress_Block(const Uint8* const src, const Uint8* const srcEnd, Uint8* dest, const Uint32 destSize, const int nLits,
+	Huffman_DecState* const st)
 {
 	const size_t avail = (size_t)(srcEnd - src);
 	if (avail < 1) return -1;
@@ -1033,14 +1103,14 @@ static int Huffman_Decompress_Block(const Uint8* const src, const Uint8* const s
 		memcpy(dest, src + 1, destSize);
 		return (int)destSize + 1;
 	}
-	if (avail < 3) return -1;
+	if (src[0] > 2 || avail < 3) return -1;              /* types 3-255 are reserved */
 	const size_t span = 3 + HUF_HeaderSpan + MemReadLE2(src + 1) + (size_t)destSize + destSize / 2 + 64;
-	if (avail >= span) return Huffman_Decode_Block(src, avail, dest, destSize, nLits);
+	if (avail >= span) return Huffman_Decode_Block(src, avail, dest, destSize, nLits, st);
 	Uint8* const copy = (Uint8*)malloc(span);
 	if (NULL == copy) return -1;
 	memcpy(copy, src, avail);
 	memset(copy + avail, 0, span - avail);
-	const int r = Huffman_Decode_Block(copy, avail, dest, destSize, nLits);
+	const int r = Huffman_Decode_Block(copy, avail, dest, destSize, nLits, st);
 	free(copy);
 	return r;
 }
@@ -1051,12 +1121,71 @@ int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32
 	const Uint8* srcPtr = (const Uint8*)source;
 	const Uint8* const srcEnd = srcPtr + (srcSize > 0 ? srcSize : 0);
 	Uint8* destPtr = (Uint8*)dest;
+	Huffman_DecState* const st = Huffman_DecState_New();
+	if (NULL == st) return -1;
 	while (destSize > 0) {
 		const Uint32 n = destSize < HUF_BlockSize ? destSize : HUF_BlockSize;
-		const int r = Huffman_Decompress_Block(srcPtr, srcEnd, destPtr, n, nLits);
-		if (r < 0) return -1;
+		const int r = Huffman_Decompress_Block(srcPtr, srcEnd, destPtr, n, nLits, st);
+		if (r < 0) { free(st); return -1; }
 		srcPtr += r;
 		destPtr += n;
+		destSize -= n;
+	}
+	free(st);
+	return (int)(srcPtr - (const Uint8*)source);
+}
+
+/* Decodes the next block of a literal stream, destSize literals (HUF_BlockSize, or the rest), from src, with st,
+   which the stream's earlier blocks have set (st->valid 0 before the first); the input ends at srcEnd. Returns the
+   bytes the block takes, or -1 if it is corrupt. */
+int Huffman_Decompress_Next(const void* src, const void* srcEnd, void* dest, Uint32 destSize, int nLits, Huffman_DecState* st)
+{
+	return Huffman_Decompress_Block((const Uint8*)src, (const Uint8*)srcEnd, (Uint8*)dest, destSize, nLits, st);
+}
+
+/* The bytes a block of destSize literals at src takes, its header and sizes checked as Huffman_Decompress_Block
+   checks them, without decoding its body; -1 if it is corrupt. *haveCode: whether a block of type 1 came before. */
+static int Huffman_Skip_Block(const Uint8* const src, const Uint8* const srcEnd, const Uint32 destSize, const int nLits, int* haveCode)
+{
+	const size_t avail = (size_t)(srcEnd - src);
+	if (avail < 1) return -1;
+	if (0 == src[0])                                     /* stored */
+		return avail - 1 < destSize ? -1 : (int)destSize + 1;
+	if (src[0] > 2 || avail < 3) return -1;
+	int bodyOff;
+	if (2 == src[0]) {
+		if (!*haveCode) return -1;
+		bodyOff = Huffman_Check_Body(src, avail, destSize, 3);
+	}
+	else {
+		Uint8 litHufCodeBits[MAX_HufSize];
+		int maxBits;
+		if (avail >= 3 + HUF_HeaderSpan)
+			bodyOff = Huffman_Block_Header(src, avail, destSize, nLits, litHufCodeBits, &maxBits);
+		else {                                           /* near the end of the input: from a zero-padded copy */
+			Uint8 copy[3 + HUF_HeaderSpan];
+			memcpy(copy, src, avail);
+			memset(copy + avail, 0, sizeof(copy) - avail);
+			bodyOff = Huffman_Block_Header(copy, avail, destSize, nLits, litHufCodeBits, &maxBits);
+		}
+		*haveCode = 1;
+	}
+	return bodyOff < 0 ? -1 : bodyOff + (int)MemReadLE2(src + 1);
+}
+
+/* The bytes the literal stream of destSize literals at source takes, every block checked as Huffman_Decompress
+   checks it, without decoding them; -1 if it is corrupt. A decoder can so find what follows the literal stream and
+   decode its blocks only when it needs them (Huffman_Decompress_Next). */
+int Huffman_Skip(const void* source, const int srcSize, Uint32 destSize, int nLits)
+{
+	const Uint8* srcPtr = (const Uint8*)source;
+	const Uint8* const srcEnd = srcPtr + (srcSize > 0 ? srcSize : 0);
+	int haveCode = 0;
+	while (destSize > 0) {
+		const Uint32 n = destSize < HUF_BlockSize ? destSize : HUF_BlockSize;
+		const int r = Huffman_Skip_Block(srcPtr, srcEnd, n, nLits, &haveCode);
+		if (r < 0) return -1;
+		srcPtr += r;
 		destSize -= n;
 	}
 	return (int)(srcPtr - (const Uint8*)source);
@@ -1064,33 +1193,38 @@ int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32
 
 /*~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in): the unchecked literal decoder, for WZIP_Decompress_[LM]_Trusted ~~~~~~~~~~~~~~~~~~~*/
 
-static Uint32 Huffman_Decompress_Block_Trusted(const void *source, void* dest, Uint32 destSize, int nLits)
+/* the offset of a type-1 block's body from src, its code read into litHufCodeBits */
+static Uint32 Huffman_Block_Header_Trusted(const Uint8* const src, const int nLits, Uint8* litHufCodeBits, Uint32* maxBits)
 {
-	Uint8* srcPtr = (Uint8*)source;
-	Uint8* destPtr = (Uint8*)dest;
-	if (0 == *srcPtr++) {  /* uncompressed */
-		MemWildCopy(destPtr, srcPtr, destPtr + destSize);
-		return destSize+1;
-	}
-
-	Uint32 comprSize = MemReadLE2(srcPtr);
-	srcPtr += 2;
 	Bit_Stream bitStream;
 	bitStream.nUsedBits = 0;
-	bitStream.container = MemReadBE8(srcPtr);
-	bitStream.streamPtr = srcPtr;
-	Uint8 hufHufCodeBits[MAX_HufWeight + 3], litHufCodeBits[MAX_HufSize];
+	bitStream.container = MemReadBE8(src + 3);
+	bitStream.streamPtr = (Uint8*)src + 3;
+	Uint8 hufHufCodeBits[MAX_HufWeight + 3];
 	Huffman_DemapX1 hufHufCodeDemapX1[1 << MAX_HufHufWt];
-	Uint32 maxHufHufCodeBits = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCodeBits);
-
+	const Uint32 maxHufHufCodeBits = Read_Huffman_Header(&bitStream, MAX_HufWeight + 3, MAX_HufHufWt, hufHufCodeBits);
 	Build_Huffman_DecTableX1(MAX_HufWeight + 3, maxHufHufCodeBits, hufHufCodeBits, hufHufCodeDemapX1);
-	const Uint32 maxHufCodeBits = Read_Huffman_Header_byHuffman(&bitStream, maxHufHufCodeBits, hufHufCodeDemapX1, nLits, litHufCodeBits);
-
+	*maxBits = Read_Huffman_Header_byHuffman(&bitStream, maxHufHufCodeBits, hufHufCodeDemapX1, nLits, litHufCodeBits);
 	BITStream_Read_FlushEnd(bitStream);
-	srcPtr = bitStream.streamPtr;
+	return (Uint32)(bitStream.streamPtr - src);
+}
 
-	Huffman_Decompress_Block_Body(litHufCodeBits, nLits, maxHufCodeBits, -1, srcPtr, comprSize, destPtr, destSize);
-	return (Uint32)(srcPtr + comprSize - (Uint8*)source);
+static Uint32 Huffman_Decompress_Block_Trusted(const void *source, void* dest, Uint32 destSize, int nLits, Huffman_DecState* const st)
+{
+	const Uint8* const src = (const Uint8*)source;
+	if (0 == src[0]) {  /* uncompressed */
+		MemWildCopy((Uint8*)dest, src + 1, (Uint8*)dest + destSize);
+		return destSize+1;
+	}
+	Uint32 bodyOff = 3;
+	if (1 == src[0]) {
+		bodyOff = Huffman_Block_Header_Trusted(src, nLits, st->bits, &st->maxBits);
+		st->valid = 1;
+		st->table = 0;
+	}
+	const Uint32 comprSize = MemReadLE2(src + 1);
+	Huffman_Decompress_Body_State(st, nLits, (Uint8*)src + bodyOff, comprSize, (Uint8*)dest, destSize);
+	return bodyOff + comprSize;
 }
 
 /* It returns compressed byte-size for the original destSize bytes of literals */
@@ -1099,16 +1233,43 @@ Uint32 Huffman_Decompress_Trusted(const void* source, void* dest, Uint32 destSiz
 	Uint32 srcBlkSize;
 	Uint8* srcPtr = (Uint8*)source;
 	Uint8* destPtr = (Uint8*)dest;
+	Huffman_DecState* const st = Huffman_DecState_New();
+	if (NULL == st) return 0;
 	while (destSize >= HUF_BlockSize) {
 		destSize -= HUF_BlockSize;
-		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, HUF_BlockSize, nLits);
+		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, HUF_BlockSize, nLits, st);
 		srcPtr += srcBlkSize;
 		destPtr += HUF_BlockSize;
 	}
 	if (destSize > 0) {
-		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, destSize, nLits);
+		srcBlkSize = Huffman_Decompress_Block_Trusted(srcPtr, destPtr, destSize, nLits, st);
 		srcPtr += srcBlkSize;
 	}
-
+	free(st);
 	return (Uint32)(srcPtr - (Uint8*)source);
+}
+
+/* Huffman_Decompress_Next without checks */
+Uint32 Huffman_Decompress_Next_Trusted(const void* src, void* dest, Uint32 destSize, int nLits, Huffman_DecState* st)
+{
+	return Huffman_Decompress_Block_Trusted(src, dest, destSize, nLits, st);
+}
+
+/* Huffman_Skip without checks */
+Uint32 Huffman_Skip_Trusted(const void* source, Uint32 destSize, int nLits)
+{
+	const Uint8* srcPtr = (const Uint8*)source;
+	Uint8 litHufCodeBits[MAX_HufSize];
+	Uint32 maxBits;
+	while (destSize > 0) {
+		const Uint32 n = destSize < HUF_BlockSize ? destSize : HUF_BlockSize;
+		destSize -= n;
+		if (0 == *srcPtr) {                              /* stored */
+			srcPtr += n + 1;
+			continue;
+		}
+		const Uint32 bodyOff = 1 == *srcPtr ? Huffman_Block_Header_Trusted(srcPtr, nLits, litHufCodeBits, &maxBits) : 3;
+		srcPtr += bodyOff + MemReadLE2(srcPtr + 1);
+	}
+	return (Uint32)(srcPtr - (const Uint8*)source);
 }

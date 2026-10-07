@@ -229,9 +229,35 @@ void Build_Huffman_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHufCodeB
 void Build_Huffman_DecTableX2(const Uint32 hufCodeSize, const Uint32 maxHufCodeBits, Uint8* hufCodeBits, Huffman_DemapX2* hufDecTableX2, const Uint32 hufTableBits);
 void Build_ExtHuffman_DecTableX1(const Uint32 hufCodeSize, const Uint32 maxHufCodeBits, Uint8* hufCodeBits, const ExtHuffman_Lit* extHufLit, ExtHuffman_DemapX1* litHufDemapX1);
 
+/* A literal block is stored (type 0), carries the lengths of its own code (type 1), or reuses the code of the
+   stream's last type-1 block (type 2). The encoder keeps that code in a Huffman_Prev, the decoder in a
+   Huffman_DecState, with the decoding table built from it, which blocks of type 2 then use as it is. */
+#define HUF_HeaderBound  512                 /* a literal block's code lengths take fewer bytes than this */
+typedef struct {
+	HufCode_Str code[MAX_HufSize];
+	int valid;                               /* a type-1 block has set it */
+} Huffman_Prev;
+typedef struct {
+	Uint8 bits[MAX_HufSize];                 /* the code's lengths */
+	Uint32 maxBits;
+	int valid;                               /* a type-1 block has set them */
+	int table;                               /* the table built from them: 0 none yet, 1 x1, 2 x2 */
+	Uint32 tableBits;                        /* x2's lookup width */
+	Huffman_DemapX1 x1[1 << MAX_HufWeight];
+	Huffman_DemapX2 x2[4 + (1 << MAX_HufWeight)];
+} Huffman_DecState;
+Uint64 Huffman_Code_Bits(const Huffman_Str* h, const HufCode_Str* code, const Uint32 n);
+Uint32 Huffman_Header_Bits(const HufCode_Str* hufLenHufStr, const Uint8* hufWtSeq, int seqSize);
+Uint32 Huffman_Compress_Block_Rep(const void* srcStart, Uint32 srcSize, void* dest, Huffman_Str* litHuf, Uint32 nLits,
+	Uint32 litHufCapBits, Huffman_Prev* prev);
+
 int Huffman_Select_Decompressor(Uint32 cmprSize, Uint32 srcSize, Uint32 maxHufBits, Uint32* decTabBitsX2);
 int Huffman_Decompress(const void* source, const int srcSize, void* dest, Uint32 destSize, int nLits);
 Uint32 Huffman_Decompress_Trusted(const void* source, void* dest, Uint32 destSize, int nLits);   /* no checks: trusted mode */
+int Huffman_Skip(const void* source, const int srcSize, Uint32 destSize, int nLits);
+Uint32 Huffman_Skip_Trusted(const void* source, Uint32 destSize, int nLits);
+int Huffman_Decompress_Next(const void* src, const void* srcEnd, void* dest, Uint32 destSize, int nLits, Huffman_DecState* st);
+Uint32 Huffman_Decompress_Next_Trusted(const void* src, void* dest, Uint32 destSize, int nLits, Huffman_DecState* st);
 void Huffman_Decompress_Block_Body(Uint8* litHufCodeBits, int nLits, Uint32 maxLitHufBits, int algId, Uint8* cmprBuffer, Uint32 cmprSize, Uint8* decBuffer, const Uint32 decSize);
 
 void Huffman_Tester(); 

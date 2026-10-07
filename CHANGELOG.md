@@ -15,6 +15,28 @@ a WZ frame records its frame format version and its codec's format version (`doc
   of 948 MB (Zstandard 22: 642 MB) at 0.04% lower ratio; on enwik9, where the windows bind, levels 11 and 12 reach
   4.505 and 4.644 (11 reached 4.744) and level 13 keeps 4.759. The levels just above the top of the lazy parser now compress large inputs less than
   it (WZIP 7-8 below 6, WLZ4 8 below 7). Linked blocks in WZ frames take the level's window.
+- **No buffer of the input's size for WZIP's sequences.** WZIP_L's encoders coded the blocks of sequences into a
+  buffer as large as the input and copied them behind the literals at the end. Each block is now coded into a
+  scratch buffer of one block and stacked at the end of the output buffer, which the literals fill from the start;
+  at the end the blocks move up behind the literals. The output is byte for byte the same, and the input is stored
+  as before when literals and sequences together exceed the output's capacity. On enwik9 level 0 needs 1.3 MB
+  instead of 192 MB, level 3 129 MB instead of 357 MB, level 11 550 MB instead of 745 MB and level 13 1.9 GB instead
+  of 2.1 GB; on Silesia level 0 1.5 MB instead of 15 MB, levels 11-13 about the same (their tables dominate).
+- **Reused Huffman codes** (WZIP_L format; the format had not been released, so its codec format version stays 1 and
+  streams of the earlier form no longer decode: the golden frames of WZIP_L were written again). A literal block of
+  type 2 reuses the code of the stream's last block of type 1, and a sequence block may reuse each of its codes
+  (literal run, joint symbol, each offset group) from the last block that sent it: one bit per code after the
+  block's first bit (`doc/WZIP_format.md`, 4.2 and 5.4). The encoder reuses a code where the block's symbols take
+  fewer bits with it than with a code of their own plus its lengths, as on a short last block; the decoder then reads
+  no lengths and keeps the table it built. Ratios rise by about 0.02% (Silesia 4.0787 at level 11, was 4.0783). The
+  reference decoder (`doc/wzip_decode.py`) follows.
+- **Literals decoded as needed.** WZIP_L's decoders decoded the whole literal stream into a buffer of its size (the
+  checked decoder: of the output's size) before the first sequence. Up to 32 MiB of literals, which stay in the
+  last-level cache, they still do (into a buffer of the literals' size); a stream with more is decoded a 32 KiB block
+  at a time as the sequences reach it, into a buffer of 128 KiB (`LIT_EagerMax`, `Lit_Reader`): enwik9 at level 0
+  decodes 7% faster. The checked decoder checks each literal run against the literals and rejects runs past
+  them, as the specification asks (it used to read zeros); it decodes Silesia 2-5% faster. Literal decoding
+  tables are built in place, not allocated per block.
 - **Threads in compression.** At WZIP's optimal levels (7-13) the three match-finder indexes (chain of lengths 3-4,
   chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser, and from 5 threads on the
   tree, a tree per hash bucket, splits among 2 to 4 threads by bucket (`WZIP_WORKERS_MAX`, 7): `wzip -T#`,

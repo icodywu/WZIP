@@ -44,7 +44,8 @@ a different interface:
 
 - **WZIP_L** (`n >= 32768`) adapts to its input: its windows are sized to `n` (up to `2^27` bytes), a 3-byte header
   sets the short lengths' windows, and it sends new Huffman tables every 16384 sequences (a 1020-symbol joint code
-  and four or eight offset codes) and every 32 KiB of literals. These descriptions cost little on a large input.
+  and four or eight offset codes) and every 32 KiB of literals, or reuses the last ones. These descriptions cost
+  little on a large input.
 - **WZIP_M** (`n < 32768`) sends one table header of four small codes (at most 30 symbols each), fixes its windows
   (8 KiB for length 3, 32 KiB for longer matches) so that no window header is needed, and splits its sequences into
   two streams, one read forward and one backward, which a decoder can follow at the same time.
@@ -150,7 +151,7 @@ The reference encoder stores inputs below 32 bytes and every input that compress
 
 *Figure 4. (a) The three forms of a one-call stream. (b) A WZIP_L payload (section 5): the window header, the
 literal count, the literal stream and the sequence blocks. (c) A sequence block (section 5.4): a header bit stream
-with the block's coding bit and code tables, then up to 16384 sequences.*
+with the block's coding bit, which codes it reuses, and the code tables it sends, then up to 16384 sequences.*
 
 ### 4.2 The literal stream
 
@@ -158,20 +159,27 @@ The literals of a WZIP_L or WZIP_M payload, `L` bytes in all, are coded in block
 holds the rest). Each block is one of:
 
 - **stored**: a byte `0`, then the literals verbatim;
-- **Huffman**: a byte `1` (other non-zero values are reserved; the reference decoders accept them), a `u16` body size
-  `B`, then a bit stream with the weight code (section 3.2) and the 256 literal code lengths coded by it (cap 12; the
-  code must not be empty), aligned; then the body of `B` bytes:
-  - a block of fewer than 512 literals: one bit stream of their codes;
-  - from 512 literals: three `u16` values `e0 <= e1 <= e2 <= B - 6`, then four bit streams starting at body offsets
-    6, `6 + e0`, `6 + e1` and `6 + e2` (the fourth ends at the body's end). Streams 0-2 hold `q = (size >> 4) << 2`
-    literals each, in order, and stream 3 the remaining `size - 3q`.
+- **Huffman**: a byte `1`, a `u16` body size `B`, then a bit stream with the weight code (section 3.2) and the 256
+  literal code lengths coded by it (cap 12; the code must not be empty), aligned; then the body of `B` bytes;
+- **Huffman, reused code**: a byte `2`, a `u16` body size `B`, then the body of `B` bytes, coded with the code of the
+  stream's last block of type `1` (invalid if there is none); values 3-255 are reserved and invalid.
 
-Each bit stream ends byte-aligned. The next block (or the next part of the payload) follows the body.
+The body of a Huffman block (types 1 and 2) holds:
+
+- for a block of fewer than 512 literals: one bit stream of their codes;
+- from 512 literals: three `u16` values `e0 <= e1 <= e2 <= B - 6`, then four bit streams starting at body offsets
+  6, `6 + e0`, `6 + e1` and `6 + e2` (the fourth ends at the body's end). Streams 0-2 hold `q = (size >> 4) << 2`
+  literals each, in order, and stream 3 the remaining `size - 3q`.
+
+Each bit stream ends byte-aligned. The next block (or the next part of the payload) follows the body. (The
+reference encoders reuse the last code where the block's literals take fewer bits with it than with a code of their
+own plus its lengths: rarely within a stream, most often for a short last block.)
 
 ![A stored and a Huffman literal block](figures/wzip-literals.svg)
 
-*Figure 5. The two kinds of literal block. A Huffman block of 512 literals or more splits them into four streams,
-which a decoder can decode in parallel; the three `u16` values give where streams 0-2 end.*
+*Figure 5. A stored and a Huffman literal block (type 1; a block of type 2 lacks the code lengths). A Huffman block of
+512 literals or more splits them into four streams, which a decoder can decode in parallel; the three `u16` values
+give where streams 0-2 end.*
 
 ### 4.3 Offset values
 
@@ -276,14 +284,19 @@ A sequence block is a header bit stream, aligned, then a sequence bit stream of 
 The header:
 
 1. **1 bit**: 1 for a *slot-joint* block, 0 for a *classic* block;
-2. the weight code (section 3.2);
-3. coded tables (section 3.3), in this order:
+2. **1 bit per code**, in the order of item 4 (2 + the number of offset groups): 1 if the block **reuses** the code,
+   0 if it sends it;
+3. if the block sends a code: the weight code (section 3.2);
+4. the coded tables (section 3.3) of the codes it sends, in this order:
    - the literal-run code: 71 symbols, cap 11;
    - the joint code: 1020 symbols (slot-joint) or 204 (classic), cap 11;
    - one offset code per group, in group order: the group's alphabet size, cap 10.
 
-Any of these codes may be empty (section 3.1) if the block does not use it; reading a symbol with an empty code is
-invalid.
+A reused code is the one the last block that sent it sent, the joint code only from a block of the same kind
+(slot-joint or classic); reusing a code no earlier block of the payload sent is invalid. Any of these codes may be
+empty (section 3.1) if the block does not use it; reading a symbol with an empty code is invalid. (The reference
+encoders reuse a code where the block's symbols take fewer bits with it than with a code of their own plus its
+lengths under the weight code.)
 
 ### 5.5 Sequences
 
