@@ -106,7 +106,7 @@ open(os.path.join(outdir, 'tab_lz4class.tex'), 'w').write(table(
 open(os.path.join(outdir, 'tab_zstdclass.tex'), 'w').write(table(
     'The Zstandard class: ' + cap('Silesia', 'Canterbury+Calgary', 'Silesia'), 'tab:zstdclass',
     [[('zstd', l) for l in (1, 3, 19, 22)],
-     [('wzip', l) for l in (0, 3, 9, 11, 12, 13)],
+     [('wzip', l) for l in (0, 3, 9, 11, 12)],
      [('brotli', 11)] + [('xz', l) for l in (6, 109)]]))
 if E8 and E9:
     memSecond = True
