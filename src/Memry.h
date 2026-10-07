@@ -67,6 +67,9 @@ extern "C" {
 #   include <stdlib.h>  /* _byteswap_ulong */
 #   include <intrin.h>  /* _byteswap_* */
 #endif
+#if defined(__aarch64__)
+#   include <arm_neon.h>  /* vld1q_u8, vst1q_u8: MemCopy8, MemCopy16 */
+#endif
 #if defined(__GNUC__)
 #  define MemStatic static __inline __attribute__((unused))
 #elif defined (__cplusplus) || (defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) /* C99 */)
@@ -473,32 +476,19 @@ MemStatic void MemCopy16(void* dst, const void* src) {
 #endif
 }
 
-/* Custom version of memcpy(), can overwrite up to WILDCOPY_OVERLENGTH bytes (if length==0) */
+/* Custom version of memcpy() in 16-byte steps: writes up to 15 bytes past destEnd (16 if length==0), on every
+   target; the decoders' margins count on it (an arm64 variant in 32-byte steps wrote up to 31) */
 ForceInlineTemplate void MemWildCopy(void* dest, const void* src, void * const _destEnd)
 {
     Uint8* const destEnd = (Uint8*)_destEnd;
     Uint8* destPtr = (Uint8*)dest;
     Uint8* srcPtr = (Uint8*)src;
 
-#ifndef __aarch64__
     do {
         MemCopy16(destPtr, srcPtr);
         destPtr += 16;
         srcPtr += 16;
     } while ( destPtr < destEnd );
-#else
-    MemCopy16(destPtr, srcPtr);
-    destPtr += 16;
-    srcPtr += 16;
-    if (destPtr >= destEnd) return;
-    do {
-        MemCopy16(destPtr, srcPtr);
-        MemCopy16(destPtr+16, srcPtr+16);
-        destPtr += 32;
-        srcPtr  += 32;
-    } while (destPtr < destEnd);
-#endif
-
 }
 
 /* It requires that dest and src must be at least 8 bytes apart */

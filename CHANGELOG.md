@@ -54,6 +54,16 @@ a WZ frame records its frame format version and its codec's format version (`doc
   that were right are unchanged.
 - **Fix:** WLZ4's encoders could read one byte past the input, after a literal run of 15 or 16 bytes before a match
   16 bytes from its end (found by fuzzing the round trip through 2 KB frame blocks).
+- **Fix: 32-bit and arm64 builds.** WZIP's bit streams took the width of their 64-bit container from the machine
+  word, so that 32-bit builds wrote streams no decoder reads (and failed assertions); the container is now 64 bits on
+  every target. WZIP's level 1 takes a match of whole words at once, which with 4-byte words may be shorter than the
+  window it was found in allows; it now checks the window of its length. On arm64, `Memry.h` used NEON intrinsics
+  without including `arm_neon.h`, which compilers reject or fail to link, and its wild copy ran in 32-byte steps,
+  writing up to 31 bytes past its end where the decoders leave room for 15: the bounds-checked decoders wrote past
+  the output, which corrupted the heap or the next block. Outputs of 64-bit builds are unchanged;
+  32-bit builds, whose match finders compare 4 bytes at a time, may write other (valid) streams. Found while adding
+  the codecs to lzbench, whose CI builds them for 32-bit x86 and ARM; the CI here now builds and tests with
+  `gcc -m32`.
 
 ## 1.0.0 (2026-10)
 

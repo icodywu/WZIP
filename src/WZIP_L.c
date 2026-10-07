@@ -574,6 +574,11 @@ ForceInlineTemplate int Repeat_Match_Len(const Uint8* const source, Uint32 srcId
 	return REG_SIZE + (int)WLZ_Match_Count(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch, NULL);
 }
 
+/* A match of whole words read at once (diff 0): on 64-bit targets 8 bytes or more, in the widest window, which the
+   candidates were taken from; with the 4-byte words of 32-bit targets it may be shorter than hash2Len, whose window
+   is narrower (constant true on 64-bit targets) */
+#define WORD_MATCH_FITS(len, off)   (REG_SIZE >= 8 || (len) > hash2Len || (off) < WINDOW(OffWidth[len]))
+
 ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 	WZIP_State_Str* const wzipStr,
 	const Uint8* const source,
@@ -665,12 +670,14 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				diffPattern = currPattern ^ MemReadARCH(matchPtr);
 				if (0 == diffPattern) {
 					matchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
-					break;
-				}
-
-				matchLen = N_ZeroBytes(diffPattern);
-				if ( matchLen <= hash2Len && matchOffset>= WINDOW(OffWidth[matchLen]) )
+					if (WORD_MATCH_FITS(matchLen, matchOffset)) break;
 					matchLen = 0;
+				}
+				else {
+					matchLen = N_ZeroBytes(diffPattern);
+					if ( matchLen <= hash2Len && matchOffset>= WINDOW(OffWidth[matchLen]) )
+						matchLen = 0;
+				}
 				matchLen2 = matchLen;
 				matchOffset2 = matchOffset;
 			}
@@ -681,11 +688,14 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 				diffPattern = currPattern ^ MemReadARCH(matchPtr);
 				if (0 == diffPattern) {
 					matchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
-					break;
-				}
-				matchLen = N_ZeroBytes(diffPattern);
-				if ( matchLen <= hash2Len && matchOffset >= WINDOW(OffWidth[matchLen]) )
+					if (WORD_MATCH_FITS(matchLen, matchOffset)) break;
 					matchLen = 0;
+				}
+				else {
+					matchLen = N_ZeroBytes(diffPattern);
+					if ( matchLen <= hash2Len && matchOffset >= WINDOW(OffWidth[matchLen]) )
+						matchLen = 0;
+				}
 				if (matchLen > matchLen2) {
 					matchLen2 = matchLen;
 					matchOffset2 = matchOffset;
@@ -741,6 +751,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 
 			if (0 == diffPattern) {
 				lazyMatchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
+				if (!WORD_MATCH_FITS(lazyMatchLen, lazyMatchOffset)) lazyMatchLen = 0;
 			}
 			else {
 				lazyMatchLen = N_ZeroBytes(diffPattern);
@@ -761,6 +772,7 @@ ForceInlineTemplate Uint32 WLZ2_Compress_Fast(
 
 				if (0 == diffPattern) {
 					lazyMatchLen = REG_SIZE + HIST_COUNT(srcPtr + REG_SIZE, matchPtr + REG_SIZE, srcLastMatch);
+					if (!WORD_MATCH_FITS(lazyMatchLen, lazyMatchOffset)) lazyMatchLen = 0;
 				}
 				else {
 					lazyMatchLen = N_ZeroBytes(diffPattern);

@@ -39,6 +39,10 @@ static const unsigned BitMask[32] = {
 #define MinStream4XSize  512
 #define HUF_BlockSize    (1<<15)
 
+/* The container holds 64 bits on every platform (BIT_CONTAINER_BITS), whatever the machine word, so that 32-bit
+   builds write and read the same streams. */
+#define BIT_CONTAINER_BITS  64
+
 /* Bit position starts from highest to lowest, i.e., 63 downward to 0. 
    This setup is convenient for Huffman decoding wherein highest bits are used for one-shot Huffman decoding */
 typedef struct {
@@ -120,13 +124,13 @@ static inline Uint32 Fast_Sort_Width(Uint8* hufCodeBits, const Uint32 hufCodeSiz
 /*It must guarantee sym is under nbits bits, and nbits is less than bitPos */
 #define BITStream_Write(bitStream, sym, nbits)   {                                   \
 	assert((sym) < (Uint32)(1 << (nbits)) );                                         \
-	assert((nbits) <= REG_SIZE*8 - bitStream.nUsedBits);                             \
+	assert((nbits) <= BIT_CONTAINER_BITS - bitStream.nUsedBits);                     \
 	bitStream.nUsedBits += (nbits);                                                  \
-	bitStream.container ^= (Uint64)(sym) << (REG_SIZE * 8 - bitStream.nUsedBits);    \
+	bitStream.container ^= (Uint64)(sym) << (BIT_CONTAINER_BITS - bitStream.nUsedBits); \
 }
 
 #define BITStream_Write_Flush(bitStream)  {                  \
-	assert(bitStream.nUsedBits <= REG_SIZE * 8);             \
+	assert(bitStream.nUsedBits <= BIT_CONTAINER_BITS);       \
 	Uint32 nBytes = bitStream.nUsedBits >> 3;                \
 	MemWriteBE8(bitStream.streamPtr, bitStream.container);   \
 	bitStream.streamPtr += nBytes;                           \
@@ -143,13 +147,13 @@ static inline Uint32 Fast_Sort_Width(Uint8* hufCodeBits, const Uint32 hufCodeSiz
 
 
 #define BITStream_Read(bitStream, nbits, sym)   {                                               \
-	assert(REG_SIZE * 8 - bitStream.nUsedBits >= (nbits));                                      \
-	sym = (Uint32)( bitStream.container<< bitStream.nUsedBits >> (REG_SIZE * 8 - (nbits)) );    \
+	assert(BIT_CONTAINER_BITS - bitStream.nUsedBits >= (nbits));                                 \
+	sym = (Uint32)( bitStream.container<< bitStream.nUsedBits >> (BIT_CONTAINER_BITS - (nbits)) ); \
 	bitStream.nUsedBits += (nbits);                                                             \
 }
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Huffman Coding/Decoding ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
-/* Note: remMaxHufBits = REG_SIZE*8 - maxHufCodeBits */
+/* Note: remMaxHufBits = BIT_CONTAINER_BITS - maxHufCodeBits */
 #define BITStream_Read_HufX0(bitStream, remMaxHufBits, hufCodeBits, hufCodeDemap, symPtr)   {       \
 	assert(remMaxHufBits >= bitStream.nUsedBits);                                                \
 	Uint32 const r =  (Uint32)( bitStream.container << bitStream.nUsedBits >> remMaxHufBits );   \

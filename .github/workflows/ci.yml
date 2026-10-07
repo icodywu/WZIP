@@ -1,4 +1,4 @@
-# Builds and tests on Linux (GCC, clang; x86-64 and arm64), macOS, Windows (MSYS2 MinGW-w64, MSVC) and with CMake; runs the
+# Builds and tests on Linux (GCC, clang; x86-64, 32-bit x86 and arm64), macOS, Windows (MSYS2 MinGW-w64, MSVC) and with CMake; runs the
 # damaged-stream test under AddressSanitizer and UndefinedBehaviorSanitizer and the thread test under
 # ThreadSanitizer. `make test` includes the golden frames (tests/golden), decoded by the tool and the Python
 # reference decoder. The big-endian job (s390x under QEMU) is informative until big-endian support is verified.
@@ -28,6 +28,16 @@ jobs:
           sudo sysctl vm.mmap_rnd_bits=28
           ${{ matrix.cc }} -O1 -g -fsanitize=thread -Wall -Isrc tests/threads.c src/*.c -lm -pthread -o build/threads_tsan
           ./build/threads_tsan 8 2
+
+  linux32:
+    name: Linux x86 32-bit (gcc -m32)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the 32-bit libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-multilib > /dev/null
+      - name: Build and test
+        run: make CC="gcc -m32" test
 
   libfuzzer:
     name: Coverage-guided fuzzing (libFuzzer, 2 minutes a target)
