@@ -111,8 +111,8 @@ use none, but their content is part of the dictionary of the blocks after them. 
 
 The dictionary also sets WZIP_L's windows (`WZIP_format.md`, section 5.2: `h = n + D`), and no window of WZIP
 exceeds `2^27` bytes, so a window log of 27 is the most a block can use. Blocks may be compressed at once by
-separate threads, each given the content before its block, and so lose little to the cut (informative: enwik9 in
-blocks of 64 MiB, each with the 128 MiB before it, compresses within 0.01% of one stream at WZIP level 11).
+separate threads, each given the content before its block, and so lose little to the cut (informative: at WZIP
+level 11, enwik9 in blocks of 64 MiB, each with the 128 MiB before it, compresses within 0.01% of one stream).
 
 ## 6. End of frame
 
@@ -149,15 +149,19 @@ Check values: XXH32 of no bytes is `0x02CC5D05`, of `abc` `0x32D153FF`.
 
 `WZF_compress` and the command-line tool write format version 0 frames with codec format version 1. They write the
 content size when it is known (always for `WZF_compress`, and for regular files in the tool) and the checksum
-unless asked not to. The block size log defaults to the smallest `b >= 16` with `2^b` at least the content size, at
-most 30 (1 GiB), so that content up to 1 GiB is one block and compresses as in the benchmarks; content of unknown
-size (a pipe) uses `b = 27` (128 MiB) for WZIP and `b = 23` (8 MiB) for WLZ4, the codecs' widest windows. A block
-that does not shrink is written raw.
+unless asked not to. Their blocks:
 
-Linked blocks are written when asked for (`WZF_params.windowLog`); the tool asks for them with `--linked`, or, for
-WZIP content of more than 64 MiB or of unknown size, with more threads than one block can use (`-T2` and up at
-levels 0-6, `-T8` and up at levels 7-13), with `W = 27` and, by default, `b = 26`. Several blocks are then
-compressed at once, each primed with the content before it, and each with up to 7 threads of its own at WZIP's
-levels 7-13 (its match finder's indexes); the frame is the same for any number of threads.
+- by default, one block for the content, of size log `b`, the smallest of 16 and up with `2^b` at least the
+  content size, at most 30 (1 GiB), so that content up to 1 GiB is one block and compresses as in the benchmarks;
+  content of unknown size (a pipe) uses `b = 27` (128 MiB) for WZIP and `b = 23` (8 MiB) for WLZ4, the codecs'
+  widest windows;
+- with more threads than one WZIP block uses (more than 1 at levels 0-6, more than 7 at levels 7-13), WZIP content
+  over 64 MiB, or of unknown size, is cut into blocks of 64 MiB (`b = 26`), compressed at once and linked with a
+  window of 128 MiB (`W = 27`, WZIP's widest), each primed with the content before it; at level 0, whose window is
+  1 MiB, they are independent;
+- a block size given by the caller (`WZF_params.blockLog`, the tool's `-B`) makes independent blocks of that size.
+
+A block that does not shrink is written raw. Up to 7 threads search one WZIP block at levels 7-13 (its match
+finder's indexes), with the output of one thread. Decoders need to know none of this: the header says it all.
 
 The overhead is 11 to 24 bytes per frame (header, end mark, checksum) plus 4 bytes per block.

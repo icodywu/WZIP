@@ -134,10 +134,31 @@ struct WZF_CCtx_s {
 	size_t winCap, winLen;
 };
 
-static int auto_blockLog(int codec, int windowLog, unsigned long long contentSize)
+/* By default (windowLog 0, blockLog 0) WZIP content is one block, up to 1 GiB, unless there are more threads than one
+   block can use (levels 0-6: 1; 7-13: WZIP_WORKERS_MAX): then content over one block of WZF_LINKED_BLOCKLOG, or of
+   unknown size, is cut into such blocks, compressed at once and linked (independent at level 0, whose window is 1 MiB) */
+static int split_by_threads(const WZF_params* p, unsigned long long contentSize)
 {
-	if (contentSize == WZF_CONTENTSIZE_UNKNOWN) return windowLog ? 26 : codec == WZF_CODEC_WZIP ? 27 : 23;
-	const int top = windowLog ? 26 : 30;
+	const int oneBlock = p->level >= 7 ? WZIP_WORKERS_MAX : 1;
+	return p->codec == WZF_CODEC_WZIP && p->windowLog == 0 && p->blockLog == 0 && p->nbWorkers > oneBlock
+	       && (contentSize == WZF_CONTENTSIZE_UNKNOWN || contentSize > 1ULL << WZF_LINKED_BLOCKLOG);
+}
+
+/* the window log of the frame's linked blocks, 0 for independent blocks (WZF_params.windowLog) */
+static int frame_windowLog(const WZF_params* p, unsigned long long contentSize)
+{
+	if (p->codec != WZF_CODEC_WZIP || p->windowLog < 0) return 0;
+	if (p->windowLog) return p->windowLog;
+	return split_by_threads(p, contentSize) && p->level > 0 ? WZF_WINDOWLOG_MAX : 0;
+}
+
+/* blockLog 0: one block for the content, up to 1 GiB, or for content of unknown size the codec's widest window; blocks
+   of at most WZF_LINKED_BLOCKLOG when split by the threads or linked */
+static int auto_blockLog(const WZF_params* p, unsigned long long contentSize)
+{
+	const int linked = p->codec == WZF_CODEC_WZIP && (p->windowLog > 0 || split_by_threads(p, contentSize));
+	if (contentSize == WZF_CONTENTSIZE_UNKNOWN) return linked ? WZF_LINKED_BLOCKLOG : p->codec == WZF_CODEC_WZIP ? 27 : 23;
+	const int top = linked ? WZF_LINKED_BLOCKLOG : 30;
 	int b = 16;
 	while (b < top && (1ULL << b) < contentSize) b++;
 	return b;
@@ -150,8 +171,8 @@ static int params_ok(const WZF_params* p)
 	if (p->codec == WZF_CODEC_WZIP) { if (p->level < 0 || p->level > 13) return 0; }
 	else if (p->codec == WZF_CODEC_WLZ4) { if (p->level < -2 || p->level > 12) return 0; }
 	else return 0;
-	if (p->windowLog && (p->codec != WZF_CODEC_WZIP || p->windowLog < WZF_WINDOWLOG_MIN || p->windowLog > WZF_WINDOWLOG_MAX
-	                     || p->blockLog > 30))
+	if (p->windowLog < -1 || (p->windowLog > 0 && (p->codec != WZF_CODEC_WZIP || p->windowLog < WZF_WINDOWLOG_MIN
+	                                               || p->windowLog > WZF_WINDOWLOG_MAX || p->blockLog > 30)))
 		return 0;
 	return p->blockLog == 0 || (p->blockLog >= WZF_BLOCKLOG_MIN && p->blockLog <= WZF_BLOCKLOG_MAX);
 }
@@ -176,11 +197,13 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
                          unsigned long long contentSize)
 {
 	if (!c || !dst || !params || !params_ok(params)) return ERR(parameter);
-	const int hasSize = contentSize != WZF_CONTENTSIZE_UNKNOWN, linked = params->windowLog != 0;
+	const int windowLog = frame_windowLog(params, contentSize);
+	const int hasSize = contentSize != WZF_CONTENTSIZE_UNKNOWN, linked = windowLog != 0;
 	const size_t hdr = WZF_HEADER_MIN + linked + (hasSize ? 8 : 0);
 	if (dstCapacity < hdr) return ERR(dstSize_tooSmall);
 	c->p = *params;
-	c->blockLog = params->blockLog ? params->blockLog : auto_blockLog(params->codec, params->windowLog, contentSize);
+	c->p.windowLog = windowLog;                         /* from here on, 0: independent blocks */
+	c->blockLog = params->blockLog ? params->blockLog : auto_blockLog(params, contentSize);
 	c->checksum = !params->noChecksum;
 	c->contentSize = contentSize;
 	c->consumed = 0;
@@ -196,7 +219,7 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
 	                       | (linked ? WZF_FLAG_LINKED : 0));
 	o[5] = (unsigned char)(WZF_FRAME_VERSION << 4 | WZF_CODEC_VERSION);
 	o[6] = (unsigned char)c->blockLog;
-	if (linked) o[7] = (unsigned char)params->windowLog;
+	if (linked) o[7] = (unsigned char)windowLog;
 	if (hasSize) wr64(o + 7 + linked, contentSize);
 	c->stage = 1;
 	return hdr;
@@ -403,8 +426,10 @@ size_t WZF_compressEnd(WZF_CCtx* c, void* dst, size_t dstCapacity)
 
 size_t WZF_compressBound(size_t srcSize, const WZF_params* params)
 {
-	const int codec = params ? params->codec : WZF_CODEC_WZIP;
-	const int b = params && params->blockLog ? params->blockLog : auto_blockLog(codec, params ? params->windowLog : 0, srcSize);
+	static const WZF_params byDefault = { WZF_CODEC_WZIP, 1, 0, 0, 256, 0 };   /* the most blocks by default */
+	if (!params) params = &byDefault;
+	const int codec = params->codec;
+	const int b = params->blockLog ? params->blockLog : auto_blockLog(params, srcSize);
 	const size_t blk = (size_t)1 << b, maxBlk = blk < codec_max(codec) ? blk : codec_max(codec);
 	const size_t blocks = srcSize ? (srcSize - 1) / maxBlk + 1 : 0;
 	return WZF_HEADER_MAX + blocks * WZF_BLOCK_HEADER + srcSize + WZF_BLOCK_HEADER + 4;

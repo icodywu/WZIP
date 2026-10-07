@@ -1,22 +1,27 @@
-== wzip -b<level> -T<n> [--no-linked] <file>, whole node, threads unpinned (2x AMD EPYC 9334); /usr/bin/time: wall time and peak memory (KB)
-auh7-3b-gpu-221 EnWik/enwik9 -11 -T1 WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 0.96 MB/s 721.8 MB/s wall 17:22.20 peak KB 3249904 
-auh7-3b-gpu-253 EnWik/enwik9 -11 -T5 --no-linked WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 2.27 MB/s 738.9 MB/s wall 7:23.06 peak KB 3253900 
-auh7-3b-gpu-274 EnWik/enwik9 -11 -T7 --no-linked WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 1.98 MB/s 710.7 MB/s wall 8:27.00 peak KB 3254404 
-auh7-3b-gpu-276 EnWik/enwik9 -11 -T8 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 3.54 MB/s 682.4 MB/s wall 4:45.83 peak KB 26539620 
-auh7-4b-gpu-053 EnWik/enwik9 -11 -T16 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 6.37 MB/s 683.4 MB/s wall 2:39.33 peak KB 46741572 
-auh7-4b-gpu-117 EnWik/enwik9 -11 -T30 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 5.96 MB/s 684.1 MB/s wall 2:50.08 peak KB 47063936 
-auh7-4b-gpu-125 EnWik/enwik9 -11 -T60 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 7.90 MB/s 683.0 MB/s wall 2:08.91 peak KB 46770544 
-auh7-4b-gpu-136 EnWik/enwik9 -11 -T105 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 11.00 MB/s 689.9 MB/s wall 1:33.07 peak KB 46933428 
-auh7-4b-gpu-149 EnWik/enwik9 -13 -T7 --no-linked WZIP 13 EnWik/enwik9 1000000000 -> 210118561 4.759 0.98 MB/s 684.7 MB/s wall 17:07.02 peak KB 3344944 
-auh7-4b-gpu-226 EnWik/enwik9 -13 -T105 WZIP 13 EnWik/enwik9 1000000000 -> 210148862 4.759 6.04 MB/s 665.6 MB/s wall 2:48.44 peak KB 47029884 
-auh7-3b-gpu-007 silesia.cat -11 -T1 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 1.49 MB/s 1033.4 MB/s wall 2:23.69 peak KB 2167172 
-auh7-3b-gpu-008 silesia.cat -11 -T4 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 2.91 MB/s 1030.8 MB/s wall 1:14.35 peak KB 2170620 
-auh7-3b-gpu-029 silesia.cat -11 -T7 --no-linked WZIP 11 silesia.cat 211938580 -> 51879884 4.085 2.81 MB/s 1030.5 MB/s wall 1:16.83 peak KB 2173036 
-auh7-3b-gpu-030 silesia.cat -11 -T16 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 4.89 MB/s 1017.2 MB/s wall 0:44.91 peak KB 10655164 
-auh7-4b-gpu-121 silesia.cat -11 -T28 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 6.07 MB/s 978.2 MB/s wall 0:36.52 peak KB 10587972 
-auh7-4b-gpu-122 EnWik/enwik8 -11 -T7 --no-linked WZIP 11 EnWik/enwik8 100000000 -> 25190218 3.970 2.13 MB/s 980.8 MB/s wall 0:48.26 peak KB 1756604 
-auh7-4b-gpu-161 EnWik/enwik9 -7 -T105 WZIP 7 EnWik/enwik9 1000000000 -> 243337790 4.110 20.93 MB/s 671.1 MB/s wall 0:51.05 peak KB 47019452 
-auh7-4b-gpu-162 EnWik/enwik9 -5 -T16 WZIP 5 EnWik/enwik9 1000000000 -> 241380957 4.143 43.78 MB/s 700.6 MB/s wall 0:25.65 peak KB 20381020 
+== wzip -b<level> -T<n> <file>, whole node, threads unpinned (2x AMD EPYC 9334); /usr/bin/time: wall time and peak memory.
+   One thread, and up to 7 at levels 7-13, compress one stream; more threads (more than 1 at levels 0-6) cut content over
+   64 MiB into blocks of 64 MiB, linked with a 128 MiB window (independent at level 0)
+auh7-3b-gpu-006 wzip EnWik/enwik9 -11 -T1 WZIP 11 EnWik/enwik9 1000000000 -> 210784817 4.744 0.96 MB/s 704.7 MB/s wall 17:28.86 peak KB 3249844 
+auh7-3b-gpu-011 wzip EnWik/enwik9 -11 -T8 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 3.73 MB/s 678.3 MB/s wall 4:30.65 peak KB 15830324 
+auh7-3b-gpu-015 wzip EnWik/enwik9 -11 -T16 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 5.62 MB/s 681.6 MB/s wall 3:01.09 peak KB 28336768 
+auh7-3b-gpu-019 wzip EnWik/enwik9 -11 -T56 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 7.61 MB/s 683.2 MB/s wall 2:13.67 peak KB 27344752 
+auh7-3b-gpu-100 wzip EnWik/enwik9 -11 -T105 WZIP 11 EnWik/enwik9 1000000000 -> 210793457 4.744 11.75 MB/s 678.1 MB/s wall 1:27.39 peak KB 28569176 
+auh7-3b-gpu-276 wzip EnWik/enwik9 -5 -T1 WZIP 5 EnWik/enwik9 1000000000 -> 241373982 4.143 7.74 MB/s 759.4 MB/s wall 2:11.12 peak KB 2736836 
+auh7-4b-gpu-076 wzip EnWik/enwik9 -5 -T2 WZIP 5 EnWik/enwik9 1000000000 -> 241380960 4.143 11.04 MB/s 686.0 MB/s wall 1:33.56 peak KB 3837728 
+auh7-4b-gpu-156 wzip EnWik/enwik9 -5 -T8 WZIP 5 EnWik/enwik9 1000000000 -> 241380960 4.143 33.24 MB/s 680.1 MB/s wall 0:32.56 peak KB 11571268 
+auh7-4b-gpu-161 wzip EnWik/enwik9 -5 -T16 WZIP 5 EnWik/enwik9 1000000000 -> 241380960 4.143 48.42 MB/s 694.2 MB/s wall 0:22.84 peak KB 20342896 
+auh7-4b-gpu-189 wzip EnWik/enwik9 -1 -T1 WZIP 1 EnWik/enwik9 1000000000 -> 298862309 3.346 119.76 MB/s 668.5 MB/s wall 0:11.35 peak KB 2301344 
+auh7-3b-gpu-094 wzip EnWik/enwik9 -1 -T8 WZIP 1 EnWik/enwik9 1000000000 -> 298540479 3.350 674.51 MB/s 647.7 MB/s wall 0:03.86 peak KB 2252340 
+auh7-3b-gpu-095 wzip EnWik/enwik9 -1 -T16 WZIP 1 EnWik/enwik9 1000000000 -> 298540479 3.350 1212.23 MB/s 667.4 MB/s wall 0:04.08 peak KB 2288848 
+auh7-4b-gpu-056 wzip EnWik/enwik9 -3 -T1 WZIP 3 EnWik/enwik9 1000000000 -> 247820365 4.035 13.09 MB/s 709.9 MB/s wall 1:19.64 peak KB 2499840 
+auh7-4b-gpu-057 wzip EnWik/enwik9 -3 -T8 WZIP 3 EnWik/enwik9 1000000000 -> 247798516 4.036 48.24 MB/s 675.0 MB/s wall 0:23.96 peak KB 10548828 
+auh7-4b-gpu-232 wzip EnWik/enwik9 -0 -T1 WZIP 0 EnWik/enwik9 1000000000 -> 338047495 2.958 224.31 MB/s 646.9 MB/s wall 0:07.41 peak KB 2478344 
+auh7-4b-gpu-233 wzip EnWik/enwik9 -0 -T8 WZIP 0 EnWik/enwik9 1000000000 -> 338075402 2.958 1431.92 MB/s 629.3 MB/s wall 0:04.61 peak KB 2319624 
+auh7-4b-gpu-234 wzip silesia.cat -11 -T1 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 1.50 MB/s 1035.4 MB/s wall 2:22.56 peak KB 2166860 
+auh7-4b-gpu-235 wzip silesia.cat -11 -T7 WZIP 11 silesia.cat 211938580 -> 51879884 4.085 3.50 MB/s 1028.4 MB/s wall 1:02.10 peak KB 2173188 
+auh7-3b-gpu-210 wzip silesia.cat -11 -T16 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 4.27 MB/s 1013.8 MB/s wall 0:51.12 peak KB 6960540 
+auh7-3b-gpu-211 wzip silesia.cat -11 -T28 WZIP 11 silesia.cat 211938580 -> 51895949 4.084 5.88 MB/s 1017.3 MB/s wall 0:37.58 peak KB 6762756 
+auh7-3b-gpu-212 wzip EnWik/enwik9 -13 -T105 WZIP 13 EnWik/enwik9 1000000000 -> 210148862 4.759 6.16 MB/s 668.4 MB/s wall 2:45.26 peak KB 28648072 
 
 == bench/block_dict: one 64 MiB block of enwik9 (from 256 MiB on), level 11, without and with its 128 MiB dictionary, taskset -c 8-15
 L11 block 67108864 dict 0 workers 1: 16870324 bytes, 61.35 s, 1.094 MB/s

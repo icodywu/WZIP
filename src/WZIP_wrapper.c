@@ -20,7 +20,7 @@ extern "C" {
 
 
 void WZIP_State_Load_Dict(WZIP_State_Str* dictStr, WZIP_State_Str* dstStr) {
-	
+	if (NULL == dictStr->hash0Table || NULL == dstStr->hash0Table) return;     /* levels 7-13 keep no hash tables */
 	int elmSize = dstStr->hash1Mask >>15 ? 4 : 2;
 	memcpy(dstStr->hash0Table, dictStr->hash0Table, (1 + dstStr->hash0Mask) * elmSize);
 	memcpy(dstStr->hash1Table, dictStr->hash1Table, (1 + dstStr->hash1Mask) * elmSize);

@@ -15,17 +15,23 @@ a WZ frame records its frame format version and its codec's format version (`doc
   node another still reads: enwik9 at level 11 grows by 0.008%. Built by default with make and CMake
   (`WZIP_MULTITHREAD`; pthreads, or Win32 threads on Windows); `make MT=0` and `-DWZIP_MULTITHREAD=OFF` leave it out.
 - **Linked blocks in WZ frames** (frame format: FLG bit 4 and a window log byte, `doc/frame_format.md`, 5.1): each
-  WZIP block may refer to the up to 2^W bytes of content before it (W up to 27, WZIP's widest window), as its
+  WZIP block may refer to the up to 2^W bytes of content before it (W up to 27, WZIP's widest window) as its
   dictionary, so that content cut into blocks, and so compressed in parallel, loses almost nothing to the cuts:
   enwik9 in blocks of 64 MiB, each with the 128 MiB before it, compresses within 0.01% of one stream at level 11.
-  `WZF_params.windowLog`, `wzip --linked`; the tool links WZIP blocks of 64 MiB by itself for content over 64 MiB
-  when given more threads than one block can use (`-T2` and up at levels 0-6, `-T8` and up at 7-13; `--no-linked`:
-  never). Decoders of 1.0.0 reject such frames; frames without linked blocks are unchanged.
+  They are written when there are more threads than one block uses (`-T2` and up at levels 0-6, `-T8` and up at
+  levels 7-13; `WZF_params.nbWorkers` and the Python package's `threads` alike), for content over 64 MiB or of
+  unknown size; independent at level 0. One thread writes one stream as before, so its speed is unchanged; each
+  linked block indexes its dictionary first (at level 11 about half the cost of compressing it), which the threads
+  pay for. `WZF_params.windowLog` asks for linked blocks of another window, or with -1 never; decompression needs no
+  option or parameter, and decoders of 1.0.0 reject linked blocks.
 - **Blocks compressed in parallel.** `WZF_compress` and the new `WZF_compressBlocks` (streaming, any number of
   blocks per call) compress `nbWorkers` blocks at once, of either codec, each with what is left of the threads for
-  WZIP's match finder; the frame is the same for any number of threads. `wzip -T#` reads `-T` blocks at a time.
+  WZIP's match finder; for a given layout of blocks the frame is the same for any number of threads.
+- With a dictionary, WZIP's levels 0-6 index each of their tables only as far back as it reaches (its window; for a
+  table without a chain, 16 MiB), and levels 7-13 no longer build the tables of levels 0-6, which they do not use
+  (about 1 GB less per linked block). Outputs without a dictionary are unchanged.
 - `wzip_compress_usingDict` and `wzip_decompress_usingDict`: the one-call stream with a dictionary (WZIP_L).
-- Python: `wzip.compress(..., threads=, window_log=)`.
+- Python: `wzip.compress(..., threads=)`.
 - **Faster WZIP decoding of large inputs.** WZIP_L's decoders, checked and trusted, decode a block as a pipeline that
   prefetches each match's source when the previous block's matches often reached 1 MiB back or more: enwik8 44%
   and enwik9 62% faster at level 11 (AMD EPYC 9334), Silesia unchanged. Same format.

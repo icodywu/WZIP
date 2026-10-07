@@ -42,24 +42,21 @@ def _level(codec, level):
     return level
 
 
-def compress(data, codec="wzip", level=None, block_log=0, checksum=True, threads=1, window_log=0):
+def compress(data, codec="wzip", level=None, block_log=0, checksum=True, threads=1):
     """Compresses bytes-like data into one WZ frame.
 
     codec: "wzip" (levels 0-13, default 1; 7-13 optimal parsing) or "wlz4" (levels 0-12, or "fast", "lazy", the
-    default). block_log: blocks of at most 2**block_log bytes (10-31; 0: the whole input up to 1 GiB, one block).
-    checksum: append an XXH32 checksum of the content. threads: blocks compressed at once, and up to 4 threads
-    within each WZIP block at levels 7-13; the frame is the same for any number. window_log (WZIP): 0 independent
-    blocks, 10-27 linked blocks, each referring to up to 2**window_log bytes before it (block_log 0 then means at
-    most 26), which compress better in blocks and so in parallel."""
+    default). block_log: blocks of at most 2**block_log bytes (10-31; 0, the default: the whole input up to 1 GiB, one
+    block). checksum: append an XXH32 checksum of the content. threads: at WZIP levels 7-13 up to 7 search a block,
+    with the frame of one thread; with more (at levels 0-6, more than 1) and block_log 0, WZIP content over 64 MiB is
+    cut into blocks of 64 MiB, compressed at once, each referring to the 128 MiB before it. decompress() reads any."""
     if codec not in _CODECS:
         raise ValueError("codec must be 'wzip' or 'wlz4'")
     if block_log and not 10 <= block_log <= 31:
         raise ValueError("block_log must be 0 or 10-31")
     if not isinstance(threads, int) or not 1 <= threads <= 256:
         raise ValueError("threads must be 1-256")
-    if window_log and (codec != "wzip" or not 10 <= window_log <= 27 or block_log > 30):
-        raise ValueError("window_log must be 0 or 10-27, for WZIP with block_log up to 30")
-    return _wzip.compress(data, _CODECS[codec], _level(codec, level), block_log, checksum, threads, window_log)
+    return _wzip.compress(data, _CODECS[codec], _level(codec, level), block_log, checksum, threads)
 
 
 def decompress(data):

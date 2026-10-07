@@ -40,16 +40,24 @@ done
 "$WLZ4" -q -f --fast "$T/big3m" && "$WZIP" -q -d -c "$T/big3m.wlz4" > "$T/f.out" && same "$T/big3m" "$T/f.out" "--fast"
 "$WZIP" -q -f -5 "$T/big3m" && "$WLZ4" -q -d -c "$T/big3m.wz" > "$T/f.out" && same "$T/big3m" "$T/f.out" "wlz4 -d of .wz"
 
-# linked blocks (64 KiB blocks of a 3 MB file): the same frame from 1 and 8 threads, from a file and a pipe, and
-# smaller than independent blocks; -l shows the window log
-"$WZIP" -q -c -3 -B16 --linked "$T/big3m" > "$T/l1.wz" && "$WZIP" -q -c -3 -B16 --linked -T8 "$T/big3m" > "$T/l8.wz" \
-	&& same "$T/l1.wz" "$T/l8.wz" "--linked -T8"
-"$WZIP" -q -c -3 -B16 --linked -T3 < "$T/big3m" | "$WZIP" -q -d -c > "$T/l.out" && same "$T/big3m" "$T/l.out" "--linked pipe"
-"$WZIP" -q -d -c "$T/l1.wz" > "$T/l.out" && same "$T/big3m" "$T/l.out" "--linked -d"
-"$WZIP" -q -c -3 -B16 -T8 "$T/big3m" > "$T/u8.wz" && [ $(wc -c < "$T/l1.wz") -lt $(wc -c < "$T/u8.wz") ] && ok \
-	|| bad "linked blocks no smaller than independent ones"
-"$WZIP" -l "$T/l1.wz" | grep -q " 16  27 " && ok || bad "-l of linked blocks"
-"$WLZ4" -q -c --linked "$T/text8" > /dev/null 2>&1 && bad "--linked accepted with WLZ4" || ok
+# threads: up to 7 (WZIP levels 7-13) give the frame of one thread, from a file, from a pipe and with small blocks
+# (-B16); more cut the content of a pipe (its size unknown) into linked blocks, the same for any such count, which -l
+# shows by their window log; -d needs no option for any of them
+for src in file pipe; do
+	for opt in "" -B16; do
+		for t in 1 3 7 16; do
+			if [ $src = file ]; then "$WZIP" -q -c -7 $opt -T$t "$T/big3m" > "$T/t$t.wz"
+			else "$WZIP" -q -c -7 $opt -T$t < "$T/big3m" > "$T/t$t.wz"; fi
+			"$WZIP" -q -d -c "$T/t$t.wz" > "$T/t.out" && same "$T/big3m" "$T/t.out" "$src $opt -T$t -d"
+		done
+		same "$T/t1.wz" "$T/t3.wz" "$src $opt -T3"; same "$T/t1.wz" "$T/t7.wz" "$src $opt -T7"
+	done
+done
+"$WZIP" -q -c -7 -T8 < "$T/big3m" > "$T/t8.wz"; "$WZIP" -q -c -7 -T16 < "$T/big3m" > "$T/t16.wz"
+same "$T/t8.wz" "$T/t16.wz" "pipe -T8"
+"$WZIP" -l "$T/t16.wz" | grep -q " 26  27 " && ok || bad "-l of linked blocks"
+"$WZIP" -q -c -3 -T2 "$T/big3m" | "$WZIP" -l - | grep -q " 25   - " && ok || bad "-l of one block (-T2, 21 MB)"
+"$WZIP" -q -c -3 < "$T/big3m" | "$WZIP" -l - | grep -q " 27   - " && ok || bad "-l of a pipe, one thread"
 
 # concatenated frames of both codecs, with a skippable frame between them
 "$WZIP" -q -c "$T/text8" > "$T/cat.wz"

@@ -342,14 +342,43 @@ static void test_linked(const unsigned char* src, int n, const char* name)
 {
 	static const int sets[][3] = { { 1, 15, 10 }, { 5, 16, 17 }, { 11, 16, 17 }, { 1, 17, 20 }, { 3, 15, 27 } };
 	if (n == 0) {                                         /* linked blocks are WZIP's, at most 2^30 bytes each */
-		const WZF_params bad[2] = { { WZF_CODEC_WLZ4, 1, 0, 0, 1, 20 }, { WZF_CODEC_WZIP, 1, 31, 0, 1, 20 } };
+		const WZF_params bad[3] = { { WZF_CODEC_WLZ4, 1, 0, 0, 1, 20 }, { WZF_CODEC_WZIP, 1, 31, 0, 1, 20 },
+		                            { WZF_CODEC_WZIP, 1, 0, 0, 1, -2 } };
 		unsigned char f[64];
-		for (int k = 0; k < 2; k++)
+		for (int k = 0; k < 3; k++)
 			if (WZF_getErrorCode(WZF_compress(f, sizeof f, f, 0, &bad[k])) != WZF_error_parameter)
 				fail("frame/linked", "parameters", k, "accepted invalid parameters");
 		checks++;
 	}
 	if (n < 1000) return;
+	{   /* by default (windowLog 0) blocks are linked only when the threads outnumber those one block uses (levels 0-6:
+	       1, 7-13: 7), for content over 64 MiB or of unknown size, and never at level 0 or with -1; the frame decodes
+	       either way. { level, threads, windowLog, size known, linked } */
+		static const int cases[7][5] = { { 2, 1, 0, 0, 0 }, { 2, 2, 0, 0, 1 }, { 2, 8, 0, 1, 0 }, { 2, 8, -1, 0, 0 },
+		                                  { 0, 8, 0, 0, 0 }, { 7, 7, 0, 0, 0 }, { 7, 8, 0, 0, 1 } };
+		for (int k = 0; k < 7; k++) {
+			if (cases[k][0] >= 7 && n > (1 << 18)) continue;
+			const WZF_params p = { WZF_CODEC_WZIP, cases[k][0], 0, k & 1, cases[k][1], cases[k][2] };
+			const unsigned long long cs = cases[k][3] ? (unsigned long long)n : WZF_CONTENTSIZE_UNKNOWN;
+			WZF_CCtx* c = WZF_createCCtx();
+			const size_t cap = WZF_compressBound((size_t)n, &p) + 64;
+			unsigned char* f = guarded(cap);
+			unsigned char* dec = guarded(n);
+			size_t pos = WZF_compressBegin(c, f, cap, &p, cs);
+			const int linked = !WZF_isError(pos) && (f[4] & 0x10) != 0;
+			if (!WZF_isError(pos)) { const size_t r = WZF_compressBlocks(c, f + pos, cap - pos, src, (size_t)n); pos = WZF_isError(r) ? r : pos + r; }
+			if (!WZF_isError(pos)) { const size_t r = WZF_compressEnd(c, f + pos, cap - pos); pos = WZF_isError(r) ? r : pos + r; }
+			checks++;
+			if (WZF_isError(pos)) fail("frame/default", name, k, WZF_getErrorName(pos));
+			else {
+				if (linked != cases[k][4]) fail("frame/default", name, k, "linked blocks chosen wrongly");
+				const size_t d = WZF_decompress(dec, (size_t)n, f, pos);
+				if (d != (size_t)n || memcmp(src, dec, n)) fail("frame/default", name, k, "decoded data differs");
+			}
+			WZF_freeCCtx(c);
+			free(f); free(dec);
+		}
+	}
 	for (int k = 0; k < 5; k++) {
 		const int level = sets[k][0];
 		if (level > 5 && n > (1 << 18)) continue;

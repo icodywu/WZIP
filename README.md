@@ -197,7 +197,7 @@ tar cf - dir | wlz4 > dir.tar.wlz4
 wzip -t file.wz        # test; -l lists frames, blocks, codec, sizes and ratio
 wzip -b9 -e11 file     # benchmark levels 9 to 11 in memory
 wzip -11 -T6 file      # 6 threads: about 2.8 times as fast at levels 7-13, the same output
-wzip -11 -T64 big      # over 64 MiB: linked blocks, compressed at once (below)
+wzip -11 -T64 big      # more threads: blocks compressed at once (below); wzip -d needs no option
 ```
 
 As in Zstandard's tool, inputs are kept unless `--rm` is given, and outputs are not overwritten without `-f`.
@@ -212,22 +212,21 @@ that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 
 fast with 4 threads and 2.79 times with 6, and enwik8 2.17 and 3.54 times with 4 and 7; level 7 Silesia 2.53 times,
 level 13 2.36 times. With 5 threads or more the parser is the slowest stage.
 
-More threads than one block can use (at levels 0-6, more than one) go to blocks: WZIP content of more than 64 MiB
-becomes **linked blocks** of 64 MiB, compressed at once, each referring to the 128 MiB of content before it as a
-dictionary that its threads index first ([frame format](doc/frame_format.md), section 5.1). Little is lost to the
-cuts, and the frame is the same for any number of threads:
+More threads than one block uses (at levels 0-6, more than one) go to blocks: content over 64 MiB, or from a pipe,
+is cut into blocks of 64 MiB, compressed at once, each **linked** to the 128 MiB of content before it, its
+dictionary, which its threads index first ([frame format](doc/frame_format.md), section 5.1; at level 0, whose
+window is 1 MiB, the blocks are independent). One thread keeps one stream, at full speed; the blocks lose almost
+nothing to the cuts. Whoever decompresses needs no option: the frame says how it was made. On a node of two
+EPYC 9334, threads unpinned:
 
-| level 11, whole node (2 x EPYC 9334) | threads | compression | ratio |
-|---|---|---|---|
-| enwik9, one stream | 1 | 0.96 MB/s | 4.7442 |
-| enwik9, linked blocks | 16 | 6.37 MB/s | 4.7440 |
-| enwik9, linked blocks | 105 (15 blocks x 7) | 11.0 MB/s | 4.7440 |
-| Silesia (211 MB), one stream | 1 | 1.49 MB/s | 4.0852 |
-| Silesia (211 MB), linked blocks | 28 (4 blocks x 7) | 6.07 MB/s | 4.0839 |
+| enwik9 | 1 thread | 8 threads | 16 threads | 105 threads | ratio, one stream / blocks |
+|---|---|---|---|---|---|
+| level 1 | 120 MB/s | 675 MB/s | 1212 MB/s | | 3.3460 / 3.3496 |
+| level 5 | 7.74 MB/s | 33.2 MB/s | 48.4 MB/s | | 4.1429 / 4.1428 |
+| level 11 | 0.96 MB/s | 3.73 MB/s | 5.62 MB/s | 11.8 MB/s | 4.7442 / 4.7440 |
 
-At level 13 the 105 threads compress enwik9 at 6.04 MB/s (one stream with 7 threads: 0.98 MB/s). A frame of linked
-blocks decodes in one thread, about 5% slower than one stream, with the 128 MiB window and a block in memory; wzip
-1.0.0 cannot decode it, and `--no-linked` keeps independent blocks (`results/epyc_linked.txt`).
+Linked blocks decode in one thread, 3-6% slower than one stream, with the 128 MiB window and a block in memory
+(`results/epyc_linked.txt`).
 
 ## Python
 

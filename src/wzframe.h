@@ -34,7 +34,8 @@ const char* WZF_versionString(void);
 #define WZF_BLOCKLOG_MIN       10
 #define WZF_BLOCKLOG_MAX       31
 #define WZF_WINDOWLOG_MIN      10               /* linked blocks (WZIP): each refers to up to 2^windowLog bytes before it */
-#define WZF_WINDOWLOG_MAX      27               /* WZIP's widest window */
+#define WZF_WINDOWLOG_MAX      27               /* WZIP's widest window, and the window of linked blocks by default */
+#define WZF_LINKED_BLOCKLOG    26               /* the blocks of WZIP content split by the threads */
 
 enum { WZF_CODEC_WZIP = 0, WZF_CODEC_WLZ4 = 1 };
 
@@ -62,13 +63,16 @@ const char* WZF_getErrorName(size_t code);
 typedef struct {
 	int codec;          /* WZF_CODEC_WZIP or WZF_CODEC_WLZ4 */
 	int level;          /* WZIP: 0-13. WLZ4: -2 fast, -1 lazy, 0-7 hash chains, 8-12 optimal parsing */
-	int blockLog;       /* blocks decode to at most 2^blockLog bytes (10-31); 0: by the content size (doc) */
+	int blockLog;       /* blocks decode to at most 2^blockLog bytes (10-31); 0: by the content (doc/frame_format.md, 9) */
 	int noChecksum;     /* 1: no content checksum */
 	int nbWorkers;      /* threads (0 or 1: one): blocks compressed at once, and within a WZIP block at levels 7-13
-	                       its match finder's indexes (wzip_compress_mt). The frame is the same for any count */
-	int windowLog;      /* WZIP: 0 independent blocks; 10-27 linked blocks, each referring to up to 2^windowLog bytes
-	                       of content before it (better compression in blocks, so in parallel; decoders of version
-	                       1.0.0 reject such frames). 0 blockLog then means 26 at most */
+	                       its match finder's indexes (up to WZIP_WORKERS_MAX), with the output of one thread */
+	int windowLog;      /* WZIP's linked blocks, each referring to up to 2^windowLog bytes of content before it.
+	                       0 (the default): with blockLog 0, WZIP content is one block (up to 1 GiB), unless the threads
+	                       outnumber those one block uses (levels 0-6: 1; 7-13: WZIP_WORKERS_MAX): then content over
+	                       64 MiB, or of unknown size, is cut into blocks of 64 MiB, compressed at once and linked with a
+	                       128 MiB window (independent at level 0, whose window is 1 MiB). -1: independent blocks.
+	                       10-27: linked blocks (blockLog 0: of 64 MiB at most). Decoders need no parameter */
 } WZF_params;
 
 #define WZF_CONTENTSIZE_UNKNOWN (~0ULL)

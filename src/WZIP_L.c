@@ -2774,6 +2774,7 @@ static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* cons
 static const int WideWinGap[3] = { 7, 3, 1 };
 
 static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const int to);
+#define   WZL_PrimeBytes       (1 << 24)          /* the reach into a dictionary of a hash table without a chain */
 
 int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSize, void* const wzipStream, int wzipCapSize)
 {
@@ -2802,9 +2803,12 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 	return size ? (int)size + WIN_HeaderSize : 0;
 }
 
-/* Inserts the dictionary positions from..to (negative) into the hash tables and chains of levels 0-6. */
+/* Inserts the dictionary positions from..to (negative) into the hash tables and chains of levels 0-6, each table only
+   as far back as it reaches: its window, and for a table without a chain, which keeps one position per hash, at most
+   WZL_PrimeBytes (older positions are mostly overwritten anyway). */
 static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const int to)
 {
+	SCHED(wzipStr);
 	int* hash0Table = (int*)wzipStr->hash0Table;
 	int* hash1Table = (int*)wzipStr->hash1Table;
 	int* hash2Table = (int*)wzipStr->hash2Table;
@@ -2814,23 +2818,27 @@ static void WZL_Insert_Dict(WZIP_State_Str* const wzipStr, const int from, const
 	const Uint32 chain2Mask = wzipStr->chain2Mask;
 	const int hash1Len = wzipStr->hash1Len;
 	const int hash2Len = wzipStr->hash2Len;
+	const int reach0 = min(WINDOW(OffWidth[3]), WZL_PrimeBytes);
+	const int reach1 = chain1Mask ? WINDOW(OffWidth[hash2Len - 1]) : min(WINDOW(OffWidth[hash2Len - 1]), WZL_PrimeBytes);
+	const int reach2 = chain2Mask ? WINDOW(OffWidth[8]) : min(WINDOW(OffWidth[8]), WZL_PrimeBytes);
+	const int from0 = max(from, -reach0), from1 = max(from, -reach1), from2 = max(from, -reach2);
 
 	int hashV, dist, matchIdx;
-	const Uint8* dictPtr = wzipStr->dictEnd + from;
-	for (int i = from; i <= to; i++, dictPtr++) {
-		hashV = WLZ_Hash0(dictPtr) & wzipStr->hash0Mask;
-		matchIdx = hash0Table[hashV];
+	for (int i = from0; i <= to; i++) {
+		hashV = WLZ_Hash0(wzipStr->dictEnd + i) & wzipStr->hash0Mask;
 		hash0Table[hashV] = i;
-
-		hashV = WLZ_Hash1(dictPtr) & wzipStr->hash1Mask;
+	}
+	for (int i = from1; i <= to; i++) {
+		hashV = WLZ_Hash1(wzipStr->dictEnd + i) & wzipStr->hash1Mask;
 		matchIdx = hash1Table[hashV];
 		hash1Table[hashV] = i;
 		if (chain1Mask) {
 			dist = i - matchIdx;
 			chain1Table[(Uint32)i & chain1Mask] = (dist > 0 && dist < chain1Mask) ? dist : chain1Mask;
 		}
-
-		hashV = WLZ_Hash2(dictPtr) & wzipStr->hash2Mask;
+	}
+	for (int i = from2; i <= to; i++) {
+		hashV = WLZ_Hash2(wzipStr->dictEnd + i) & wzipStr->hash2Mask;
 		matchIdx = hash2Table[hashV];
 		hash2Table[hashV] = i;
 		if (chain2Mask) {
@@ -2905,6 +2913,7 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 		WZIP_Free_State(wzipStr);
 		return NULL;
 	}
+	if (level >= 7) return wzipStr;                    /* the optimal levels index the input and dictionary themselves */
 	/* zeroed: an entry not yet written then names position 0, which is always in the history. Left unset, a stale
 	   entry from reused memory could name a position near the dictionary's end, whose compare reads past it. */
 	wzipStr->hash0Table = calloc((size_t)wzipStr->hash0Mask + 1, sizeof(int));
