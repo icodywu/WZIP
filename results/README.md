@@ -8,16 +8,18 @@ unless a file name says `checked`.
 ## AMD EPYC 9334 (the paper's and the README's numbers)
 
 Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see `bench/README.md`), one run per
-8-core complex. The paper's tables are `gen_tables.py` applied to `epyc_*` and `epyc_control_*` together:
+8-core complex, on 2026-10-07: every codec with the code of commit 37c074a, then WZIP again with c538931 (its
+finder's single-thread fix), whose lines replace WZIP's. The paper's tables are `gen_tables.py` applied to
+`epyc_*` and `epyc_control_*` together:
 
 | File | Contents |
 |---|---|
 | `epyc_S.txt`, `epyc_C.txt`, `epyc_e8.txt`, `epyc_e9.txt` | every configuration on Silesia (with Zstandard's negative levels), Canterbury+Calgary, enwik8 and enwik9; eight runs per node |
 | `epyc_checked_S.txt` | WZIP's and WLZ4's bounds-checked decoders on Silesia |
-| `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.0%) |
+| `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.1%) |
 | `epyc_log.txt`, `epyc_control_log.txt` | node, core and seconds of each task |
 | `epyc_zstd_asm.txt` | Zstandard's decompression with (`asm`) and without (`noasm`, `-DZSTD_DISABLE_ASM`) its assembly Huffman decoder, three interleaved passes from saved streams: levels -1 to 22 on Silesia, then 1 to 22 on enwik9; the assembly gains 0.1-2.2% |
-| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node) |
+| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-06 |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.
 
@@ -26,7 +28,7 @@ Threads (not in the paper's tables; the README's "Threads"):
 | File | Contents |
 |---|---|
 | `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's |
-| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 0-13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB beyond); then one 64 MiB block of enwik9 with and without its 128 MiB dictionary, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10) |
+| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB beyond); then one 64 MiB block of enwik9 with and without its 128 MiB dictionary, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10) |
 
 ## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)
 

@@ -55,7 +55,7 @@ python3 bench/cluster/collect.py $RUN results/epyc
 
 The results in `results/epyc_*` are three runs: every configuration with eight workers per node (`epyc_*`), WZIP's
 and WLZ4's bounds-checked decoders on Silesia (`epyc_checked_S`), and a control of everything with two workers per
-node (`SLOTS="4 36"`, `epyc_control_*`), whose speeds differed from the first run's by a median of 0.0%; each
+node (`SLOTS="4 36"`, `epyc_control_*`), whose speeds differed from the first run's by a median of 0.1%; each
 configuration keeps its best speeds of the runs. `make_queue.py blocks` lists the block benchmark (4 KB and 8 KB
 blocks of Silesia and of Canterbury+Calgary), run the same way, twice (`epyc_blocks_*`, `epyc_control_blocks_*`).
 The paper's tables and figure:

@@ -21,7 +21,7 @@ before offsets, so the decoder knows each match's window and no extra field is s
 - **WLZ4** is a byte-aligned, LZ4-class codec with one offset rule: a one-byte offset for length 3, and for longer
   matches a flagged offset of 1 + (length >= 6) bytes, or one more when the flag is set: one or two bytes (128 B or
   32 KB) for lengths 4-5, two or three (32 KB or 8 MB) from length 6. It sits between LZ4 and Zstandard, nearer
-  LZ4: on Silesia it reaches Zstandard 3's ratio and decodes twice as fast, at 71-83% of LZ4's speed, but compresses
+  LZ4: on Silesia it reaches Zstandard 3's ratio and decodes twice as fast, at 67-77% of LZ4HC's speed, but compresses
   more slowly than Zstandard ([where WLZ4 sits](#where-wlz4-sits-between-lz4-and-zstandard)).
 
 <img src="doc/figures/wlz4-windows.svg" alt="How far back a WLZ4 match can reach, by length and offset bytes" width="560">
@@ -56,28 +56,27 @@ twice, on identical nodes; speeds are the best of both runs (of 3 compressions f
 20 decompressions in each). Ratio is total input over total output; speeds in MB/s. Full tables, the harness and the
 raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
 them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
-`results/`), gave the same ratios and conclusions at lower speeds. WZIP and WLZ4 decode in their trusted mode here,
-as in the paper (see Usage); their default, bounds-checked decoders are 4-7% (WZIP) and at most 7% (WLZ4) slower on
-Silesia.
+`results/`), gave the same ratios at lower speeds. WZIP and WLZ4 decode in their trusted mode here, as in the paper
+(see Usage); their default, bounds-checked decoders are 5-8% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
-| LZ4HC 12 | 2.743 | 13.4 | 4521 |
-| **WLZ4 2** | 2.758 | 72.2 | 3481 |
-| **WLZ4 12** | 3.186 | 1.70 | 3535 |
-| Zstandard 19 | 4.005 | 3.54 | 1395 |
-| Zstandard 22 | 4.045 | 2.53 | 1311 |
-| **WZIP 11** | 4.080 | 1.69 | 1107 |
-| **WZIP 13** | 4.097 | 0.79 | 1053 |
-| Brotli 11 | 4.276 | 0.68 | 506 |
-| xz -9e | 4.374 | 2.42 | 150 |
+| LZ4HC 12 | 2.743 | 13.4 | 4568 |
+| **WLZ4 2** | 2.758 | 71.9 | 3475 |
+| **WLZ4 12** | 3.186 | 1.72 | 3527 |
+| Zstandard 19 | 4.005 | 3.54 | 1389 |
+| Zstandard 22 | 4.045 | 2.53 | 1310 |
+| **WZIP 11** | 4.080 | 1.68 | 1130 |
+| **WZIP 13** | 4.097 | 0.78 | 1062 |
+| Brotli 11 | 4.276 | 0.68 | 505 |
+| xz -9e | 4.374 | 2.42 | 149 |
 
 | enwik9 (1 GB of Wikipedia) | Ratio | Compress | Decompress |
 |---|---:|---:|---:|
-| Zstandard 22 | 4.676 | 1.41 | 968 |
+| Zstandard 22 | 4.676 | 1.41 | 966 |
 | xz -9e | 4.722 | 1.42 | 166 |
-| **WZIP 11** | 4.745 | 1.00 | 619 |
-| **WZIP 13** | 4.759 | 0.48 | 593 |
+| **WZIP 11** | 4.744 | 0.99 | 1005 |
+| **WZIP 13** | 4.759 | 0.47 | 957 |
 
 ### Where WLZ4 sits between LZ4 and Zstandard
 
@@ -90,7 +89,7 @@ ratio.*
 
 In ratio and decompression speed WLZ4 lies between LZ4 and Zstandard; in compression speed it does not.
 
-- **Decompression.** WLZ4 decodes at 3.1-3.5 GB/s in trusted mode, 68-78% of LZ4HC 12's 4.5 GB/s, and at
+- **Decompression.** WLZ4 decodes at 3.0-3.5 GB/s in trusted mode, 67-77% of LZ4HC 12's 4.6 GB/s, and at
   3.0-3.4 GB/s with its default, bounds-checked decoder (LZ4 and Zstandard are measured with their checked
   decoders); Zstandard's levels -7 to 9 decode at 1.4-2.5 GB/s. At equal ratio WLZ4 decodes 1.6-2.5 times as fast
   as Zstandard (checked decoder: 1.6-2.4): the lazy mode against Zstandard -1 (ratio 2.43), level 12 against
@@ -98,8 +97,8 @@ In ratio and decompression speed WLZ4 lies between LZ4 and Zstandard; in compres
 - **Ratio.** WLZ4's levels span 2.37-3.19, from 13% above LZ4's default mode to Zstandard 3's ratio, 16% above
   LZ4HC 12's. Zstandard's higher levels go further (3.57 at level 9, 4.05 at 22), as does WZIP.
 - **Compression speed.** At a given ratio WLZ4 compresses more slowly than Zstandard. Its fast and lazy modes run at
-  306-330 MB/s, against 735 MB/s for LZ4 and 593 MB/s for Zstandard -1, which matches the lazy mode's ratio;
-  Zstandard 3 reaches level 12's ratio 184 times as fast. Against LZ4HC, WLZ4 compares well: level 2 exceeds
+  307-325 MB/s, against 731 MB/s for LZ4 and 592 MB/s for Zstandard -1, which matches the lazy mode's ratio;
+  Zstandard 3 reaches level 12's ratio 183 times as fast. Against LZ4HC, WLZ4 compares well: level 2 exceeds
   LZ4HC 12's ratio at 5.4 times its compression speed.
 
 WLZ4 therefore suits data compressed once and decompressed many times (read-mostly storage, software packages,
@@ -110,26 +109,26 @@ fly, LZ4 and Zstandard's fast levels are the better choice.
 
 | Codec, level | Ratio | Compress | Decompress (checked) |
 |---|---:|---:|---:|
-| LZ4 1 | 2.101 | 735 | 4717 |
-| LZ4HC 4 | 2.656 | 95.8 | 4285 |
-| LZ4HC 9 | 2.721 | 38.9 | 4455 |
-| LZ4HC 12 | 2.743 | 13.4 | 4521 |
-| **WLZ4 fast** | 2.373 | 330 | 3061 (3001) |
-| **WLZ4 lazy** | 2.432 | 306 | 3259 (3198) |
-| **WLZ4 2** | 2.758 | 72.2 | 3481 (3243) |
-| **WLZ4 4** | 2.805 | 55.5 | 3275 (3444) |
-| **WLZ4 6** | 2.830 | 40.1 | 3233 (3197) |
-| **WLZ4 8** | 2.984 | 11.9 | 3342 (3267) |
-| **WLZ4 10** | 3.101 | 5.82 | 3449 (3355) |
-| **WLZ4 12** | 3.186 | 1.70 | 3535 (3446) |
-| Zstandard -7 | 1.937 | 793 | 2463 |
-| Zstandard -5 | 2.056 | 729 | 2341 |
-| Zstandard -3 | 2.239 | 664 | 2177 |
-| Zstandard -1 | 2.437 | 593 | 2033 |
-| Zstandard 1 | 2.887 | 520 | 1629 |
-| Zstandard 3 | 3.186 | 314 | 1435 |
+| LZ4 1 | 2.101 | 731 | 4718 |
+| LZ4HC 4 | 2.656 | 95.7 | 4328 |
+| LZ4HC 9 | 2.721 | 38.8 | 4458 |
+| LZ4HC 12 | 2.743 | 13.4 | 4568 |
+| **WLZ4 fast** | 2.373 | 325 | 3044 (3018) |
+| **WLZ4 lazy** | 2.432 | 307 | 3259 (3197) |
+| **WLZ4 2** | 2.758 | 71.9 | 3475 (3178) |
+| **WLZ4 4** | 2.805 | 55.5 | 3456 (3345) |
+| **WLZ4 6** | 2.830 | 40.1 | 3505 (3243) |
+| **WLZ4 8** | 2.984 | 12.0 | 3344 (3255) |
+| **WLZ4 10** | 3.101 | 5.85 | 3445 (3357) |
+| **WLZ4 12** | 3.186 | 1.72 | 3527 (3449) |
+| Zstandard -7 | 1.937 | 795 | 2464 |
+| Zstandard -5 | 2.056 | 733 | 2340 |
+| Zstandard -3 | 2.239 | 666 | 2173 |
+| Zstandard -1 | 2.437 | 592 | 2031 |
+| Zstandard 1 | 2.887 | 520 | 1627 |
+| Zstandard 3 | 3.186 | 315 | 1439 |
 | Zstandard 6 | 3.444 | 117 | 1507 |
-| Zstandard 9 | 3.570 | 78.3 | 1571 |
+| Zstandard 9 | 3.570 | 78.6 | 1570 |
 
 </details>
 
@@ -208,9 +207,9 @@ class of lengths, each with its own window: a 3-byte chain for lengths 3-4, a 5-
 binary tree for lengths 7 and up. They depend only on the input, not on the parse, so with `-T` each runs in a thread
 of its own, ahead of the parser, which takes their candidates in order; the tree, the slowest, is one tree per hash
 bucket, and splits further among up to four threads by bucket. The input is not cut, and the output is byte for byte
-that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.27 times as
-fast with 4 threads and 2.79 times with 6, and enwik8 2.17 and 3.54 times with 4 and 7; level 7 Silesia 2.53 times,
-level 13 2.36 times. With 5 threads or more the parser is the slowest stage.
+that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.25 times as
+fast with 4 threads and 2.80 times with 6, and enwik8 2.10 and 3.42 times with 4 and 7; level 7 Silesia 2.52 times,
+level 13 2.32 times. With 5 threads or more the parser is the slowest stage.
 
 More threads than one block uses (at levels 0-6, more than one) go to blocks: content over 64 MiB, or from a pipe,
 is cut into blocks of 64 MiB, compressed at once, each **linked** to the 128 MiB of content before it, its
@@ -221,9 +220,9 @@ EPYC 9334, threads unpinned:
 
 | enwik9 | 1 thread | 8 threads | 16 threads | 105 threads | ratio, one stream / blocks |
 |---|---|---|---|---|---|
-| level 1 | 120 MB/s | 675 MB/s | 1212 MB/s | | 3.3460 / 3.3496 |
-| level 5 | 7.74 MB/s | 33.2 MB/s | 48.4 MB/s | | 4.1429 / 4.1428 |
-| level 11 | 0.96 MB/s | 3.73 MB/s | 5.62 MB/s | 11.8 MB/s | 4.7442 / 4.7440 |
+| level 1 | 121 MB/s | 668 MB/s | 1284 MB/s | | 3.3460 / 3.3496 |
+| level 5 | 7.70 MB/s | 33.2 MB/s | 52.1 MB/s | | 4.1429 / 4.1428 |
+| level 11 | 1.00 MB/s | 3.91 MB/s | 5.80 MB/s | 11.9 MB/s | 4.7442 / 4.7440 |
 
 Linked blocks decode in one thread, 3-6% slower than one stream, with the 128 MiB window and a block in memory
 (`results/epyc_linked.txt`).
@@ -334,7 +333,7 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 5-8% faster for WZIP and up to 7% faster for WLZ4 on the EPYC (9-15% for WLZ4
+On Silesia the trusted mode decodes 5-8% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
 on the laptop). Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 

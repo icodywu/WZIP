@@ -9,7 +9,7 @@ a WZ frame records its frame format version and its codec's format version (`doc
   chain of lengths 5-6, tree of lengths 7+) run in threads of their own beside the parser, and from 5 threads on the
   tree, a tree per hash bucket, splits among 2 to 4 threads by bucket (`WZIP_WORKERS_MAX`, 7): `wzip -T#`,
   `wzip_compress_mt`, `WZIP_Set_Workers`, `WZF_params.nbWorkers`. The output is byte for byte that of one thread;
-  level 11 compresses Silesia 2.79 times as fast with 6 threads, enwik8 3.54 times with 7 (AMD EPYC 9334, one 8-core
+  level 11 compresses Silesia 2.80 times as fast with 6 threads, enwik8 3.42 times with 7 (AMD EPYC 9334, one 8-core
   complex). With a dictionary all the threads index it at once. When the history outgrows the tree's 2^27-byte
   window, the window now stops 32 KiB short, with any number of threads, so that the tree's threads never reuse a
   node another still reads: enwik9 at level 11 grows by 0.008%. Built by default with make and CMake
