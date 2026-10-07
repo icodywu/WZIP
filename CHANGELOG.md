@@ -60,10 +60,11 @@ a WZ frame records its frame format version and its codec's format version (`doc
   window it was found in allows; it now checks the window of its length. On arm64, `Memry.h` used NEON intrinsics
   without including `arm_neon.h`, which compilers reject or fail to link, and its wild copy ran in 32-byte steps,
   writing up to 31 bytes past its end where the decoders leave room for 15: the bounds-checked decoders wrote past
-  the output, which corrupted the heap or the next block. Outputs of 64-bit builds are unchanged;
-  32-bit builds, whose match finders compare 4 bytes at a time, may write other (valid) streams. Found while adding
-  the codecs to lzbench, whose CI builds them for 32-bit x86 and ARM; the CI here now builds and tests with
-  `gcc -m32`.
+  the output, which corrupted the heap or the next block. Outputs of 64-bit builds are unchanged; 32-bit builds,
+  whose match finders compare 4 bytes at a time, may write other (valid) streams. Found while adding the codecs to
+  lzbench, whose CI builds them for 32-bit x86 and ARM; the CI here now builds and tests with `gcc -m32`.
+- `contrib/turbobench`: adds WLZ4 and WZIP to TurboBench; `contrib/lzbench` follows lzbench of 2026-10-07 and gives
+  `wzip` lzbench's internal threads (`-I#`).
 
 ## 1.0.0 (2026-10)
 

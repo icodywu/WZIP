@@ -120,7 +120,7 @@ index 022ec96..f379060 100644
  #include "lz/lzav/lzav.h"
  
 diff --git a/bench/lz_entropy_codecs.cpp b/bench/lz_entropy_codecs.cpp
-index 95feeb9..38f692d 100644
+index 95feeb9..7e2966b 100644
 --- a/bench/lz_entropy_codecs.cpp
 +++ b/bench/lz_entropy_codecs.cpp
 @@ -222,6 +222,25 @@ int64_t lzbench_libdeflate_decompress(char *inbuf, size_t insize, char *outbuf,
@@ -133,7 +133,7 @@ index 95feeb9..38f692d 100644
 +int64_t lzbench_wzip_compress(char *inbuf, size_t insize, char *outbuf, size_t outsize, codec_options_t *codec_options)
 +{
 +    int cap = outsize > 0x7FFFFFFF ? 0x7FFFFFFF : (int)outsize;
-+    return wzip_compress(inbuf, (int)insize, outbuf, &cap, codec_options->level);
++    return wzip_compress_mt(inbuf, (int)insize, outbuf, &cap, codec_options->level, codec_options->threads);
 +}
 +
 +int64_t lzbench_wzip_decompress(char *inbuf, size_t insize, char *outbuf, size_t outsize, codec_options_t *codec_options)
@@ -150,7 +150,7 @@ index 95feeb9..38f692d 100644
  #include "lz+entropy/lizard/lizard_compress.h"
  #include "lz+entropy/lizard/lizard_decompress.h"
 diff --git a/bench/lzbench.h b/bench/lzbench.h
-index 00d5708..4cb6ed6 100644
+index 00d5708..b0f2693 100644
 --- a/bench/lzbench.h
 +++ b/bench/lzbench.h
 @@ -272,6 +272,10 @@ static const compressor_desc_t comp_desc[] =
@@ -160,7 +160,7 @@ index 00d5708..4cb6ed6 100644
 +    { "wlz4",       "wlz4 1.0.0",              "LZ77",                        0,   0,    0,  BENCH_POOL_MT, lzbench_wlz4_compress,       lzbench_wlz4_decompress,       lzbench_wlz4_init,       lzbench_wlz4_deinit, 0x7FFFFF00 },
 +    { "wlz4fast",   "wlz4 1.0.0 --fast",       "LZ77",                        1,  99,    0,  BENCH_POOL_MT, lzbench_wlz4fast_compress,   lzbench_wlz4_decompress,       lzbench_wlz4_init,       lzbench_wlz4_deinit, 0x7FFFFF00 },
 +    { "wlz4hc",     "wlz4hc 1.0.0",            "LZ77",                        0,  12,    0,  BENCH_POOL_MT, lzbench_wlz4hc_compress,     lzbench_wlz4_decompress,       lzbench_wlz4_init,       lzbench_wlz4_deinit, 0x7FFFFF00 },
-+    { "wzip",       "wzip 1.0.0",              "LZ77 + Huffman",              0,  13,    0,  BENCH_POOL_MT, lzbench_wzip_compress,       lzbench_wzip_decompress,       NULL,                    NULL,                0x7EEEE000 },
++    { "wzip",       "wzip 1.0.0",              "LZ77 + Huffman",              0,  13,    0, FULL_THREADING, lzbench_wzip_compress,       lzbench_wzip_decompress,       NULL,                    NULL,                0x7EEEE000 },
      { "xz",         "xz 5.8.4",                "LZ77 + range",                0,   9,    0, FULL_THREADING, lzbench_xz_compress,         lzbench_xz_decompress,         NULL,                    NULL },
      { "yalz77",     "yalz77 2022-07-06",       "LZ77",                        1,  12,    0,  BENCH_POOL_MT, lzbench_yalz77_compress,     lzbench_yalz77_decompress,     NULL,                    NULL },
      { "yappy",      "yappy 2014-03-22",        "LZ77",                        1,  12,    0,   NO_THREADING, lzbench_yappy_compress,      lzbench_yappy_decompress,      lzbench_yappy_init,      NULL },
