@@ -279,7 +279,7 @@ runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows
 with CMake.
 Big-endian support is not yet verified: a job on an emulated s390x runs the tests for information only. On x86 the
 decoders pick BMI2 code paths at run time. The library's version
-(1.0.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
+(1.0.1) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
 
 The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing
 outside the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated

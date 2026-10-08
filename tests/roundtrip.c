@@ -473,9 +473,99 @@ static void test_all(const unsigned char* src, int n, const char* name)
 static unsigned rng = 12345;
 static unsigned next_rand(void) { rng = rng * 1103515245u + 12345u; return rng >> 8; }
 
-static void synthetic(void)
+/* bytes without any repeat (xorshift64*: unlike the low bits of next_rand, no short period) */
+static unsigned long long xs = 88172645463325252ull;
+static unsigned char next_byte(void) { xs ^= xs >> 12; xs ^= xs << 25; xs ^= xs >> 27; return (unsigned char)((xs * 2685821657736338717ull) >> 56); }
+
+/* text-like data: random words */
+static void fill_words(unsigned char* b, int n)
 {
 	static const char words[][8] = { "the ", "match ", "window ", "length ", "offset ", "of ", "a ", "and ", "LZ77 ", "code " };
+	for (int p = 0; p < n; ) {
+		const char* w = words[next_rand() % 10];
+		for (int k = 0; w[k] && p < n; k++) b[p++] = (unsigned char)w[k];
+	}
+}
+
+/* little-endian 32-bit counters: no 6 bytes repeat, so level 0 finds no match, yet half the bytes are zero */
+static void fill_counters(unsigned char* b, int n)
+{
+	for (int i = 0; i + 4 <= n; i += 4) {
+		b[i] = (unsigned char)(i >> 2); b[i + 1] = (unsigned char)(i >> 10); b[i + 2] = (unsigned char)(i >> 18); b[i + 3] = 0;
+	}
+}
+
+/* A stretch without any match longer than a literal run can be (2^24), then text: levels 0 and 1 must still compress
+   the text (1.0.0 stored the whole input), and the stream must decode. */
+static void test_long_stretch(void)
+{
+	const int nr = (1 << 24) + (1 << 20), nt = 1 << 20, n = nr + nt;
+	unsigned char* b = (unsigned char*)malloc(n);
+	const int bound = WZIP_Cap_CmprSize(n);
+	unsigned char* cmp = (unsigned char*)malloc(bound);
+	unsigned char* dec = (unsigned char*)malloc(n);
+	if (!b || !cmp || !dec) { printf("out of memory\n"); exit(2); }
+	for (int i = 0; i < nr; i++) b[i] = next_byte();
+	fill_words(b + nr, nt);
+	for (int level = 0; level <= 1; level++) {
+		int cap = bound, dcap = n;
+		const int c = wzip_compress(b, n, cmp, &cap, level);
+		checks++;
+		if (c <= 0 || c > nr + nt / 2) fail("wzip", "17 MiB random + 1 MiB text", level, "the text after the random stretch was not compressed");
+		else if (wzip_decompress(cmp, c, dec, &dcap) != n || memcmp(b, dec, n)) fail("wzip", "17 MiB random + 1 MiB text", level, "decoded data differs");
+	}
+	printf("%-28s %10d bytes  %s\n", "random 17 MiB + text 1 MiB", n, "done");
+	free(b); free(cmp); free(dec);
+}
+
+/* The encoders' output must be the same on every platform (qsort's ties, log2 and floating point once made it differ):
+   a hash of the streams of every level for a few inputs, against the value on x86-64 Linux. 64-bit little-endian
+   builds only: 32-bit builds compare 4-byte words in the match finders, and so find other matches. */
+static unsigned fnv1a(unsigned h, const unsigned char* p, int n)
+{
+	for (int i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+	return h;
+}
+
+static void test_same_output(void)
+{
+	const unsigned one = 1;
+#ifdef WZIP_TEST_MAX_OFF_WIDTH
+	if (one) { printf("%-28s (not with narrowed windows)\n", "same output everywhere"); return; }
+#endif
+	if (sizeof(void*) != 8 || *(const unsigned char*)&one != 1) { printf("%-28s (64-bit little-endian only)\n", "same output everywhere"); return; }
+	static const struct { const char* name; int n; unsigned expect; } cases[] = {
+		{ "counters 256 KiB", 1 << 18, 0x5BE5F4B2u }, { "words 256 KiB", 1 << 18, 0xAF6A75CDu }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
+	};
+	const int n = 1 << 18;
+	unsigned char* b = (unsigned char*)malloc(n);
+	const int bound = WZIP_Cap_CmprSize(n);
+	unsigned char* cmp = (unsigned char*)malloc(bound);
+	if (!b || !cmp) { printf("out of memory\n"); exit(2); }
+	for (int k = 0; k < 3; k++) {
+		const unsigned saved = rng;
+		rng = 777;                                       /* the same words whatever ran before */
+		if (k == 0) fill_counters(b, n); else fill_words(b, n);
+		rng = saved;
+		unsigned h = 2166136261u;
+		for (int level = 0; level <= 13; level++) {
+			int cap = bound;
+			const int c = wzip_compress(b, cases[k].n, cmp, &cap, level);
+			h = fnv1a(h, cmp, c > 0 ? c : 0);
+		}
+		checks++;
+		if (h != cases[k].expect) {
+			char why[96];
+			snprintf(why, sizeof why, "stream hash %08X, expected %08X", h, cases[k].expect);
+			fail("wzip", cases[k].name, -1, why);
+		}
+	}
+	printf("%-28s %10s        %s\n", "same output everywhere", "", "done");
+	free(b); free(cmp);
+}
+
+static void synthetic(void)
+{
 	const int n = 1 << 20;
 	unsigned char* b = (unsigned char*)calloc(n, 1);
 	char name[64];
@@ -491,10 +581,10 @@ static void synthetic(void)
 	test_all(b, 300000, "random 300000");
 	for (int i = 0; i < n; i++) b[i] = (unsigned char)(i % 251 < 7 ? 'a' + i % 7 : i % 17);
 	test_all(b, n, "periodic 1 MB");
-	for (int p = 0; p < n; ) {                           /* text-like: random words */
-		const char* w = words[next_rand() % 10];
-		for (int k = 0; w[k] && p < n; k++) b[p++] = (unsigned char)w[k];
-	}
+	fill_counters(b, n);                                 /* literal counts that fill their last block exactly */
+	test_all(b, 32768, "counters 32 KiB");
+	test_all(b, 1 << 18, "counters 256 KiB");
+	fill_words(b, n);                                    /* text-like: random words */
 	for (int size = 1000; size <= n; size *= 4) {
 		snprintf(name, sizeof name, "words %d", size);
 		test_all(b, size, name);
@@ -503,6 +593,8 @@ static void synthetic(void)
 		b[i] = (unsigned char)((i / 1000) & 1 ? next_rand() : (i / 2000) & 0xFF);
 	test_all(b, n, "runs and bursts 1 MB");
 	free(b);
+	test_long_stretch();
+	test_same_output();
 }
 
 int main(int argc, char** argv)

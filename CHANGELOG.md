@@ -3,6 +3,29 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
+## 1.0.1 (2026-10-08)
+
+Fixes from the review of the lzbench pull request (inikep/lzbench#341). The formats are unchanged, and so are the
+streams on x86-64 Linux but for the cases below: of Silesia, Canterbury, Calgary and enwik8 at every level, only
+three Silesia files at level 0 change (mozilla, ooffice and x-ray, 8 KB smaller in all).
+
+- **Level 0 could write a stream that its decoders reject**: when the literals of a WZIP_L stream filled their last
+  block of 32768 exactly, which happens at level 0 when it finds no match in an input of a multiple of 32 KiB (a git
+  pack index of 256 KiB, for one), the encoder wrote an empty literal block after the literal stream. 1.0.0 cannot
+  decode such streams, and no decoder can, as the empty block reads as the first sequence block's header. The
+  other levels always end with literals of their own, and were not affected.
+- **Levels 0 and 1 stored inputs with a long incompressible part whole**: in a literal run their probe step grew
+  without bound, so that after a long stretch without matches they found few in what followed, and a literal run of
+  2^24 bytes or more, which the format cannot code, made them store the input. (14 MiB of random data followed by
+  2.4 MB of C source was stored at level 0.) The step now stops growing at 1025 bytes, and a run reaching 8 MiB ends
+  at the first match of 3 bytes or more found by a plain scan; the input is stored only if there is none.
+- **The same output on every platform**: equally frequent symbols were ordered by `qsort`, which glibc's keeps
+  stable but others need not, so code lengths, and so the streams, differed (for one input, 8377773 bytes on Linux
+  and 8377750 with MinGW-w64). Ties now go by symbol, which is glibc's order. The prices of the optimal parsers
+  (levels 7-13) came from the C library's `log2`, and a literal block's "nearly incompressible" test from a
+  floating-point product; both are now settled in integer arithmetic. 64-bit little-endian builds now write the same
+  streams (`tests/roundtrip.c` checks a hash of the streams of every level).
+
 ## 1.0.0 (2026-10-08)
 
 First public release.

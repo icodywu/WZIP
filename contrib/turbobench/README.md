@@ -16,7 +16,7 @@ They decompress with the bounds-checked decoders (`WLZ_Decompress`, `wzip_decomp
 ```sh
 git clone https://github.com/powturbo/TurboBench && cd TurboBench
 git submodule update --init                     # the other codecs
-git submodule add https://github.com/icodywu/WZIP wzip && git -C wzip checkout v1.0.0
+git submodule add https://github.com/icodywu/WZIP wzip && git -C wzip checkout v1.0.1
 python ../WZIP/contrib/turbobench/add_to_turbobench.py .
 make -j8
 ./turbobench -ewlz4/wlz4hc,2,12/lz4,12/zstd,1,19/wzip,1,11 silesia.tar
@@ -30,6 +30,6 @@ later TurboBench it stops at the first anchor it no longer finds.
 
 ## Proposing them to TurboBench
 
-The submodule must point at a public commit, best a release tag. Commit the submodule, `.gitmodules`, `makefile`
-and `plugin.cc` as one change ("Add wlz4 and wzip 1.0.0"), push to a fork and open a pull request against
+They are proposed in [powturbo/TurboBench#59](https://github.com/powturbo/TurboBench/pull/59). The submodule must point at a public commit, best a release tag. Commit the submodule, `.gitmodules`, `makefile`
+and `plugin.cc` as one change ("Add wlz4 and wzip 1.0.1"), push to a fork and open a pull request against
 `powturbo/TurboBench`, as for lzbench (`../lzbench/README.md`).

@@ -47,12 +47,13 @@ crashes about once in 300 runs under load, a trivial program as often; a lone ar
 
 ## Proposing them to lzbench
 
-lzbench's CONTRIBUTING.md asks that a new codec be significant in some dimension and pass its CI. The repository
-must be public at the version the entries name (`wlz4 1.0.0`, `wzip 1.0.0` and the release date in the README
+They are proposed in [inikep/lzbench#341](https://github.com/inikep/lzbench/pull/341) (1.0.1 holds the fixes from its
+review). For a later version: lzbench's CONTRIBUTING.md asks that a new codec be significant in some dimension and pass its CI. The repository
+must be public at the version the entries name (`wlz4 1.0.1`, `wzip 1.0.1` and the release date in the README
 line: edit `lzbench.patch` if the release differs).
 
 1. Fork lzbench on GitHub, clone the fork, run `add_to_lzbench.sh` on it, build and run as above.
-2. Commit as one change ("Add wlz4 1.0.0 and wzip 1.0.0"), push, and open a pull request against
+2. Commit as one change ("Add wlz4 1.0.1 and wzip 1.0.1"), push, and open a pull request against
    `inikep/lzbench`, saying what each entry is for (the top-level README has the numbers): WLZ4 decodes at 3.0-3.5
    GB/s with its checked decoder, 1.6-2.4 times as fast as Zstandard at equal ratio, with ratios from 13% above
    LZ4's default mode to Zstandard 3's (16% above LZ4HC 12's), though Zstandard compresses faster at every ratio;

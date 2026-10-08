@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wzip"
-version = "1.0.0"
+version = "1.0.1"
 description = "WZIP and WLZ4 compression: LZ77 codecs with match-length-dependent sliding windows"
 readme = "python/README.md"
 license = "BSD-2-Clause"
