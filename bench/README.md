@@ -100,11 +100,14 @@ with its bounds-checked decoder, into `results/position_*.txt`; `plot_position.p
 `doc/figures/wlz4-position.svg` and prints the README's table.
 
 WZIP ablation (the paper's "WZIP's parts"): `sh bench/ablation/run.sh path/to/silesia` from the repository root.
-`ablation/switches.py` adds three encoder switches to a copy of `WZIP_L.c` in `build/` (never to `src/`):
-`WZ_CLASSIC=1` codes every block with the 204-value alphabet, the cache slot going to the offset symbol (same parse);
-`WZ_NG=k` uses k offset tables (`k=1`: one for all lengths; reparsed); `WZ_ONEWIN=1` gives lengths 3-7 the widest
-window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decoder derives the groups from the windows).
-`ablation/harness.c` compresses one file at level 11, verifies it with the checked decoder and prints the process's
+`ablation/switches.py` adds four encoder switches to a copy of `WZIP_L.c` in `build/` (never to `src/`):
+`WZ_FULLWIN=1` lets every level search the input's full windows, as all levels did before the level windows (run.sh
+sets it, so that levels 11, 12 and 13 differ only in their parser: three states at 12, a first pass and eight offset
+groups at 13); `WZ_CLASSIC=1` codes every block with the 204-value alphabet, the cache slot going to the offset symbol
+(same parse); `WZ_NG=k` uses k offset tables (`k=1`: one for all lengths; reparsed); `WZ_ONEWIN=1` gives lengths 3-7
+the widest window (reparsed; run it with `WZ_NG=5` and compare with `ng5`, since the decoder derives the groups from
+the windows). The configurations are `base`, `classic`, `ng1`, `ng5`, `onewin_ng5` (level 11), `l12` and `l13`.
+`ablation/harness.c` compresses one file at a level, verifies it with the checked decoder and prints the process's
 peak working set.
 
 WLZ4 ablation (the paper's Table 5 and its "offset size by length alone" sentence): `sh bench/ablation/wlz4/run.sh`

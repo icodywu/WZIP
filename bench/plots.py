@@ -46,7 +46,7 @@ families = [
     (['brotli'], 'Brotli 1.1.0', 'v', 'tab:green', ':'),
     (['xz'], 'xz 5.6.2', 'D', 'tab:purple', ':'),
 ]
-plt.rcParams.update({'font.size': 9})
+plt.rcParams.update({'font.size': 9, 'pdf.fonttype': 42, 'ps.fonttype': 42})   # TrueType, not Type 3, fonts in the PDF
 fig, axes = plt.subplots(1, 2, figsize=(6.0, 2.6))
 handles = []
 for ax, col, xlabel in ((axes[0], 1, 'Compression speed (MB/s)'), (axes[1], 2, 'Decompression speed (MB/s)')):

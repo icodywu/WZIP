@@ -1,5 +1,8 @@
-"""Adds the ablation switches of the DCC paper's Section 5 to a copy of WZIP_L.c (never to src/). Each is an
+"""Adds the ablation switches of the DCC paper's Section 6 to a copy of WZIP_L.c (never to src/). Each is an
 environment variable read by the encoder; the decoder reads the stream as usual.
+   WZ_FULLWIN=1  every level searches the input's full windows (2^27 at most) instead of its own level window, as all
+                 levels did before the level windows; the paper's ablation runs set it, so that levels 11, 12 and 13
+                 differ only in their parser (12: three states; 13: a first pass and eight offset groups)
    WZ_CLASSIC=1  code every sequence block with the 204-value alphabet (literal-run class x length), the cache slot
                  going to the offset symbol, instead of choosing the 1020-value joint alphabet per block; the parse
                  is unchanged, only its coding differs
@@ -23,12 +26,15 @@ def rep(old, new):
     s = s.replace(old, new)
 
 
-rep('static void Set_Offset_Groups(int natural, int fine)\n{\n',
-    'static void Set_Offset_Groups(int natural, int fine)\n{\n\tif (getenv("WZ_NG") && !fine) natural = atoi(getenv("WZ_NG"));\n')
+rep('static void Set_Offset_Groups(WZL_Sched* const S_, int natural, int fine)\n{\n',
+    'static void Set_Offset_Groups(WZL_Sched* const S_, int natural, int fine)\n{\n'
+    '\tif (getenv("WZ_NG") && !fine) natural = atoi(getenv("WZ_NG"));\n')
 rep('\tconst int slotJoint = sjBits + (clBits >> 6) < clBits;\n',
     '\tconst int slotJoint = getenv("WZ_CLASSIC") ? 0 : sjBits + (clBits >> 6) < clBits;\n')
-rep('\tSet_Offset_Groups(wzipStr.hash2Len - MinMatchLen + 1, OffGroupsFine);\n',
-    '\tif (getenv("WZ_ONEWIN")) for (int k = 3; k <= 7; k++) OffWidth[k] = OffWidth[8];\n'
-    '\tSet_Offset_Groups(wzipStr.hash2Len - MinMatchLen + 1, OffGroupsFine);\n')
+rep('\tfor (int k = 4; k <= 8; k++)\n\t\tOffWidth[k] = max(OffWidth[k], OffWidth[k - 1]);\n',
+    '\tfor (int k = 4; k <= 8; k++)\n\t\tOffWidth[k] = max(OffWidth[k], OffWidth[k - 1]);\n'
+    '\tif (getenv("WZ_ONEWIN")) for (int k = 3; k <= 7; k++) OffWidth[k] = OffWidth[8];\n')
+rep('\t\tint prev = WZIP_LEVEL_WINDOW_LOG(level) + 1;',
+    '\t\tint prev = (getenv("WZ_FULLWIN") ? 27 : WZIP_LEVEL_WINDOW_LOG(level)) + 1;')
 open(p, 'w', newline='').write(s.replace('\n', nl))
 print('switches added to', p)

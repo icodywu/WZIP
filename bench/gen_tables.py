@@ -87,7 +87,7 @@ def table(caption, lab, groups, S=S, C=C, names=('Silesia', 'Canterbury+Calgary'
            '\\begin{tabular}{lrrrrrrr}', '\\toprule',
            ' & \\multicolumn{3}{c}{%s} & \\multicolumn{3}{c}{%s} & Memory \\\\' % names,
            '\\cmidrule(lr){2-4}\\cmidrule(lr){5-7}',
-           'Codec, level & Ratio & Comp. & Dec. & Ratio & Comp. & Dec. & (MB) \\\\', '\\midrule']
+           'Codec, level & Ratio & Comp. & Dec. & Ratio & Comp. & Dec. & (MiB) \\\\', '\\midrule']
     for gi, g in enumerate(groups):
         if gi: out.append('\\midrule')
         for c, l in g:
@@ -97,7 +97,7 @@ def table(caption, lab, groups, S=S, C=C, names=('Silesia', 'Canterbury+Calgary'
     return '\n'.join(out) + '\n'
 
 def cap(first, second, memOn):
-    return ('ratio, and compression and decompression speed (MB/s), on %s and on %s; encoder memory (MB) on %s.'
+    return ('ratio, and compression and decompression speed (MB/s), on %s and on %s; encoder memory (MiB) on %s.'
             % (first, second, memOn))
 open(os.path.join(outdir, 'tab_lz4class.tex'), 'w').write(table(
     'The LZ4 class: ' + cap('Silesia', 'Canterbury+Calgary', 'Silesia'), 'tab:lz4class',
