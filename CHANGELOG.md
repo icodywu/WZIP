@@ -3,7 +3,30 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
-## Unreleased
+## 1.0.0 (2026-10-08)
+
+First public release.
+
+- **Formats.** WZIP format 1 and WLZ4 format 1 (`doc/WZIP_format.md`, `doc/WLZ4_format.md`). WLZ4's format 1 is
+  the revision of October 2026 (flagged offsets for lengths 4-5); blocks written by earlier repository versions are
+  not compatible and carry no version field. WZ frame format 0 (`doc/frame_format.md`): magic number, codec and
+  format version, blocks of bounded size, content size and XXH32 checksum. Reference decoders in Python for all three.
+- **Frame API** (`wzframe.h`): one-shot and block-by-block (streaming) compression and decompression, `size_t` sizes,
+  error codes, content beyond the codecs' 2 GB limit as several blocks.
+- **Command-line tool** `wzip` / `wlz4`: compress, decompress, test, list and benchmark, through files or pipes.
+- **Python package** `wzip` (`pip install .`): WZ frames and the bare codec streams, releasing the GIL.
+- WLZ4's bounds-checked decoder needs no room past the decoded size (it used to need 32 bytes).
+- **lzbench integration** (`contrib/lzbench`).
+- **Thread safety:** every function may run in several threads at once, each thread with its own contexts (WZIP_L's
+  window schedule used to be global).
+- **Builds:** GNU make (static library, tool, tests) and CMake (static and shared libraries, tool, tests, install,
+  pkg-config).
+- Validated decoders by default, with an opt-in trusted mode; WZIP_S dictionaries prepared once and shared.
+
+### Changes during development
+
+Made in the repository before the first release. The formats had not been released, so format
+changes kept their version numbers; streams written by earlier development versions may not decode.
 
 - **A window per level.** Each level searches at most its own window, so that memory follows the level: WZIP
   2^27 bytes at the top level of each parser (6 and 13) and one bit less per level below it (2^21 at levels 0 and
@@ -85,7 +108,7 @@ a WZ frame records its frame format version and its codec's format version (`doc
   unknown size; independent at level 0. One thread writes one stream as before, so its speed is unchanged; each
   linked block indexes its dictionary first (at level 11 about half the cost of compressing it), which the threads
   pay for. `WZF_params.windowLog` asks for linked blocks of another window, or with -1 never; decompression needs no
-  option or parameter, and decoders of 1.0.0 reject linked blocks.
+  option or parameter.
 - **Blocks compressed in parallel.** `WZF_compress` and the new `WZF_compressBlocks` (streaming, any number of
   blocks per call) compress `nbWorkers` blocks at once, of either codec, each with what is left of the threads for
   WZIP's match finder; for a given layout of blocks the frame is the same for any number of threads.
@@ -127,23 +150,3 @@ a WZ frame records its frame format version and its codec's format version (`doc
   lzbench, whose CI builds them for 32-bit x86 and ARM; the CI here now builds and tests with `gcc -m32`.
 - `contrib/turbobench`: adds WLZ4 and WZIP to TurboBench; `contrib/lzbench` follows lzbench of 2026-10-07 and gives
   `wzip` lzbench's internal threads (`-I#`).
-
-## 1.0.0 (2026-10)
-
-First release.
-
-- **Formats.** WZIP format 1 and WLZ4 format 1 (`doc/WZIP_format.md`, `doc/WLZ4_format.md`). WLZ4's format 1 is
-  the revision of October 2026 (flagged offsets for lengths 4-5); blocks written by earlier repository versions are
-  not compatible and carry no version field. WZ frame format 0 (`doc/frame_format.md`): magic number, codec and
-  format version, blocks of bounded size, content size and XXH32 checksum. Reference decoders in Python for all three.
-- **Frame API** (`wzframe.h`): one-shot and block-by-block (streaming) compression and decompression, `size_t` sizes,
-  error codes, content beyond the codecs' 2 GB limit as several blocks.
-- **Command-line tool** `wzip` / `wlz4`: compress, decompress, test, list and benchmark, through files or pipes.
-- **Python package** `wzip` (`pip install .`): WZ frames and the bare codec streams, releasing the GIL.
-- WLZ4's bounds-checked decoder needs no room past the decoded size (it used to need 32 bytes).
-- **lzbench integration** (`contrib/lzbench`).
-- **Thread safety:** every function may run in several threads at once, each thread with its own contexts (WZIP_L's
-  window schedule used to be global).
-- **Builds:** GNU make (static library, tool, tests) and CMake (static and shared libraries, tool, tests, install,
-  pkg-config).
-- Validated decoders by default, with an opt-in trusted mode; WZIP_S dictionaries prepared once and shared.

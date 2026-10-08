@@ -78,8 +78,8 @@ line feed, so a text-mode conversion to CR LF spoils it too.
 A decoder must reject a frame with an unknown magic number, a reserved codec, a codec format version or frame
 format version it does not implement, a block size log outside 10-31, or a reserved bit set; and a frame with
 FLG bit 4 set whose codec is not WZIP, whose block size log is 31, or whose window log is outside 10-27. (Bit 4
-was reserved until October 2026, after version 1.0.0 of the library, whose decoders therefore reject linked
-blocks; frames without them are unchanged.)
+was reserved in development versions before 1.0.0, whose decoders reject linked blocks; frames without them are
+unchanged.)
 
 ## 5. Blocks
 
