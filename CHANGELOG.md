@@ -41,6 +41,16 @@ a WZ frame records its frame format version and its codec's format version (`doc
   at levels 11-13. The cost is 3 bytes and an alignment a block (ratios about 0.01% lower).
   (Splitting the fields instead, literal runs, lengths and offsets in three streams, had been slower: the offset
   still waits for the length, and each field needs its own reload.)
+- **WZIP_S decodes 18-21% faster** (its streams are unchanged; the encoder change below is one any decoder
+  accepts). Its literal-run, match-length and offset tables hold each symbol's whole value, the extra-bit count and
+  the value's high bits beside the code length, so that a field takes one table lookup and one shift instead of a
+  second lookup and a branch, as Zstandard's sequence tables do; the code lengths are read with a refill every few
+  lengths rather than after each, counted and checked in one pass, and the tables filled up to four entries at a
+  time. In blocks up to 8 KB the encoder limits literal codes to 9 bits (the format allows 10): 4 KB blocks
+  compress 0.1% more, 8 KB blocks within 0.01%. Silesia in 4 KB blocks decodes at 544-572 MB/s instead of 455-475
+  (67-70% of Zstandard 1 and 9 instead of 56-59%), in 8 KB blocks at 679-737 instead of 574-613 (AMD EPYC 9334). A
+  profile of 4 KB blocks had found two thirds of the gap to Zstandard in the sequences (WZIP_S's parse makes 1.5
+  times as many, its length-3 matches buying its ratio) and a fifth in building the literal table.
 - **Literals decoded as needed.** WZIP_L's decoders decoded the whole literal stream into a buffer of its size (the
   checked decoder: of the output's size) before the first sequence. Up to 32 MiB of literals, which stay in the
   last-level cache, they still do (into a buffer of the literals' size); a stream with more is decoded a 32 KiB block

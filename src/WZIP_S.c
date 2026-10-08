@@ -73,7 +73,11 @@
 #define S_Hash2Log        16                    /* direct index of the 2-byte seed */
 #define S_Hash3Log        13
 #ifndef S_CapLitBits
-#define S_CapLitBits      10                    /* longest literal code; the decoder fills 2^this table entries */
+#define S_CapLitBits      10                    /* longest literal code the format allows */
+#endif
+#ifndef S_SmallLitBits
+#define S_SmallLitBits    9                     /* longest literal code the encoder writes in blocks up to 8K: smaller
+                                                   tables, and on 4K blocks 0.1% more compression (8K: within 0.01%) */
 #endif
 #ifndef S_CapSeqBits
 #define S_CapSeqBits      9                     /* longest literal-run, length and offset code */
@@ -89,7 +93,6 @@
 #define S_NoPos           (-32768)              /* chain end; positions span -WZIPS_MAX_DICT .. WZIPS_MAX_BLOCK - 1 */
 #define S_N_WtSym         (MAX_HufWeight + 3)
 #define S_ValueDirect     8
-#define S_DirectLog       3
 #ifndef S_FourStreamLog
 #define S_FourStreamLog   13                    /* blocks above 2^(this - 1) bytes, i.e. from 8K, use four literal streams */
 #endif
@@ -437,7 +440,7 @@ static Uint32 S_Encode(WZIPS_CCtx* cctx, const Uint8* source, Uint32 nSeq, S_Win
 		freq.mchOff[sym].freq++;
 	}
 
-	Build_Huffman_Table(freq.lit, S_N_Lit, S_CapLitBits, code.lit);
+	Build_Huffman_Table(freq.lit, S_N_Lit, win.wBlock <= 13 ? S_SmallLitBits : S_CapLitBits, code.lit);
 	Build_Huffman_Table(freq.litRun, S_N_LitRun, S_CapSeqBits, code.litRun);
 	Build_Huffman_Table(freq.mchLen, S_N_MchLen, S_CapSeqBits, code.mchLen);
 	Build_Huffman_Table(freq.mchOff, nOffSym, S_CapSeqBits, code.mchOff);
@@ -624,32 +627,152 @@ int WZIPS_getDecompressedSize(const void* src, int srcSize)
 	return S_Read_Header((const Uint8*)src, srcSize, &mode, &hdrSize, &useDict);
 }
 
-/* Validates code lengths and returns the maximum length (0 for an empty table), or -1.
-   Build_Huffman_Table emits a complete code, or a single symbol of length 1, and
-   Build_Huffman_DecTableX1 relies on that, so any other code is rejected. */
-static int S_Check_Code(const Uint8* hufCodeBits, Uint32 nSym, Uint32 capBits)
+/* Value code c (literal runs; match lengths: c = length symbol + 1) as (S_ValueHi[c] << S_ValueExtra[c]) + extra
+   bits, the inverse of S_Value_Code: codes 0..7 are their values, then range symbols (S_RangeBase, S_RangeShift) */
+static const Uint8 S_ValueHi[32]    = { 0, 1, 2, 3, 4, 5, 6, 7,  4, 5, 6, 7,  4, 5, 6, 7,  4, 5, 6, 7,  2, 3,  2, 3,
+                                        1, 1, 1, 1, 1, 1, 1, 1 };
+static const Uint8 S_ValueExtra[32] = { 0, 0, 0, 0, 0, 0, 0, 0,  1, 1, 1, 1,  2, 2, 2, 2,  3, 3, 3, 3,  5, 5,  6, 6,
+                                        8, 9, 10, 11, 12, 13, 14, 15 };
+
+/* Reads the nSym code lengths of one table, coded with the weight code, as Read_Huffman_Header_byHuffman does (a
+   repeat run is cut at nSym): a weight code takes at most MAX_HufHufWt bits and a repeat code at most 17 more, so
+   the stream is refilled when fewer than 24 bits are left rather than after every length */
+static void S_Read_Lengths(Bit_Stream* bitStr, Uint32 remWt, const Huffman_DemapX1* wtDemap, Uint32 nSym, Uint8* bits)
 {
-	Uint32 i, kraft = 0, maxBits = 0, nEffSym = 0;
-	for (i = 0; i < nSym; i++) {
-		if (hufCodeBits[i] > capBits) return -1;
-		if (hufCodeBits[i]) { kraft += 1u << (capBits - hufCodeBits[i]); maxBits = Max(maxBits, hufCodeBits[i]); nEffSym++; }
+	Bit_Stream bitStream = *bitStr;
+	Uint32 i = 0, w, n, repLen;
+	while (i < nSym) {
+		if (bitStream.nUsedBits > 64 - 24) BITStream_Read_Flush(bitStream);
+		BITStream_Read_ExtHufX1(bitStream, remWt, wtDemap, w);
+		if (w <= MAX_HufWeight) { bits[i++] = (Uint8)w; continue; }
+		if (w == MAX_HufWeight + 2) {                       /* a run of zero lengths */
+			BITStream_Read(bitStream, 3, n);
+			repLen = 2 + n;
+			if (repLen == 9) {
+				BITStream_Read(bitStream, 6, n);
+				repLen += n;
+				if (n == 63) { BITStream_Read(bitStream, 8, n); repLen += n; }
+			}
+			if (repLen > nSym - i) repLen = nSym - i;
+			memset(bits + i, 0, repLen);
+		}
+		else {                                              /* a run of the previous length */
+			BITStream_Read(bitStream, 2, n);
+			repLen = 2 + n;
+			if (repLen == 5) {
+				BITStream_Read(bitStream, 4, n);
+				repLen += n;
+				if (n == 15) { BITStream_Read(bitStream, 8, n); repLen += n; }
+			}
+			if (repLen > nSym - i) repLen = nSym - i;
+			memset(bits + i, i ? bits[i - 1] : 0, repLen);   /* a repeat cannot come first in a valid header */
+		}
+		i += repLen;
 	}
-	if (nEffSym == 0) return 0;
-	if (nEffSym == 1) return maxBits == 1 ? 1 : -1;
-	return kraft == (1u << capBits) ? (int)maxBits : -1;
+	BITStream_Read_Flush(bitStream);
+	*bitStr = bitStream;
 }
 
-/* Reads one table's code lengths and builds its single-lookup demapper */
-static int S_Read_Table(Bit_Stream* bitStream, Uint32 maxWtBits, Huffman_DemapX1* wtDemap, Uint32 nSym, Uint32 capBits,
-	Uint8* hufCodeBits, Huffman_DemapX1* demap)
+/* A code's symbols by length: count[l] symbols of length l, listed in order[] shortest first and by symbol within a
+   length, the canonical order of Build_Huffman_Table; the symbols of length 0 follow */
+typedef struct { Uint32 count[16]; Uint8 order[S_N_Lit]; } S_Sorted;
+
+/* Counts and sorts the code lengths (each below 16) and validates them: Build_Huffman_Table emits a complete code, or
+   a single symbol of length 1, and the table fills rely on that, so any other code is rejected. Returns the longest
+   length, 0 for an empty code, or -1. */
+static int S_Sort_Code(const Uint8* bits, Uint32 nSym, Uint32 capBits, S_Sorted* s)
 {
-	Read_Huffman_Header_byHuffman(bitStream, maxWtBits, wtDemap, nSym, hufCodeBits);
-	const int maxBits = S_Check_Code(hufCodeBits, nSym, capBits);
-	if (maxBits > 0) Build_Huffman_DecTableX1(nSym, (Uint32)maxBits, hufCodeBits, demap);
-	return maxBits;
+	Uint32 c[4][16] = { { 0 } }, pos[16], i, len, nEff = 0, maxBits = 0, kraft = 0;
+	for (i = 0; i + 4 <= nSym; i += 4) {                   /* four histograms, so that equal lengths do not wait on each other */
+		c[0][bits[i]]++; c[1][bits[i + 1]]++; c[2][bits[i + 2]]++; c[3][bits[i + 3]]++;
+	}
+	for (; i < nSym; i++) c[0][bits[i]]++;
+	for (len = 1; len < 16; len++) {
+		const Uint32 n = c[0][len] + c[1][len] + c[2][len] + c[3][len];
+		s->count[len] = n;
+		if (!n) continue;
+		if (len > capBits) return -1;
+		pos[len] = nEff;
+		nEff += n;
+		maxBits = len;
+		kraft += n << (capBits - len);
+	}
+	if (nEff == 0) return 0;
+	if (nEff == 1 ? maxBits != 1 : kraft != 1u << capBits) return -1;
+	pos[0] = nEff;
+	for (i = 0; i < nSym; i++) s->order[pos[bits[i]]++] = (Uint8)i;
+	return (int)maxBits;
 }
 
-#define S_READ_BITS(bs, nb, v)   { if (nb) { BITStream_Read(bs, nb, v); } else v = 0; }
+/* Fills a single-lookup table of 2^maxBits entries: each symbol of length l takes 2^(maxBits - l) consecutive entries,
+   written up to four at a time. A lone code of length 1 leaves the second entry, which only corrupt input reaches. */
+static void S_Fill_X1(const S_Sorted* s, Uint32 maxBits, Huffman_DemapX1* table)
+{
+	Uint8* p = (Uint8*)table;
+	Uint8* const end = (Uint8*)(table + ((size_t)1 << maxBits));
+	const Uint8* sym = s->order;
+	Uint32 len, k;
+	for (len = 1; len <= maxBits; len++) {
+		const Uint32 n = s->count[len], reps = 1u << (maxBits - len);
+		for (k = 0; k < n; k++) {
+			const Uint64 e = (Uint64)(sym[k] | len << 8) * 0x0001000100010001ull;    /* { symbol, length }, four times */
+			if (reps >= 4) {
+				Uint8* const symEnd = p + 2 * reps;
+				do { MemWriteLE8(p, e); p += 8; } while (p < symEnd);
+			}
+			else if (reps == 2) { MemWriteLE4(p, (Uint32)e); p += 4; }
+			else { MemWriteLE2(p, (Uint16)e); p += 2; }
+		}
+		sym += n;
+	}
+	for (; p < end; p += 2) MemWriteLE2(p, 1 << 8);
+}
+
+/* Literal-run, match-length and offset tables hold each symbol's value as a whole: the field is
+   (hi << extra) + the extra bits that follow the code, and total = code length + extra, so a field takes one lookup
+   and one shift, with no second table or branch (as in zstd's sequence tables). kind: match lengths only, 0 length 2
+   with a raw offset, 1 length 2 at repeat slot 0, 2 longer. */
+typedef struct { Uint8 hi, total, extra, kind; } S_SeqEnt;
+enum { S_TAB_LITRUN, S_TAB_MCHLEN, S_TAB_OFFSET };
+
+ForceInlineTemplate void S_Fill_Seq(const S_Sorted* s, Uint32 maxBits, const int type, S_SeqEnt* table)
+{
+	Uint8* p = (Uint8*)table;
+	Uint8* const end = (Uint8*)(table + ((size_t)1 << maxBits));
+	const Uint8* sym = s->order;
+	Uint32 len, k;
+	for (len = 1; len <= maxBits; len++) {
+		const Uint32 n = s->count[len], reps = 1u << (maxBits - len);
+		for (k = 0; k < n; k++) {
+			const Uint32 v = sym[k];
+			Uint32 hi, extra, kind = 0;
+			if (type == S_TAB_LITRUN) { hi = S_ValueHi[v]; extra = S_ValueExtra[v]; }
+			else if (type == S_TAB_MCHLEN) {
+				if (v < 2) { hi = 2; extra = 0; kind = v; }
+				else { hi = S_ValueHi[v + 1]; extra = S_ValueExtra[v + 1]; kind = 2; }
+			}
+			else if (v < 4) { hi = v; extra = 0; }              /* offset values: section 4.3 */
+			else { hi = 2 | (v & 1); extra = (v >> 1) - 1; }
+			const Uint64 e = (Uint64)(hi | (len + extra) << 8 | extra << 16 | kind << 24) * 0x0000000100000001ull;
+			if (reps >= 2) {
+				Uint8* const symEnd = p + 4 * reps;
+				do { MemWriteLE8(p, e); p += 8; } while (p < symEnd);
+			}
+			else { MemWriteLE4(p, (Uint32)e); p += 4; }
+		}
+		sym += n;
+	}
+	for (; p < end; p += 4) MemWriteLE4(p, 1 << 8);
+}
+
+/* Reads one field with a table of S_Fill_Seq */
+#define S_READ_FIELD(bs, table, rem, value, kindOut) {                                                           \
+	const Uint64 v_ = bs.container << bs.nUsedBits;                                                             \
+	const S_SeqEnt e_ = (table)[v_ >> (rem)];                                                                     \
+	value = ((Uint32)e_.hi << e_.extra) | (Uint32)((v_ >> (64 - e_.total)) & ((1u << e_.extra) - 1));             \
+	kindOut = e_.kind;                                                                                          \
+	bs.nUsedBits += e_.total;                                                                                   \
+}
 
 /* Refill of a stream stored byte-reversed and read backward: the byte at the lower address comes
    later in the stream, so a little-endian load puts the next stream byte in the top bits */
@@ -665,7 +788,6 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 	const Uint8* const source = (const Uint8*)src;
 	Uint8* const dest = (Uint8*)dst;
 	int mode, hdrSize, useDict;
-	Uint32 i;
 	const int decSize = S_Read_Header(source, srcSize, &mode, &hdrSize, &useDict);
 	if (decSize < 0 || dstCap < decSize) return -1;
 	if (useDict && (dict == NULL || dictSize < 1)) return -1;
@@ -699,35 +821,35 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 	bitStream.streamPtr = body;
 	bitStream.container = MemReadBE8(body);
 
-	/* code-length tables; each array has slack for a malformed final repeat run */
-	Uint8 wtBits[S_N_WtSym + 288];
+	/* the weight code, then the code lengths of the four tables coded with it */
+	Uint8 wtBits[S_N_WtSym];
 	Huffman_DemapX1 wtDemap[1 << MAX_HufHufWt];
+	S_Sorted sorted;
 	int wtMax;
 	Read_Huffman_Header(&bitStream, S_N_WtSym, MAX_HufHufWt, wtBits);
-	if ((wtMax = S_Check_Code(wtBits, S_N_WtSym, MAX_HufHufWt)) <= 0) return -1;
-	Build_Huffman_DecTableX1(S_N_WtSym, (Uint32)wtMax, wtBits, wtDemap);
+	if ((wtMax = S_Sort_Code(wtBits, S_N_WtSym, MAX_HufHufWt, &sorted)) <= 0) return -1;
+	S_Fill_X1(&sorted, (Uint32)wtMax, wtDemap);
+	const Uint32 remWt = 64 - (Uint32)wtMax;
 
-	Uint8 litBits[S_N_Lit + 336], litRunBits[S_N_LitRun + 336], mchLenBits[S_N_MchLen + 336], mchOffBits[S_N_MchOffMax + 336];
-	Huffman_DemapX1 litDemap[1 << S_CapLitBits], litRunDemap[1 << S_CapSeqBits], mchLenDemap[1 << S_CapSeqBits];
-	Huffman_DemapX1 mchOffDemap[1 << S_CapSeqBits];
+	Uint8 litBits[S_N_Lit], litRunBits[S_N_LitRun], mchLenBits[S_N_MchLen], mchOffBits[S_N_MchOffMax];
+	Huffman_DemapX1 litDemap[1 << S_CapLitBits];
+	S_SeqEnt litRunTab[1 << S_CapSeqBits], mchLenTab[1 << S_CapSeqBits], mchOffTab[1 << S_CapSeqBits];
 	int litMax, litRunMax, mchLenMax, mchOffMax;
 
 	const S_Window win = S_Set_Window(decSize, histDict);
-	if ((litMax = S_Read_Table(&bitStream, wtMax, wtDemap, S_N_Lit, S_CapLitBits, litBits, litDemap)) < 0) return -1;
-	if ((litRunMax = S_Read_Table(&bitStream, wtMax, wtDemap, S_N_LitRun, S_CapSeqBits, litRunBits, litRunDemap)) <= 0) return -1;
-	if ((mchLenMax = S_Read_Table(&bitStream, wtMax, wtDemap, S_N_MchLen, S_CapSeqBits, mchLenBits, mchLenDemap)) < 0) return -1;
-	if ((mchOffMax = S_Read_Table(&bitStream, wtMax, wtDemap, S_N_OffSym(win.wFull), S_CapSeqBits, mchOffBits, mchOffDemap)) < 0) return -1;
-
-	/* range symbol -> (base value, extra bits) */
-	Uint32 valueBase[S_N_LitRun], valueBits[S_N_LitRun];
-	for (i = 0; i < S_ValueDirect; i++) { valueBase[i] = i; valueBits[i] = 0; }
-	for (i = S_DirectLog; i < 16; i++) {
-		Uint32 j, nCodes = 1u << (i - S_RangeShift[i]);
-		for (j = 0; j < nCodes; j++) {
-			valueBase[S_RangeBase[i] + j] = (1u << i) + (j << S_RangeShift[i]);
-			valueBits[S_RangeBase[i] + j] = S_RangeShift[i];
-		}
-	}
+	const Uint32 nOffSym = S_N_OffSym(win.wFull);
+	S_Read_Lengths(&bitStream, remWt, wtDemap, S_N_Lit, litBits);
+	if ((litMax = S_Sort_Code(litBits, S_N_Lit, S_CapLitBits, &sorted)) < 0) return -1;
+	if (litMax) S_Fill_X1(&sorted, (Uint32)litMax, litDemap);
+	S_Read_Lengths(&bitStream, remWt, wtDemap, S_N_LitRun, litRunBits);
+	if ((litRunMax = S_Sort_Code(litRunBits, S_N_LitRun, S_CapSeqBits, &sorted)) <= 0) return -1;
+	S_Fill_Seq(&sorted, (Uint32)litRunMax, S_TAB_LITRUN, litRunTab);
+	S_Read_Lengths(&bitStream, remWt, wtDemap, S_N_MchLen, mchLenBits);
+	if ((mchLenMax = S_Sort_Code(mchLenBits, S_N_MchLen, S_CapSeqBits, &sorted)) < 0) return -1;
+	if (mchLenMax) S_Fill_Seq(&sorted, (Uint32)mchLenMax, S_TAB_MCHLEN, mchLenTab);
+	S_Read_Lengths(&bitStream, remWt, wtDemap, nOffSym, mchOffBits);
+	if ((mchOffMax = S_Sort_Code(mchOffBits, nOffSym, S_CapSeqBits, &sorted)) < 0) return -1;
+	if (mchOffMax) S_Fill_Seq(&sorted, (Uint32)mchOffMax, S_TAB_OFFSET, mchOffTab);
 
 	const Uint32 remLit = 64 - (Uint32)litMax, remLitRun = 64 - (Uint32)litRunMax, remMchLen = 64 - (Uint32)mchLenMax;
 	const Uint32 remMchOff = 64 - (Uint32)mchOffMax;
@@ -838,13 +960,11 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 
 	/* sequences: literal run and match length from the main stream, offsets from stream B */
 	while (1) {
-		Uint32 sym, lenSym, extra, litRun, mchLen, offVal, offset;
+		Uint32 kind, extra, litRun, mchLen, offVal, offset;
 		BITStream_Read_Flush(bitStream);
 		if (bitStream.streamPtr > bodyEnd + 8) return -1;
 
-		BITStream_Read_ExtHufX1(bitStream, remLitRun, litRunDemap, sym);
-		S_READ_BITS(bitStream, valueBits[sym], extra);
-		litRun = valueBase[sym] + extra;
+		S_READ_FIELD(bitStream, litRunTab, remLitRun, litRun, kind);
 		if (litRun > (Uint32)(destEnd - destPtr) || litRun > (Uint32)(litBufEnd - litPtr)) return -1;
 
 		if (destPtr + litRun + 16 <= destEnd) {             /* bulk copy; the overshoot is rewritten later */
@@ -865,30 +985,21 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 
 		/* the length symbol selects how the offset is coded */
 		if (!mchLenMax) return -1;
-		BITStream_Read_ExtHufX1(bitStream, remMchLen, mchLenDemap, lenSym);
-		S_READ_BITS(bitStream, valueBits[lenSym + 1], extra);    /* symbols 0 and 1 have no extra bits */
-		mchLen = lenSym < 2 ? 2 : valueBase[lenSym + 1] + extra;
+		S_READ_FIELD(bitStream, mchLenTab, remMchLen, mchLen, kind);
 
 		S_READ_FLUSH_BACK(bitStreamB);
 		if (bitStreamB.streamPtr < body - 8) return -1;
-		if (lenSym == 0) {                                    /* length 2: raw distance - 1 */
+		if (kind == 0) {                                      /* length 2: raw distance - 1 */
 			if (!win.w2) return -1;
 			BITStream_Read(bitStreamB, (Uint32)win.w2, extra);
 			offset = extra + 1;
 		}
-		else if (lenSym == 1) {                               /* length 2 at repeat slot 0 */
+		else if (kind == 1) {                                 /* length 2 at repeat slot 0 */
 			offset = rep[0];
 		}
 		else {
 			if (!mchOffMax) return -1;
-			Uint32 offSym;
-			BITStream_Read_ExtHufX1(bitStreamB, remMchOff, mchOffDemap, offSym);
-			if (offSym < 4) offVal = offSym;
-			else {
-				const Uint32 nExtra = (offSym >> 1) - 1;
-				BITStream_Read(bitStreamB, nExtra, extra);
-				offVal = ((2 | (offSym & 1)) << nExtra) | extra;
-			}
+			S_READ_FIELD(bitStreamB, mchOffTab, remMchOff, offVal, kind);
 			offset = S_Update_Rep(rep, offVal);
 		}
 		const Uint32 produced = (Uint32)(destPtr - dest);

@@ -522,7 +522,7 @@ incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each c
 | | 2-3, 4-6 | greedy (2-3) and lazy (4-6) parsing with hash chains per length class |
 | | 7-13 | optimal parsing (a bounded shortest path priced in 1/256 bit from running symbol statistics); from 7 the windows of lengths 3-5 are widened; 12-13 keep three path states per position (one per literal-run class); 13 makes a first pass for per-region prices and uses the fine offset grouping |
 | WZIP_M | 0, 1-9, 10-12 | fast, hash-chain, optimal (the one-call interface uses levels up to 12) |
-| WZIP_S | 1-9 | greedy (1-2) or lazy parsing with a 3-byte hash chain of 4 to 4096 steps |
+| WZIP_S | 1-9 | greedy (1-2) or lazy parsing with a 3-byte hash chain of 4 to 4096 steps; literal codes of at most 9 bits in blocks up to 8 KB (10 above) |
 
 Each level of WZIP_L searches at most its own window: 2^27 bytes at the top level of each parser (6 and 13) and one
 bit less per level below it, so 2^21 at levels 0 and 7 (level 0 searches 1 MiB in any case). It caps the widest of

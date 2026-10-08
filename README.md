@@ -156,13 +156,13 @@ of two runs; results for Canterbury+Calgary are in [`results/epyc_blocks_C.txt`]
 | Zstandard 1 | 2.315 | 296 | 811 | 2.476 | 344 | 1001 |
 | Zstandard 9 | 2.424 | 50.6 | 813 | 2.619 | 47.6 | 980 |
 | Zstandard 19 | 2.522 | 6.55 | 700 | 2.736 | 5.85 | 821 |
-| **WZIP_S 1** | 2.434 | 77.8 | 455 | 2.580 | 85.8 | 574 |
-| **WZIP_S 5** | 2.499 | 48.5 | 473 | 2.680 | 46.4 | 612 |
-| **WZIP_S 9** | 2.500 | 38.0 | 475 | 2.682 | 29.8 | 613 |
+| **WZIP_S 1** | 2.437 | 76.2 | 544 | 2.580 | 85.1 | 679 |
+| **WZIP_S 5** | 2.502 | 48.0 | 570 | 2.680 | 45.9 | 733 |
+| **WZIP_S 9** | 2.503 | 37.6 | 572 | 2.682 | 29.6 | 737 |
 | **WZIP_M 12** | 2.503 | 1.34 | 572 | 2.718 | 0.84 | 704 |
 
 WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at about the
-same compression speed, but WZIP_S decodes at 56-59% of the speed of Zstandard 1 and 9, and Zstandard 19 still
+same compression speed, but WZIP_S decodes at 67-70% of the speed of Zstandard 1 and 9, and Zstandard 19 still
 compresses 1-2% more than WZIP_S 9. WLZ4 compresses 1-5% more than LZ4HC 12, decoding 27-34% slower (13-22% on the
 laptop, `results/blocks_*.txt`). WZIP_M, reached through `wzip_compress`, compresses slowly on small blocks because
 the one-call interface builds its tables on every call; WZIP_S keeps them in a reusable context.
@@ -364,7 +364,8 @@ a prepared WZIP_S dictionary may be shared.
 Apart from WZIP_S's length-2 match at the most recent offset, every match in these codecs has length 3 or more. A
 length-2 match with an offset can pay only at very short distances. In WLZ4 it cannot pay at all: it would need an extra token and an offset byte, as many bytes as
 the two literals it replaces. In WZIP it was measured with WZIP_S, whose format has a length-2 symbol with raw offset
-bits (`S_W2_BITS`), built with 4 bits (distances up to 16) against 0 (off) (`results/blocks_*.txt`, `wzips-L2`):
+bits (`S_W2_BITS`), built with 4 bits (distances up to 16) against 0 (off) (`results/blocks_*.txt`, `wzips-L2`; before
+WZIP_S limited the literal codes of 4-8 KB blocks to 9 bits):
 
 | WZIP_S ratio | Cant.+Calg. 4 KB | Cant.+Calg. 8 KB | Silesia 4 KB | Silesia 8 KB |
 |---|---:|---:|---:|---:|
