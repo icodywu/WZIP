@@ -487,13 +487,13 @@ Uint32  Huffman_Compress4X_Kernel(const void* srcStart, Uint32 srcSize, void* de
 	return resSegSize[3] + 6;
 }
 
-/* bits of the symbols counted in h under code; UINT64_MAX if code lacks one of them */
+/* bits of the symbols counted in h under code; all ones if code lacks one of them */
 Uint64 Huffman_Code_Bits(const Huffman_Str* h, const HufCode_Str* code, const Uint32 n)
 {
 	Uint64 bits = 0;
 	for (Uint32 k = 0; k < n; k++)
 		if (h[k].freq) {
-			if (0 == code[k].nbits) return UINT64_MAX;
+			if (0 == code[k].nbits) return ((Uint64)-1);
 			bits += (Uint64)h[k].freq * code[k].nbits;
 		}
 	return bits;
@@ -514,7 +514,7 @@ Uint32 Huffman_Compress_Block_Rep(const void* srcStart, Uint32 srcSize, void* de
 	Uint32 comprSize;
 
 	const Uint32 estSize = (Uint32)Build_Huffman_Table(litHuf, nLits, litHufCapBits, litHufCode);    /* coded size in bytes, no header */
-	const Uint64 prevBits = prev && prev->valid ? Huffman_Code_Bits(litHuf, prev->code, nLits) : UINT64_MAX;
+	const Uint64 prevBits = prev && prev->valid ? Huffman_Code_Bits(litHuf, prev->code, nLits) : ((Uint64)-1);
 	Uint32 headerSize = 0;
 	if (estSize < srcSize && srcSize >= 64) {            /* the header of a code of its own */
 		const Uint32 seqSize = Count_Huffman_Weight_Frequency(litHufCode, nLits, hufHufStr, hufWtSeq);
@@ -527,8 +527,8 @@ Uint32 Huffman_Compress_Block_Rep(const void* srcStart, Uint32 srcSize, void* de
 	}
 	/* sizes past the type byte and body size: the previous code's, a new one's; the previous code also where a
 	   new one would not pay for its header (as on a short last block) */
-	const Uint64 repSize = prevBits == UINT64_MAX ? UINT64_MAX : (prevBits + 7) / 8;
-	const Uint64 newSize = headerSize ? (Uint64)headerSize + estSize : UINT64_MAX;
+	const Uint64 repSize = prevBits == ((Uint64)-1) ? ((Uint64)-1) : (prevBits + 7) / 8;
+	const Uint64 newSize = headerSize ? (Uint64)headerSize + estSize : ((Uint64)-1);
 	const int useRep = repSize <= newSize;
 	if ((useRep ? repSize : newSize) >= srcSize) {       /* incompressible scenario */
 		*destPtr++ = 0;

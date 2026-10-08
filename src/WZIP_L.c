@@ -621,7 +621,7 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wl
 	for (Uint32 t = 0; t < nTab; t++) {
 		const Uint64 own = Huffman_Code_Bits(tabFreq[t], tabCode[t], tabSize[t])
 		                 + Huffman_Header_Bits(hufWtHufCode, hufWtSet + segStart[t], (int)(segStart[t + 1] - segStart[t]));
-		const Uint64 old = tabHave[t] ? Huffman_Code_Bits(tabFreq[t], tabPrev[t], tabSize[t]) : UINT64_MAX;
+		const Uint64 old = tabHave[t] ? Huffman_Code_Bits(tabFreq[t], tabPrev[t], tabSize[t]) : ((Uint64)-1);
 		reuse[t] = old <= own;
 		bodyBits += reuse[t] ? old : own;
 		nSent += !reuse[t];
