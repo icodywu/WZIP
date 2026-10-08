@@ -19,7 +19,7 @@ together:
 | `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.2%, 90% within 1.2%) |
 | `epyc_log.txt`, `epyc_control_log.txt` | node, core and seconds of each task |
 | `epyc_zstd_asm.txt` | Zstandard's decompression with (`asm`) and without (`noasm`, `-DZSTD_DISABLE_ASM`) its assembly Huffman decoder, three interleaved passes from saved streams: levels -1 to 22 on Silesia, then 1 to 22 on enwik9; the assembly gains 0.1-2.2% |
-| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-07 with the final code; the WZIP_S lines measured again the same day, in both runs, after its faster decoder and 9-bit literal limit (`CHANGELOG.md`), Zstandard 1 and 9 alongside within 1.1% of their lines |
+| `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-07 with the final code; the WZIP_S lines measured again the same day after its faster decoder, 9-bit literal limit and one-point four-stream layout (`CHANGELOG.md`): two runs on two nodes, eight per node, each against the previous WZIP_S code alongside |
 
 A configuration measured more than once keeps its best speeds; its ratio and memory are the same in every run.
 

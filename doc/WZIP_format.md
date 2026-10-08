@@ -12,7 +12,7 @@ Sections 2-7 are normative; sections 8-10 describe the reference implementation 
 `doc/wzip_decode.py` is an independent decoder written from this document alone. It decodes the output of every
 `wzip_compress` level (0-13) on Canterbury and Calgary, of levels 1, 9, 11 and 13 on four Silesia files, of edge
 inputs (stored, all-equal, long runs, incompressible prefixes, sizes 32767, 32768 and 65536), of WZIP_L and WZIP_M
-payloads compressed with a dictionary, and of 12,753 WZIP_S blocks of 4K, 8K, 16K and 5000 bytes at levels 1, 5 and 9
+payloads compressed with a dictionary, and of 14,433 WZIP_S blocks of 4K, 8K, 16K and 5000 bytes at levels 1, 5 and 9
 with and without a dictionary, all identically to the input; that is how the specification was checked.
 
 Format version: October 2026. None of the formats carries a version field (WZIP_S reserves three header bits, which
@@ -435,19 +435,20 @@ alphabet has `2 wf + 1` symbols (4 if `wf <= 1`).
 ### 7.3 Body
 
 The body holds a **main stream**, read forward from the body's start, and **stream B**, stored byte-reversed so that
-it ends at the block's end (its first byte is the block's last byte). From 8 KiB blocks (`wb >= 13`) there are also
-streams C and D. The main stream holds:
+it ends at the block's end (its first byte is the block's last byte). Blocks above 2 KiB (`wb >= 12`) also hold
+streams C and D, which meet at a point **P** of the body: C is stored byte-reversed so that it ends at P (its first
+byte is the byte before P) and is read backward from P; D starts at P and is read forward. The main stream holds:
 
 1. the weight code, then the coded tables: literals (256 symbols, cap 10; empty only if there are no literals),
    literal runs (32 symbols, cap 9, not empty), match lengths (30 symbols, cap 9), offsets (`2 wf + 1` symbols, cap 9);
 2. the literal count `L` in `wb + 1` bits (`L <= n`);
-3. four-stream blocks only: the byte sizes of streams C and D, 16 bits each; align; then stream C, stream D (each a
-   bit stream of literal codes, ending byte-aligned at its stated size), and the main stream restarts after them;
+3. four-stream blocks only: the number of bytes from P to the body's end, in `wb` bits (at most the body's size);
 4. the main stream's share of the literals, as Huffman codes;
 5. the sequences' literal runs and lengths (section 7.4), then align.
 
-Stream B holds its share of the literals, then the sequences' offset fields, then align. The main stream and stream B
-together fill the body exactly (in four-stream blocks, with C and D between the header and the main stream's rest).
+Streams C and D hold literal codes only, each ending byte-aligned. Stream B holds its share of the literals, then the
+sequences' offset fields, then align. The streams fill the body exactly: the main stream and stream B meet, or, in
+four-stream blocks, the main stream and C meet before P, and D and B after it.
 
 Literal shares, in literal order: with two streams, the main stream holds the first `ceil(L/2)` literals and B the
 rest; with four streams (`q = L >> 2`), C holds literals `[0, q)`, D `[q, 2q)`, the main stream `[2q, 3q)` and B
@@ -455,9 +456,10 @@ rest; with four streams (`q = L >> 2`), C holds literals `[0, q)`, D `[q, 2q)`, 
 
 ![A WZIP_S header byte and a four-stream body](figures/wzip-s.svg)
 
-*Figure 10. (a) The first byte of a WZIP_S block. (b) A Huffman body of 8 KiB or more, in storage order: the main
-stream's header, streams C and D, the rest of the main stream, and stream B, which is stored byte-reversed and read
-from the block's end.*
+*Figure 10. (a) The first byte of a WZIP_S block. (b) A Huffman body of a block above 2 KiB, in storage order: the
+main stream, stream C, which is stored byte-reversed and read backward from the point P that the main stream gives,
+stream D, read forward from P, and stream B, stored byte-reversed and read from the block's end. One point serves
+two streams; no stream size is stored.*
 
 ### 7.4 Sequences
 
@@ -511,7 +513,9 @@ incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each c
   enwik8 44% and enwik9 62% faster, leaving Silesia unchanged; on inputs whose matches stay in cache the pipeline
   would cost up to 8%, which the rule avoids. The format is unchanged.
 - WZIP_M reads two sequences per round, from streams A and B, so that their table lookups overlap; WZIP_S decodes
-  all literals first from two or four streams, then the sequences with offsets from a separate stream.
+  all literals first from two or four streams, then the sequences with offsets from a separate stream. WZIP_S's
+  literal-run, length and offset tables hold each symbol's value and extra-bit count beside its code length, so that
+  a field takes one lookup and one shift.
 
 ## 10. Reference encoders (informative)
 

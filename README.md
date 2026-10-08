@@ -59,7 +59,7 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 `results/`), gave the same ratios at lower speeds. WZIP and WLZ4 decode in their trusted mode here, as in the paper
 (see Usage); their default, bounds-checked decoders are 5-7% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
-| Silesia (212 MB, 12 files) | Ratio | Compress | Decompress | Memory (MB) |
+| Silesia (212 MB, 12 files) | Ratio | Compress | Decompress | Memory (MiB) |
 |---|---:|---:|---:|---:|
 | LZ4HC 12 | 2.743 | 13.4 | 4520 | 0.9 |
 | **WLZ4 6** | 2.820 | 40.1 | 3334 | 5.2 |
@@ -71,7 +71,7 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | Brotli 11 | 4.276 | 0.68 | 506 | 241 |
 | xz -9e | 4.374 | 2.41 | 149 | 505 |
 
-| enwik9 (1 GB of Wikipedia) | Ratio | Compress | Decompress | Memory (MB) |
+| enwik9 (1 GB of Wikipedia) | Ratio | Compress | Decompress | Memory (MiB) |
 |---|---:|---:|---:|---:|
 | Zstandard 22 | 4.676 | 1.41 | 966 | 649 |
 | xz -9e | 4.722 | 1.43 | 165 | 674 |
@@ -156,13 +156,13 @@ of two runs; results for Canterbury+Calgary are in [`results/epyc_blocks_C.txt`]
 | Zstandard 1 | 2.315 | 296 | 811 | 2.476 | 344 | 1001 |
 | Zstandard 9 | 2.424 | 50.6 | 813 | 2.619 | 47.6 | 980 |
 | Zstandard 19 | 2.522 | 6.55 | 700 | 2.736 | 5.85 | 821 |
-| **WZIP_S 1** | 2.437 | 76.2 | 544 | 2.580 | 85.1 | 679 |
-| **WZIP_S 5** | 2.502 | 48.0 | 570 | 2.680 | 45.9 | 733 |
-| **WZIP_S 9** | 2.503 | 37.6 | 572 | 2.682 | 29.6 | 737 |
+| **WZIP_S 1** | 2.433 | 75.7 | 589 | 2.582 | 84.0 | 676 |
+| **WZIP_S 5** | 2.499 | 47.5 | 621 | 2.682 | 45.6 | 737 |
+| **WZIP_S 9** | 2.500 | 37.5 | 623 | 2.684 | 29.5 | 740 |
 | **WZIP_M 12** | 2.503 | 1.34 | 572 | 2.718 | 0.84 | 704 |
 
 WZIP_S 1 compresses 5% more than Zstandard 1 on 4 KB blocks, and WZIP_S 5 3% more than Zstandard 9 at about the
-same compression speed, but WZIP_S decodes at 67-70% of the speed of Zstandard 1 and 9, and Zstandard 19 still
+same compression speed, but WZIP_S decodes at 72-77% of the speed of Zstandard 1 and 9, and Zstandard 19 still
 compresses 1-2% more than WZIP_S 9. WLZ4 compresses 1-5% more than LZ4HC 12, decoding 27-34% slower (13-22% on the
 laptop, `results/blocks_*.txt`). WZIP_M, reached through `wzip_compress`, compresses slowly on small blocks because
 the one-call interface builds its tables on every call; WZIP_S keeps them in a reusable context.

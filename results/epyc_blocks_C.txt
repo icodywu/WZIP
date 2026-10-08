@@ -8,9 +8,9 @@ zstd      1  block  4096  ratio 2.6900  comp   277.93 MB/s  dec   814.6 MB/s  bl
 zstd      3  block  4096  ratio 2.7064  comp   204.02 MB/s  dec   792.9 MB/s  blocks 1492  fails 0
 zstd      9  block  4096  ratio 2.7864  comp    54.30 MB/s  dec   822.7 MB/s  blocks 1492  fails 0
 zstd     19  block  4096  ratio 2.8506  comp     5.80 MB/s  dec   770.9 MB/s  blocks 1492  fails 0
-wzips     1  block  4096  ratio 2.7374  comp    79.55 MB/s  dec   562.1 MB/s  blocks 1492  fails 0
-wzips     5  block  4096  ratio 2.8009  comp    42.72 MB/s  dec   588.3 MB/s  blocks 1492  fails 0
-wzips     9  block  4096  ratio 2.8018  comp    24.54 MB/s  dec   590.6 MB/s  blocks 1492  fails 0
+wzips     1  block  4096  ratio 2.7332  comp    78.52 MB/s  dec   597.4 MB/s  blocks 1492  fails 0
+wzips     5  block  4096  ratio 2.7965  comp    42.36 MB/s  dec   628.0 MB/s  blocks 1492  fails 0
+wzips     9  block  4096  ratio 2.7974  comp    24.51 MB/s  dec   631.3 MB/s  blocks 1492  fails 0
 wzipm     9  block  4096  ratio 2.6590  comp    26.43 MB/s  dec   569.6 MB/s  blocks 1492  fails 0
 wzipm    12  block  4096  ratio 2.8093  comp     0.54 MB/s  dec   578.5 MB/s  blocks 1492  fails 0
 lz4       1  block  8192  ratio 1.8599  comp   644.81 MB/s  dec  3681.4 MB/s  blocks 753  fails 0
@@ -23,8 +23,8 @@ zstd      1  block  8192  ratio 2.9030  comp   309.84 MB/s  dec   987.2 MB/s  bl
 zstd      3  block  8192  ratio 2.9174  comp   226.81 MB/s  dec   898.8 MB/s  blocks 753  fails 0
 zstd      9  block  8192  ratio 3.0242  comp    51.62 MB/s  dec   941.8 MB/s  blocks 753  fails 0
 zstd     19  block  8192  ratio 3.0985  comp     5.45 MB/s  dec   869.7 MB/s  blocks 753  fails 0
-wzips     1  block  8192  ratio 2.9005  comp    87.24 MB/s  dec   659.1 MB/s  blocks 753  fails 0
-wzips     5  block  8192  ratio 2.9926  comp    41.24 MB/s  dec   727.2 MB/s  blocks 753  fails 0
-wzips     9  block  8192  ratio 2.9929  comp    17.94 MB/s  dec   731.3 MB/s  blocks 753  fails 0
+wzips     1  block  8192  ratio 2.9034  comp    85.28 MB/s  dec   676.8 MB/s  blocks 753  fails 0
+wzips     5  block  8192  ratio 2.9956  comp    40.91 MB/s  dec   730.9 MB/s  blocks 753  fails 0
+wzips     9  block  8192  ratio 2.9959  comp    17.99 MB/s  dec   731.9 MB/s  blocks 753  fails 0
 wzipm     9  block  8192  ratio 2.8209  comp    28.81 MB/s  dec   709.5 MB/s  blocks 753  fails 0
 wzipm    12  block  8192  ratio 3.0649  comp     0.35 MB/s  dec   714.9 MB/s  blocks 753  fails 0

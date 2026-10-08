@@ -510,20 +510,18 @@ def decode_s(block, dictionary=b''):
         raise ValueError('bad literal count')
     back = Bits(bytes(reversed(body)), 0)                # stream B, read from the block end backward
     lits = [0] * nlits
-    if w_block >= 13:                                    # four literal streams from 8K blocks
+    four = w_block >= 12                                 # four literal streams in blocks above 2 KB
+    if four:
         q = nlits >> 2
-        size_c, size_d = main.read(16), main.read(16)
-        start_c = main.align()
-        start_d, start_a = start_c + size_c, start_c + size_c + size_d
-        if start_a > len(body):
-            raise ValueError('literal streams past the block')
-        for start, first, count, end in ((start_c, 0, q, start_d), (start_d, q, q, start_a)):
-            b = Bits(body, start)
-            for i in range(first, first + count):
-                lits[i] = lit_code.decode(b)
-            if b.byte_pos() != end:
-                raise ValueError('a literal stream ends before its stated size')
-        main = Bits(body, start_a)
+        mid = len(body) - main.read(w_block)             # the point P: streams D and B lie after it
+        if mid < 0:
+            raise ValueError('the point P lies before the block')
+        c = Bits(bytes(reversed(body[:mid])), 0)         # stream C, read backward from P
+        d = Bits(body, mid)                              # stream D, read forward from P
+        for i in range(q):
+            lits[i] = lit_code.decode(c)
+        for i in range(q, 2 * q):
+            lits[i] = lit_code.decode(d)
         a_first, a_count = 2 * q, q
     else:
         a_first, a_count = 0, (nlits + 1) // 2
@@ -569,7 +567,10 @@ def decode_s(block, dictionary=b''):
         if length > n - len(out) or off > len(out) + len(hist):
             raise ValueError('match past the output or before the history')
         copy_match(out, hist, off, length)
-    if main.byte_pos() + back.byte_pos() != len(body):
+    if four:
+        if main.byte_pos() + c.byte_pos() != mid or d.byte_pos() + back.byte_pos() != len(body):
+            raise ValueError('the four streams do not fill the block')
+    elif main.byte_pos() + back.byte_pos() != len(body):
         raise ValueError('the main stream and stream B do not fill the block')
     return bytes(out)
 

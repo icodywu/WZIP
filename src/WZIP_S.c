@@ -16,15 +16,16 @@
  *               - the code-length weights of all tables, coded by that table
  *                 (literals, literal runs, match lengths, offsets)
  *               - the literal count in log2(block size) + 1 bits
- *               - blocks from 8K only: the byte sizes of literal streams C and D (16 bits each),
- *                 the end of this header stream, stream C, stream D, and a new main stream
+ *               - blocks above 2K only: the bytes from a point P to the block end, in log2(block size) bits
  *               - its share of the literals, packed as in zstd so the decoder decodes them in
  *                 tight loops and copies runs in bulk
  *               - per sequence: literal run and match length
  *             Stream B, stored byte-reversed so that it ends at the block end, holds the last
  *             share of the literals followed by the offsets. The decoder reads it backward from
- *             the known block end, so only C and D need sizes. Literals are split into halves
- *             (main, B) or, from 8K, quarters (C, D, main, B), decoded in parallel.
+ *             the known block end. Above 2K, literal streams C and D meet at P: C is stored
+ *             byte-reversed before P and read backward from it, D read forward from P, so one
+ *             point serves both. Literals are split into halves (main, B) or, above 2K, quarters
+ *             (C, D, main, B), decoded in parallel.
  *
  *  The original size comes first, so the decoder allocates exactly and derives the
  *  window schedule before decoding. The match-length symbol determines the offset coding:
@@ -94,7 +95,7 @@
 #define S_N_WtSym         (MAX_HufWeight + 3)
 #define S_ValueDirect     8
 #ifndef S_FourStreamLog
-#define S_FourStreamLog   13                    /* blocks above 2^(this - 1) bytes, i.e. from 8K, use four literal streams */
+#define S_FourStreamLog   12                    /* blocks above 2^(this - 1) bytes (2K) use four literal streams */
 #endif
 #define S_DecPad          2048                  /* zero padding after the compressed body */
 
@@ -463,45 +464,59 @@ static Uint32 S_Encode(WZIPS_CCtx* cctx, const Uint8* source, Uint32 nSeq, S_Win
 	/* all literals, packed as in zstd and split into streams decoded in parallel:
 	   - two streams: the first half in this main stream, the second half in stream B, which is
 	     stored byte-reversed at the end of the block and read backward from the known block end
-	   - four streams (blocks from 8K): quarters in streams C and D, whose byte sizes close this
-	     header and which follow it, then quarter A in the main stream and the last quarter in B */
+	   - four streams (blocks above 2K): quarters in streams C, D, main and B. C and D meet at one point P
+	     of the block, which the main stream records as the bytes from P to the block end: C is stored
+	     byte-reversed before P and read backward from it, D read forward from P. The main stream and C,
+	     and D and B, meet where they end, as main and B do with two streams.
+	   Stream B also holds the offsets, after its literals, so it is written first: the main stream records
+	   the size of D and B before its own literals. */
 	Uint32 nLits = 0;
 	for (n = 0, litPtr = source; n < nSeq; n++) {
 		memcpy(cctx->lits + nLits, litPtr, cctx->seq[n].litRun);
 		nLits += cctx->seq[n].litRun;
 		litPtr += cctx->seq[n].litRun + cctx->seq[n].mchLen;
 	}
-	S_WRITE(bitStream, nLits, (Uint32)win.wBlock + 1);
-	BITStream_Write_Flush(bitStream);
-	Uint32 startA = 0, nLitsA = (nLits + 1) / 2;
-	if (win.wBlock >= S_FourStreamLog) {
-		const Uint32 q = nLits >> 2;
-		const Uint32 sizeC = S_Encode_Lits(cctx->lits, q, code.lit, cctx->litC);
-		const Uint32 sizeD = S_Encode_Lits(cctx->lits + q, q, code.lit, cctx->litD);
-		S_WRITE(bitStream, sizeC, 16);
-		S_WRITE(bitStream, sizeD, 16);
-		BITStream_Write_FlushEnd(bitStream);
-		memcpy(bitStream.streamPtr, cctx->litC, sizeC);
-		memcpy(bitStream.streamPtr + sizeC, cctx->litD, sizeD);
-		bitStream.streamPtr += sizeC + sizeD;
-		bitStream.container = 0;
-		bitStream.nUsedBits = 0;
-		startA = 2 * q;
-		nLitsA = q;
-	}
+	const int four = win.wBlock >= S_FourStreamLog;
+	const Uint32 q = nLits >> 2, startA = four ? 2 * q : 0, nLitsA = four ? q : (nLits + 1) / 2;
+
 	Bit_Stream bitStreamB = { 0, 0, cctx->litB };
-	for (i = 0; i < nLitsA; i++) {
-		S_WRITE(bitStream, code.lit[cctx->lits[startA + i]].code, code.lit[cctx->lits[startA + i]].nbits);
-		if ((i & 3) == 3) BITStream_Write_Flush(bitStream);
-	}
 	for (i = startA + nLitsA; i < nLits; i++) {
 		S_WRITE(bitStreamB, code.lit[cctx->lits[i]].code, code.lit[cctx->lits[i]].nbits);
 		if (((i - startA - nLitsA) & 3) == 3) BITStream_Write_Flush(bitStreamB);
 	}
-	BITStream_Write_Flush(bitStream);
 	BITStream_Write_Flush(bitStreamB);
+	for (n = 0; n + 1 < nSeq; n++) {                        /* the offsets; the last sequence has no match */
+		const S_Seq* s = cctx->seq + n;
+		if (s->mchLen == 2) {
+			if (s->offVal) S_WRITE(bitStreamB, s->offVal - S_NumRep, (Uint32)win.w2);      /* distance - 1 */
+		}
+		else {
+			S_Offset_Code(s->offVal, &sym, &nExtra, &extra);
+			S_WRITE(bitStreamB, code.mchOff[sym].code, code.mchOff[sym].nbits);
+			S_WRITE(bitStreamB, extra, nExtra);
+		}
+		BITStream_Write_Flush(bitStreamB);
+	}
+	BITStream_Write_FlushEnd(bitStreamB);
+	const Uint32 sizeB = (Uint32)(bitStreamB.streamPtr - cctx->litB);
 
-	/* sequences: literal run and match length in the main stream, offsets in stream B,
+	S_WRITE(bitStream, nLits, (Uint32)win.wBlock + 1);
+	BITStream_Write_Flush(bitStream);
+	Uint32 sizeC = 0, sizeD = 0;
+	if (four) {
+		sizeC = S_Encode_Lits(cctx->lits, q, code.lit, cctx->litC);
+		sizeD = S_Encode_Lits(cctx->lits + q, q, code.lit, cctx->litD);
+		/* a size of 2^wBlock or more makes the block larger than its input, which is then stored */
+		S_WRITE(bitStream, (sizeD + sizeB) & BitMask[win.wBlock], (Uint32)win.wBlock);
+	}
+	BITStream_Write_Flush(bitStream);
+	for (i = 0; i < nLitsA; i++) {
+		S_WRITE(bitStream, code.lit[cctx->lits[startA + i]].code, code.lit[cctx->lits[startA + i]].nbits);
+		if ((i & 3) == 3) BITStream_Write_Flush(bitStream);
+	}
+	BITStream_Write_Flush(bitStream);
+
+	/* sequences: literal run and match length in the main stream, offsets in stream B (above),
 	   so that the decoder follows two independent bit positions */
 	for (n = 0; n < nSeq; n++) {
 		const S_Seq* s = cctx->seq + n;
@@ -515,21 +530,15 @@ static Uint32 S_Encode(WZIPS_CCtx* cctx, const Uint8* source, Uint32 nSeq, S_Win
 		S_WRITE(bitStream, code.mchLen[lenSym].code, code.mchLen[lenSym].nbits);
 		S_WRITE(bitStream, lenExtra, lenNExtra);
 		BITStream_Write_Flush(bitStream);
-		if (s->mchLen == 2) {
-			if (s->offVal) S_WRITE(bitStreamB, s->offVal - S_NumRep, (Uint32)win.w2);      /* distance - 1 */
-		}
-		else {
-			S_Offset_Code(s->offVal, &sym, &nExtra, &extra);
-			S_WRITE(bitStreamB, code.mchOff[sym].code, code.mchOff[sym].nbits);
-			S_WRITE(bitStreamB, extra, nExtra);
-		}
-		BITStream_Write_Flush(bitStreamB);
 	}
 	BITStream_Write_FlushEnd(bitStream);
-	BITStream_Write_FlushEnd(bitStreamB);
-	const Uint32 sizeB = (Uint32)(bitStreamB.streamPtr - cctx->litB);
-	for (i = 0; i < sizeB; i++) bitStream.streamPtr[i] = cctx->litB[sizeB - 1 - i];
-	return (Uint32)(bitStream.streamPtr - dest) + sizeB;
+	Uint8* p = bitStream.streamPtr;
+	for (i = 0; i < sizeC; i++) p[i] = cctx->litC[sizeC - 1 - i];
+	p += sizeC;
+	memcpy(p, cctx->litD, sizeD);
+	p += sizeD;
+	for (i = 0; i < sizeB; i++) p[i] = cctx->litB[sizeB - 1 - i];
+	return (Uint32)(p - dest) + sizeB;
 }
 
 /*~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Compression API ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~*/
@@ -859,8 +868,8 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 
 	/* all literals first, into a buffer with slack for 16-byte copies, from streams decoded in parallel:
 	   two streams: the first half from the main stream, the second half from stream B, read backward
-	   from the block end; four streams: quarters from C and D, which follow the header, then from
-	   the main stream (quarter A, after D) and from stream B */
+	   from the block end; four streams: quarters from C, read backward from the point P that the main
+	   stream gives, from D, read forward from P, from the main stream (quarter A) and from stream B */
 	Uint32 nLits;
 	BITStream_Read(bitStream, (Uint32)win.wBlock + 1, nLits);
 	if (nLits > (Uint32)decSize || (nLits && !litMax)) return -1;
@@ -873,22 +882,21 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 	bitStreamB.nUsedBits = 0;
 	bitStreamB.streamPtr = (Uint8*)bodyEnd - 8;
 	bitStreamB.container = MemReadLE8(bitStreamB.streamPtr);
+	const int four = win.wBlock >= S_FourStreamLog;
+	const Uint8* endC = NULL;                                /* four streams: where C ends (its lowest byte) and D ends */
+	const Uint8* endD = NULL;
 
-	if (win.wBlock >= S_FourStreamLog) {
+	if (four) {
 		const Uint32 q = nLits >> 2;
-		Uint32 sizeC, sizeD;
-		BITStream_Read(bitStream, 16, sizeC);
-		BITStream_Read(bitStream, 16, sizeD);
-		BITStream_Read_FlushEnd(bitStream);
-		Uint8* const startC = bitStream.streamPtr;
-		Uint8* const startD = startC + sizeC;
-		Uint8* const startA = startD + sizeD;
-		if (startA > bodyEnd) return -1;
+		Uint32 sizeDB;
+		BITStream_Read_Flush(bitStream);
+		BITStream_Read(bitStream, (Uint32)win.wBlock, sizeDB);
+		if (sizeDB > (Uint32)bodySize) return -1;
+		Uint8* const mid = (Uint8*)bodyEnd - sizeDB;           /* P: C ends here, read backward; D starts here */
 		Bit_Stream bitStreamC, bitStreamD;
-		bitStreamC.nUsedBits = bitStreamD.nUsedBits = bitStream.nUsedBits = 0;
-		bitStreamC.streamPtr = startC; bitStreamC.container = MemReadBE8(startC);
-		bitStreamD.streamPtr = startD; bitStreamD.container = MemReadBE8(startD);
-		bitStream.streamPtr = startA;  bitStream.container = MemReadBE8(startA);
+		bitStreamC.nUsedBits = bitStreamD.nUsedBits = 0;
+		bitStreamC.streamPtr = mid - 8; bitStreamC.container = MemReadLE8(mid - 8);
+		bitStreamD.streamPtr = mid;     bitStreamD.container = MemReadBE8(mid);
 		Uint8* litPtrC = litBuf;
 		Uint8* litPtrD = litBuf + q;
 		Uint8* const litEndC = litPtrD;
@@ -897,11 +905,11 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 		litEndA = litBuf + 3 * q;
 		litPtrB = litEndA;
 		while (litPtrC + 4 <= litEndC) {                    /* D and A hold as many, B at least as many */
-			BITStream_Read_Flush(bitStreamC);
+			S_READ_FLUSH_BACK(bitStreamC);
 			BITStream_Read_Flush(bitStreamD);
 			BITStream_Read_Flush(bitStream);
 			S_READ_FLUSH_BACK(bitStreamB);
-			if (bitStreamC.streamPtr > bodyEnd + 8 || bitStreamD.streamPtr > bodyEnd + 8 ||
+			if (bitStreamC.streamPtr < body - 8 || bitStreamD.streamPtr > bodyEnd + 8 ||
 				bitStream.streamPtr > bodyEnd + 8 || bitStreamB.streamPtr < body - 8) return -1;
 			for (int k = 0; k < 4; k++) {
 				BITStream_Read_ExtHufX1(bitStreamC, remLit, litDemap, litPtrC[k]);
@@ -911,13 +919,14 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 			}
 			litPtrC += 4; litPtrD += 4; litPtr += 4; litPtrB += 4;
 		}
-		BITStream_Read_Flush(bitStreamC);
+		S_READ_FLUSH_BACK(bitStreamC);
 		BITStream_Read_Flush(bitStreamD);
+		if (bitStreamC.streamPtr < body - 8 || bitStreamD.streamPtr > bodyEnd + 8) return -1;
 		while (litPtrC < litEndC) { BITStream_Read_ExtHufX1(bitStreamC, remLit, litDemap, *litPtrC); litPtrC++; }
 		while (litPtrD < litEndD) { BITStream_Read_ExtHufX1(bitStreamD, remLit, litDemap, *litPtrD); litPtrD++; }
-		/* C and D must end exactly at their stated sizes; quarters A and B finish below */
-		if (bitStreamC.streamPtr + ((bitStreamC.nUsedBits + 7) >> 3) != startD ||
-			bitStreamD.streamPtr + ((bitStreamD.nUsedBits + 7) >> 3) != startA) return -1;
+		/* checked at the end: the main stream ends where C does, and D where B does */
+		endC = bitStreamC.streamPtr + 8 - ((bitStreamC.nUsedBits + 7) >> 3);
+		endD = bitStreamD.streamPtr + ((bitStreamD.nUsedBits + 7) >> 3);
 	}
 	while (litPtr + 4 <= litEndA && litPtrB + 4 <= litBufEnd) {
 		BITStream_Read_Flush(bitStream);
@@ -1043,9 +1052,10 @@ ForceInlineTemplate int S_Decompress_Body(const void* src, int srcSize, void* ds
 		}
 	}
 
-	/* the main stream must end exactly where stream B begins */
+	/* the streams must tile the body: the main stream ends where B begins, or where C begins and D ends where B begins */
 	BITStream_Read_FlushEnd(bitStream);
-	if (bitStream.streamPtr != bitStreamB.streamPtr + 8 - ((bitStreamB.nUsedBits + 7) >> 3)) return -1;
+	const Uint8* const endB = bitStreamB.streamPtr + 8 - ((bitStreamB.nUsedBits + 7) >> 3);
+	if (four ? bitStream.streamPtr != endC || endD != endB : bitStream.streamPtr != endB) return -1;
 	return decSize;
 }
 

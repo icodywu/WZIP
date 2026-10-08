@@ -51,6 +51,15 @@ a WZ frame records its frame format version and its codec's format version (`doc
   (67-70% of Zstandard 1 and 9 instead of 56-59%), in 8 KB blocks at 679-737 instead of 574-613 (AMD EPYC 9334). A
   profile of 4 KB blocks had found two thirds of the gap to Zstandard in the sequences (WZIP_S's parse makes 1.5
   times as many, its length-3 matches buying its ratio) and a fifth in building the literal table.
+- **WZIP_S: four literal streams from 4 KB blocks, meeting at one point** (WZIP_S block format; it had not been
+  released, so its format version stays 0 and blocks of the earlier form above 2 KB no longer decode). Blocks above
+  2 KB split their literals into four streams: besides the main stream and stream B, streams C and D meet at a point
+  P of the block, which the main stream records as the bytes from P to the block's end (`log2` of the block size
+  bits): C is stored byte-reversed before P and read backward from it, D read forward from P, so that one point
+  serves two streams, as the block's end serves stream B (`doc/WZIP_format.md`, 7.3). Before, four streams began
+  at 8 KB blocks, with two 16-bit stream sizes. On Silesia (AMD EPYC 9334) 4 KB blocks decode 8-9% faster (589-623
+  MB/s, 72-77% of Zstandard 1 and 9) for 0.14% less compression; 8 KB blocks compress 0.09% more (16 KB 0.05%, 32
+  KB 0.02%) at the same speed. The reference decoder (`doc/wzip_decode.py`) and Figure 10 follow.
 - **Literals decoded as needed.** WZIP_L's decoders decoded the whole literal stream into a buffer of its size (the
   checked decoder: of the output's size) before the first sequence. Up to 32 MiB of literals, which stay in the
   last-level cache, they still do (into a buffer of the literals' size); a stream with more is decoded a 32 KiB block

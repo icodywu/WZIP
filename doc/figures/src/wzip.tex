@@ -220,21 +220,27 @@
   \node[font=\tiny, black!55, above=0pt of hb\i] {bits \b};}
 \node[draw, fill=hdr, minimum width=24mm, minimum height=7mm, right=3mm of hb3, font=\footnotesize, align=center] {$n-1$, 2 bytes\\[-2pt]\scriptsize (size class 3)};
 \node[anchor=west, font=\footnotesize, align=left] at (11.9,0) {mode: 0 stored, 1 fill, 2 Huffman\\size class: 4K, 8K, 16K, explicit};
-\node[anchor=west] at (-0.1,-1.25) {(b) a Huffman body of 8 KiB or more};
+\node[anchor=west] at (-0.1,-1.25) {(b) a Huffman body of a block above 2 KiB};
 \node[fld, fill=tab, minimum width=30mm, align=center] (m1) at (1.5,-2.75) {weight code,\\[-1pt]four tables};
 \node[fld, fill=hdr, minimum width=8mm, right=of m1] (m2) {$L$};
-\node[fld, fill=hdr, minimum width=20mm, right=of m2, align=center] (m3) {sizes of\\[-1pt]C and D};
-\node[fld, fill=lit, minimum width=19mm, right=of m3, align=center] (sc) {stream C\\[-1pt]\footnotesize $[0,q)$};
-\node[fld, fill=lit, minimum width=19mm, right=of sc, align=center] (sd) {stream D\\[-1pt]\footnotesize $[q,2q)$};
-\node[fld, fill=lit, minimum width=21mm, right=of sd, align=center] (ma) {literals\\[-1pt]\footnotesize $[2q,3q)$};
+\node[fld, fill=hdr, minimum width=20mm, right=of m2, align=center] (m3) {bytes from\\[-1pt]P to the end};
+\node[fld, fill=lit, minimum width=21mm, right=of m3, align=center] (ma) {literals\\[-1pt]\footnotesize $[2q,3q)$};
 \node[fld, fill=tok, minimum width=27mm, right=of ma, align=center] (ms) {runs and lengths\\[-1pt]\footnotesize per sequence};
-\node[fld, fill=off, minimum width=21mm, right=of ms, align=center] (bo) {offsets};
+\node[fld, fill=lit, minimum width=19mm, right=of ms, align=center] (sc) {stream C\\[-1pt]\footnotesize $[0,q)$};
+\node[fld, fill=lit, minimum width=19mm, right=of sc, align=center] (sd) {stream D\\[-1pt]\footnotesize $[q,2q)$};
+\node[fld, fill=off, minimum width=21mm, right=of sd, align=center] (bo) {offsets};
 \node[fld, fill=lit, minimum width=21mm, right=of bo, align=center] (bl) {literals\\[-1pt]\footnotesize $[3q,L)$};
-\draw[brc] (m1.north west) -- (m3.north east) node[midway, above=4pt, font=\footnotesize] {main stream, aligned};
-\draw[brc] (ma.north west) -- (ms.north east) node[midway, above=4pt, font=\footnotesize] {main stream, continued};
+\draw[brc] (m1.north west) -- (ms.north east) node[midway, above=4pt, font=\footnotesize] {main stream};
+\draw[brc] (sc.north west) -- (sc.north east) node[midway, above=4pt, font=\footnotesize, align=center] {C, byte-\\[-2pt]reversed};
+\draw[brc] (sd.north west) -- (sd.north east) node[midway, above=4pt, font=\footnotesize] {D};
 \draw[brc] (bo.north west) -- (bl.north east) node[midway, above=4pt, font=\footnotesize] {stream B, byte-reversed};
+\draw[very thick, red!70!black] ($(sc.north east)+(0,0.15)$) -- ($(sc.south east)+(0,-0.15)$);
+\node[font=\footnotesize, red!70!black, below=2pt] at ($(sc.south east)+(0,-0.15)$) {P};
+\draw[-{Stealth}, thick] ($(sc.south east)+(-0.25,-0.25)$) -- ($(sc.south west)+(0.1,-0.25)$);
+\draw[-{Stealth}, thick] ($(sd.south west)+(0.25,-0.25)$) -- ($(sd.south east)+(-0.1,-0.25)$);
 \draw[-{Stealth}, thick] ($(bl.south east)+(-0.1,-0.25)$) -- node[below, font=\footnotesize] {read backward} ($(bo.south west)+(0.1,-0.25)$);
-\node[anchor=west, font=\footnotesize, align=left] at (-0.1,-4.2) {$q = \lfloor L/4\rfloor$. Below 8 KiB there are no C and D: the main stream holds the first $\lceil L/2\rceil$ literals and B the rest.\\The literals are decoded first; then each sequence reads its run and length from the main stream and its offset from B.};
+\draw[-{Stealth}, thick] ($(m1.south west)+(0.1,-0.25)$) -- node[below, font=\footnotesize] {read forward} ($(m3.south east)+(-0.1,-0.25)$);
+\node[anchor=west, font=\footnotesize, align=left] at (-0.1,-4.45) {$q = \lfloor L/4\rfloor$. In blocks of 2 KiB or less there are no C and D: the main stream holds the first $\lceil L/2\rceil$ literals and B the rest.\\The literals are decoded first; then each sequence reads its run and length from the main stream and its offset from B.};
 \end{tikzpicture}
 
 %% 10. wzip-size: the size field, and what a decoder derives from it
