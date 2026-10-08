@@ -79,7 +79,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          install: make mingw-w64-x86_64-gcc mingw-w64-x86_64-python
+          install: make diffutils mingw-w64-x86_64-gcc mingw-w64-x86_64-python
       - name: Build and test
         run: make test
 
