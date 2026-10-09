@@ -3126,8 +3126,8 @@ static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* cons
               FLT_Delta to FLT_Count - 1 have the strides of FLT_Stride.
    From FLT_MinLevel on, the encoder tries them per region: it compresses the region at level 0 as it is and filtered,
    and keeps the smallest (sizes, so that every platform chooses alike). */
-enum { FLT_None, FLT_X86, FLT_Delta, FLT_Count = FLT_Delta + 7 };
-static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24 };
+enum { FLT_None, FLT_X86, FLT_Delta, FLT_Count = FLT_Delta + 8 };
+static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32 };
 #define   FLT_HasMap           4                         /* the window header's flag (top nibble): a filter map follows */
 #define   FLT_IdBits           4                         /* a run of the map: LEB128 (length - 1) << FLT_IdBits | filter */
 #define   FLT_MinLog           12                        /* the map's region log, FLT_MinLog to FLT_MaxLog */
@@ -3145,12 +3145,12 @@ static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24 };
 #define   FLT_SampleLog        10                        /* the entropy sample: 2^10 bytes of every 2^12 */
 #define   FLT_WorthLog         12                        /* filters are used if they save 1/2^12 of the input */
 /* the filters each level tries, the most common first: x86 code; 16-, 32- and 64-bit numbers (audio, images, tables);
-   from level 9 bytes and RGB pixels; from level 11 records of 16 and 24 bytes (e.g. ELF tables) */
+   from level 9 bytes and RGB pixels; from level 11 records of 16, 24 and 32 bytes (e.g. ELF tables) */
 static int FLT_Tries(const int level, Uint8* const ids)
 {
 	static const Uint8 order[FLT_Count - 1] = { FLT_X86, FLT_Delta + 1, FLT_Delta + 3, FLT_Delta + 4, FLT_Delta,
-	                                            FLT_Delta + 2, FLT_Delta + 5, FLT_Delta + 6 };
-	const int n = level >= 11 ? 8 : level >= 9 ? 6 : 4;
+	                                            FLT_Delta + 2, FLT_Delta + 5, FLT_Delta + 6, FLT_Delta + 7 };
+	const int n = level >= 11 ? 9 : level >= 9 ? 6 : 4;
 	memcpy(ids, order, (size_t)n);
 	return n;
 }

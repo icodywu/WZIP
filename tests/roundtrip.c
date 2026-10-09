@@ -622,7 +622,7 @@ static void test_same_output(void)
 /* filter f of doc/WZIP_format.md, section 5.6, on region [a, e) of x, into y (written apart from the library's) */
 static void filter_region(unsigned char* y, const unsigned char* x, int a, int e, int f)
 {
-	static const int stride[9] = { 0, 0, 1, 2, 3, 4, 8, 16, 24 };
+	static const int stride[10] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32 };
 	memcpy(y + a, x + a, (size_t)(e - a));
 	if (f == 1) {
 		for (int i = e - 5; i >= a; i--)
@@ -642,7 +642,7 @@ static void filter_region(unsigned char* y, const unsigned char* x, int a, int e
    must be rejected. */
 static void test_filter_map(void)
 {
-	const int R = 12, n = 9 * (1 << 12) + 1234;          /* 10 regions, the last of 1234 bytes */
+	const int R = 12, n = 10 * (1 << 12) + 1234;         /* 11 regions, the last of 1234 bytes */
 	unsigned char* x = (unsigned char*)malloc(n);
 	unsigned char* y = (unsigned char*)malloc(n);
 	const int bound = WZIP_Cap_CmprSize(n);
@@ -652,23 +652,23 @@ static void test_filter_map(void)
 	if (!x || !y || !cmp || !s) { printf("out of memory\n"); exit(2); }
 	fill_x86(x, n / 2);
 	fill_samples(x + n / 2, n - n / 2);
-	static const int filt[10] = { 1, 0, 2, 3, 4, 5, 6, 7, 8, 8 };   /* regions 8 and 9: one run of 2 */
-	for (int r = 0; r < 10; r++) filter_region(y, x, r << R, (r + 1) << R < n ? (r + 1) << R : n, filt[r]);
+	static const int filt[11] = { 1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 9 };   /* regions 9 and 10: one run of 2 */
+	for (int r = 0; r < 11; r++) filter_region(y, x, r << R, (r + 1) << R < n ? (r + 1) << R : n, filt[r]);
 	int cap = bound;
 	const int c = wzip_compress(y, n, cmp, &cap, 5);
 	checks++;
 	if (c < 8 || (cmp[0] | cmp[1] << 8) == 0 || (cmp[6] >> 4) > 3) { fail("filters", "map", 5, "level 5 compressed unexpectedly"); goto done; }
-	static const unsigned char map[10] = { 12, 1, 0, 2, 3, 4, 5, 6, 7, 1 << 4 | 8 };
+	static const unsigned char map[11] = { 12, 1, 0, 2, 3, 4, 5, 6, 7, 8, 1 << 4 | 9 };
 	static const struct { int at; unsigned char to; const char* what; } bad[] = {
-		{ -1, 0, NULL }, { 0, 11, "region log 11" }, { 0, 25, "region log 25" }, { 1, 9, "filter 9" },
-		{ 9, 2 << 4 | 8, "a run past the last region" }, { 2, 0x80, "a run of 5 bytes" },
+		{ -1, 0, NULL }, { 0, 11, "region log 11" }, { 0, 25, "region log 25" }, { 1, 10, "filter 10" },
+		{ 10, 2 << 4 | 9, "a run past the last region" }, { 2, 0x80, "a run of 5 bytes" },
 	};
 	for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
 		unsigned char m[16];
 		int mapSize = (int)sizeof map;
 		memcpy(m, map, sizeof map);
 		if (bad[k].at >= 0) m[bad[k].at] = bad[k].to;
-		if (bad[k].to == 0x80) { memcpy(m + 2, "\x80\x80\x80\x80\x00", 5); memcpy(m + 7, map + 3, 7); mapSize += 4; }
+		if (bad[k].to == 0x80) { memcpy(m + 2, "\x80\x80\x80\x80\x00", 5); memcpy(m + 7, map + 3, 8); mapSize += 4; }
 		memcpy(s, cmp, 7);
 		s[6] |= 4 << 4;                                   /* the filter flag */
 		memcpy(s + 7, m, mapSize);

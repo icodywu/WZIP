@@ -52,3 +52,53 @@ level 11 dict 0 KB: 100000000 -> 25639824 (3.9002), outputs identical, decoded o
   workers 5: 23.4 s, 4.26 MB/s, x3.62
   workers 6: 23.7 s, 4.22 MB/s, x3.57
   workers 7: 23.7 s, 4.23 MB/s, x3.57
+
+1.1.0 (2026-10-09, format 2: sized sequence blocks and filters), the same tool and method. S9 and S13 ran on the
+Silesia directory, which by mistake also held Calgary's trans (93,695 bytes, 0.04% of the input), twice; the S11
+lines ran the 12 files in one job, 1.0.1 and 1.1.0 without filters (commit 6c26cbf) beside 1.1.0, one complex
+each, up to 6 threads, one run each. With 5 threads or more the parser is the slowest stage, and the sized blocks
+and the filters (filtered regions take it longer) cost the threads part of their gain: 2.32 at level 11, 1.0.1 2.84.
+(These ran before delta by 32 joined levels 11-13, which changes mozilla's stream by +134 bytes at level 11 and -449
+at level 13.)
+== S9, 1.1.0 (taskset: one 8-core complex)
+level 9 dict 0 KB: 212032275 -> 52832682 (4.0133), outputs identical, decoded ok
+  workers 1: 65.7 s, 3.23 MB/s, x1.00
+  workers 2: 60.0 s, 3.53 MB/s, x1.10
+  workers 3: 37.5 s, 5.65 MB/s, x1.75
+  workers 4: 35.3 s, 6.01 MB/s, x1.86
+  workers 5: 28.6 s, 7.40 MB/s, x2.29
+  workers 6: 28.4 s, 7.47 MB/s, x2.31
+  workers 7: 28.2 s, 7.51 MB/s, x2.33
+== S11, 1.0.1 (taskset: one 8-core complex)
+level 11 dict 0 KB: 211938580 -> 51965515 (4.0784), outputs identical, decoded ok
+  workers 1: 128.4 s, 1.65 MB/s, x1.00
+  workers 2: 91.4 s, 2.32 MB/s, x1.41
+  workers 3: 61.7 s, 3.43 MB/s, x2.08
+  workers 4: 57.1 s, 3.71 MB/s, x2.25
+  workers 5: 47.4 s, 4.48 MB/s, x2.71
+  workers 6: 45.2 s, 4.69 MB/s, x2.84
+== S11, 1.1.0 without filters (taskset: one 8-core complex)
+level 11 dict 0 KB: 211938580 -> 51803835 (4.0912), outputs identical, decoded ok
+  workers 1: 127.5 s, 1.66 MB/s, x1.00
+  workers 2: 93.8 s, 2.26 MB/s, x1.36
+  workers 3: 61.5 s, 3.44 MB/s, x2.07
+  workers 4: 56.3 s, 3.77 MB/s, x2.27
+  workers 5: 48.6 s, 4.36 MB/s, x2.62
+  workers 6: 48.0 s, 4.41 MB/s, x2.66
+== S11, 1.1.0 (taskset: one 8-core complex)
+level 11 dict 0 KB: 211938580 -> 50647233 (4.1846), outputs identical, decoded ok
+  workers 1: 129.5 s, 1.64 MB/s, x1.00
+  workers 2: 98.1 s, 2.16 MB/s, x1.32
+  workers 3: 68.5 s, 3.09 MB/s, x1.89
+  workers 4: 64.5 s, 3.29 MB/s, x2.01
+  workers 5: 56.3 s, 3.77 MB/s, x2.30
+  workers 6: 55.7 s, 3.80 MB/s, x2.32
+== S13, 1.1.0 (taskset: one 8-core complex)
+level 13 dict 0 KB: 212032275 -> 50399242 (4.2071), outputs identical, decoded ok
+  workers 1: 278.8 s, 0.76 MB/s, x1.00
+  workers 2: 207.6 s, 1.02 MB/s, x1.34
+  workers 3: 148.8 s, 1.43 MB/s, x1.87
+  workers 4: 139.2 s, 1.52 MB/s, x2.00
+  workers 5: 131.8 s, 1.61 MB/s, x2.12
+  workers 6: 132.2 s, 1.60 MB/s, x2.11
+  workers 7: 133.1 s, 1.59 MB/s, x2.09

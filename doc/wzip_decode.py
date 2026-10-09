@@ -412,7 +412,7 @@ def decode_l(data, n, dictionary=b''):
     return bytes(out)
 
 
-DELTA_STRIDES = [1, 2, 3, 4, 8, 16, 24]                 # filters 2-8
+DELTA_STRIDES = [1, 2, 3, 4, 8, 16, 24, 32]             # filters 2-9
 
 
 def read_filter_map(data, pos, n):
@@ -436,7 +436,7 @@ def read_filter_map(data, pos, n):
         else:
             raise ValueError('bad filter map: a run of more than 4 bytes')
         f, run = u & 15, (u >> 4) + 1
-        if f > 8 or len(filters) + run > count:
+        if f > 9 or len(filters) + run > count:
             raise ValueError('bad filter map: filter %d, or a run past the last region' % f)
         filters += [f] * run
     return region, filters, pos

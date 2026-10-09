@@ -379,8 +379,8 @@ output in place, region by region from the first, so that the bytes before a reg
 |---|---|---|
 | 0 | none | nothing |
 | 1 | x86 | for `i = a, a + 1, ..., e - 5`: if `b[i]` is `E8` or `E9` and `b[i+4]` is `00` or `FF`, let `v = b[i+1] + 2^8 b[i+2] + 2^16 b[i+3] + 2^24 (b[i+4] & 1)` and `v' = (v - i - 5) mod 2^25`; `b[i+1..i+3]` become the three low bytes of `v'`, and `b[i+4]` becomes `FF` if `v' >= 2^24`, else `00` |
-| 2-8 | delta by `s` = 1, 2, 3, 4, 8, 16, 24 | for `i = max(a, s), ..., e - 1`: `b[i] = (b[i] + b[i-s]) mod 256` |
-| 9-15 | reserved | invalid |
+| 2-9 | delta by `s` = 1, 2, 3, 4, 8, 16, 24, 32 | for `i = max(a, s), ..., e - 1`: `b[i] = (b[i] + b[i-s]) mod 256` |
+| 10-15 | reserved | invalid |
 
 (The encoder applies the inverse: the x86 filter goes down from `i = e - 5` to `a` and adds `i + 5`, so that each
 position the decoder tests holds what the encoder tested there; a delta filter subtracts from each byte the input's
@@ -582,7 +582,7 @@ From level 7, WZIP_L filters (section 5.6) regions of 64 KiB (`R = 16`) where th
 check names the candidates: x86 where the region holds at least 64 plausible calls (`E8` or `E9`, a top byte of `00`
 or `FF`, a target inside the input), and a delta where it lowers the order-0 entropy of a quarter of the region by at
 least 1/4 bit a byte (integer logarithms). Levels 7-8 consider x86 and deltas by 2, 4 and 8 bytes, levels 9-10 also
-by 1 and 3, levels 11-13 also by 16 and 24 (record tables). The encoder then compresses the region at level 0 as it
+by 1 and 3, levels 11-13 also by 16, 24 and 32 (records). The encoder then compresses the region at level 0 as it
 is and with each candidate, x86 first and then the deltas by falling entropy gain; a delta must save 2% and a filter
 that saves 3% ends the trials. The filters are used only if the trials saved at least 1/4096 of the input, as the
 encoder then compresses a filtered copy of it (on enwik9 a few regions would save 0.0004%). Only sizes decide, so

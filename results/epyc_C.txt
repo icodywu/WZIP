@@ -23,9 +23,9 @@ wzip      3  ratio 3.7566  comp    50.26 MB/s  dec   1089.0 MB/s  encmem     9.5
 wzip      5  ratio 3.8544  comp    29.22 MB/s  dec   1127.3 MB/s  encmem    10.1 MB  fails 0
 wzip      7  ratio 4.1080  comp     7.01 MB/s  dec   1017.9 MB/s  encmem    24.4 MB  fails 0
 wzip      9  ratio 4.1560  comp     5.88 MB/s  dec   1034.9 MB/s  encmem    24.4 MB  fails 0
-wzip     11  ratio 4.1945  comp     3.40 MB/s  dec   1045.0 MB/s  encmem    24.6 MB  fails 0
-wzip     12  ratio 4.2017  comp     2.10 MB/s  dec   1056.4 MB/s  encmem    24.4 MB  fails 0
-wzip     13  ratio 4.2424  comp     1.47 MB/s  dec    988.6 MB/s  encmem    24.8 MB  fails 0
+wzip     11  ratio 4.1945  comp     3.40 MB/s  dec   1042.3 MB/s  encmem    24.5 MB  fails 0
+wzip     12  ratio 4.2017  comp     2.10 MB/s  dec   1057.4 MB/s  encmem    24.5 MB  fails 0
+wzip     13  ratio 4.2424  comp     1.47 MB/s  dec    991.5 MB/s  encmem    24.7 MB  fails 0
 brotli    1  ratio 3.2111  comp   271.96 MB/s  dec    464.9 MB/s  encmem     3.8 MB  fails 0
 brotli    5  ratio 3.8859  comp    47.27 MB/s  dec    576.5 MB/s  encmem     5.7 MB  fails 0
 brotli    9  ratio 4.0256  comp    10.64 MB/s  dec    598.5 MB/s  encmem    36.3 MB  fails 0

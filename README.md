@@ -12,7 +12,7 @@ before offsets, so the decoder knows each match's window and no extra field is s
     tables, among them a 1020-symbol joint code, for each block of up to 16,384 sequences, ending blocks where the
     statistics change, or reuses the last ones where they cost fewer bits: rich statistics whose description pays off
     on a large input. From level 7 it filters regions where that compresses better, found by trial: x86 code (call
-    targets made absolute) and tables, audio and images (deltas by 1-24 bytes).
+    targets made absolute) and tables, audio and images (deltas by 1-32 bytes).
   - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
     that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
   - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
@@ -68,8 +68,8 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | **WLZ4 12** | 3.186 | 1.71 | 3535 | 41 |
 | Zstandard 19 | 4.005 | 3.52 | 1393 | 82 |
 | Zstandard 22 | 4.045 | 2.53 | 1312 | 642 |
-| **WZIP 11** | 4.185 | 1.68 | 1170 | 599 |
-| **WZIP 13** | 4.207 | 0.77 | 1097 | 998 |
+| **WZIP 11** | 4.185 | 1.66 | 1161 | 599 |
+| **WZIP 13** | 4.207 | 0.76 | 1098 | 998 |
 | Brotli 11 | 4.276 | 0.68 | 506 | 241 |
 | xz -9e | 4.374 | 2.41 | 149 | 505 |
 
@@ -219,9 +219,10 @@ class of lengths, each with its own window: a 3-byte chain for lengths 3-4, a 5-
 binary tree for lengths 7 and up. They depend only on the input, not on the parse, so with `-T` each runs in a thread
 of its own, ahead of the parser, which takes their candidates in order; the tree, the slowest, is one tree per hash
 bucket, and splits further among up to four threads by bucket. The input is not cut, and the output is byte for byte
-that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.26 times as
-fast with 4 threads and 2.83 times with 6, and enwik8 2.34 and 3.57 times with 4 and 6; level 7 Silesia 2.24 times,
-level 13 2.32 times. With 5 threads or more the parser is the slowest stage.
+that of one thread. On AMD EPYC 9334 (the threads on one 8-core complex), level 11 compresses Silesia 2.01 times as
+fast with 4 threads and 2.32 times with 6, level 9 2.31 times and level 13 2.11 times with 6. With 5 threads or more
+the parser is the slowest stage, and 1.1's sized blocks and filters give it more to do: with 1.0, Silesia ran 2.26 and
+2.83 times as fast with 4 and 6 threads, and enwik8, which has no filtered regions, 2.34 and 3.57 times.
 
 More threads than one block uses (at levels 0-6, more than one) go to blocks: content over 64 MiB, or from a pipe,
 is cut into blocks of 64 MiB, compressed at once, each **linked** to the content before it within the level's window,

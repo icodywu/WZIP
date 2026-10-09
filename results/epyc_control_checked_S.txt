@@ -12,6 +12,6 @@ wzip      3  ratio 3.6299  comp    30.60 MB/s  dec   1087.0 MB/s  encmem   145.5
 wzip      5  ratio 3.7448  comp    16.64 MB/s  dec   1143.0 MB/s  encmem   484.6 MB  fails 0
 wzip      7  ratio 3.8140  comp     5.79 MB/s  dec   1065.9 MB/s  encmem    88.9 MB  fails 0
 wzip      9  ratio 4.0128  comp     3.24 MB/s  dec   1088.1 MB/s  encmem   191.0 MB  fails 0
-wzip     11  ratio 4.1846  comp     1.67 MB/s  dec   1108.7 MB/s  encmem   599.4 MB  fails 0
-wzip     12  ratio 4.1972  comp     1.20 MB/s  dec   1107.2 MB/s  encmem   990.3 MB  fails 0
-wzip     13  ratio 4.2066  comp     0.77 MB/s  dec   1054.5 MB/s  encmem   998.1 MB  fails 0
+wzip     11  ratio 4.1846  comp     1.66 MB/s  dec   1107.5 MB/s  encmem   599.4 MB  fails 0
+wzip     12  ratio 4.1969  comp     1.20 MB/s  dec   1108.2 MB/s  encmem   990.2 MB  fails 0
+wzip     13  ratio 4.2067  comp     0.76 MB/s  dec   1042.8 MB/s  encmem   998.0 MB  fails 0
