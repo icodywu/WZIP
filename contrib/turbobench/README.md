@@ -28,8 +28,10 @@ WLZ4's tables in `codexit`) and the `makefile` (the build rule, `-O2 -DWZIP_MULT
 line endings (TurboBench keeps `plugin.cc` in CRLF). It was made against TurboBench `d12f18a` (2026-10-07); on a
 later TurboBench it stops at the first anchor it no longer finds.
 
-## Proposing them to TurboBench
+## In TurboBench
 
-They were merged in [powturbo/TurboBench#59](https://github.com/powturbo/TurboBench/pull/59), with the submodule at
-v1.0.1. A later release needs only the submodule moved to its tag (`git -C wzip checkout vX.Y.Z`, then commit
-`wzip`), in a pull request against `powturbo/TurboBench`.
+They were merged in [powturbo/TurboBench#59](https://github.com/powturbo/TurboBench/pull/59). TurboBench needs no
+pull request for later versions: every night its `submodule_update.yml` workflow moves each submodule to the latest
+commit of its default branch (`git submodule update --remote`), and a changed submodule triggers its nightly release
+and benchmarks. TurboBench therefore builds this repository's `main` as it stands, so `main` must always build and
+pass its tests; work in progress belongs on other branches.
