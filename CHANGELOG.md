@@ -41,6 +41,8 @@ a WZ frame records its frame format version and its codec's format version (`doc
 - Reference decoders, specification (`doc/WZIP_format.md`, `doc/frame_format.md`) and golden frames of format 2;
   tests of every filter against an encoder written apart, of damaged filter maps, and of the same output on every
   platform with filters.
+- `contrib/lzbench/add_to_lzbench.sh` updates WLZ4 and WZIP in an lzbench that has them (lzbench since
+  inikep/lzbench#341, merged at 1.0.1).
 
 ## 1.0.1 (2026-10-08)
 

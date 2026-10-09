@@ -45,18 +45,20 @@ tests with `gcc -m32`. Under QEMU (ARMv5) the LZ+ENTROPY alias's `wzip` levels t
 binary, the LZ alias's WLZ4 levels about 1. QEMU 7.2's arm64 emulation (Debian 12, in the dockcross images) itself
 crashes about once in 300 runs under load, a trivial program as often; a lone arm64 failure in CI may be that.
 
-## Proposing them to lzbench
+## In lzbench
 
-They are proposed in [inikep/lzbench#341](https://github.com/inikep/lzbench/pull/341) (at 1.0.1, which holds the
-fixes from its review). For a later version: lzbench's CONTRIBUTING.md asks that a new codec be significant in some
-dimension and pass its CI. The repository must be public at the version the entries name (`wlz4 1.1.0`, `wzip 1.1.0`
-and the release date in the README line: edit `lzbench.patch` if the release differs).
+lzbench has them since [inikep/lzbench#341](https://github.com/inikep/lzbench/pull/341) (merged 2026-10-09 at
+1.0.1, which holds the fixes from its review). On such an lzbench, `add_to_lzbench.sh` updates them instead: it
+copies the sources and sets the version (from `src/WZIP.h`) and release date (from `CHANGELOG.md`) in the codec
+table, the README line and the CHANGELOG entry. The repository must be public at that version's tag.
 
-1. Fork lzbench on GitHub, clone the fork, run `add_to_lzbench.sh` on it, build and run as above.
-2. Commit as one change ("Add wlz4 1.1.0 and wzip 1.1.0"), push, and open a pull request against
-   `inikep/lzbench`, saying what each entry is for (the top-level README has the numbers): WLZ4 decodes at 3.0-3.5
-   GB/s with its checked decoder, 1.6-2.4 times as fast as Zstandard at equal ratio, with ratios from 13% above
-   LZ4's default mode to Zstandard 3's (16% above LZ4HC 12's), though Zstandard compresses faster at every ratio;
-   WZIP compresses Silesia 1.1-1.7% more than Zstandard 22 and decodes at 85-91% of its speed in trusted mode (the
-   checked decoder lzbench uses is 4-5% slower), and on enwik9 passes xz -9e's ratio while decoding about as fast as
-   Zstandard 22; it compresses more slowly than Zstandard 22.
+1. Update the fork's master from `inikep/lzbench`, branch, run `add_to_lzbench.sh` on it, build and run as above
+   (lzbench's CI is described under Checked).
+2. Commit as one change ("Update wlz4 and wzip to X.Y.Z"), push, and open a pull request against
+   `inikep/lzbench`, saying what changed (CHANGELOG.md) and where the codecs stand (the top-level README has the
+   numbers): WLZ4 decodes at 3.0-3.5 GB/s with its checked decoder, 1.6-2.4 times as fast as Zstandard at equal
+   ratio, with ratios from 13% above LZ4's default mode to Zstandard 3's (16% above LZ4HC 12's), though Zstandard
+   compresses faster at every ratio; WZIP 11-13 compress Silesia 3.5-4.1% more than Zstandard 22 (1.1% at level 11
+   without the filters of 1.1.0) and decode at 83-88% of its speed in trusted mode (the checked decoder lzbench uses
+   is 4-6% slower), and on enwik9 WZIP 13 passes xz -9e's ratio while decoding 3% slower than Zstandard 22; WZIP
+   compresses more slowly than Zstandard 22.

@@ -495,8 +495,8 @@ slower on 16 KB blocks; zstd slowed by about 22% in the same test.
 | `tests/` | round trips of every codec and level, the thread test, the tool's test (`make test`), damaged streams (`make fuzz`) |
 | `bench/` | the benchmark harness and scripts of the paper (Windows with MSYS2, or Linux; `bench/cluster/` for Slurm clusters); see `bench/README.md` |
 | `results/` | the raw benchmark outputs behind the paper's tables |
-| `contrib/lzbench/` | adds WLZ4 and WZIP to [lzbench](https://github.com/inikep/lzbench) |
-| `contrib/turbobench/` | adds WLZ4 and WZIP to [TurboBench](https://github.com/powturbo/TurboBench) |
+| `contrib/lzbench/` | adds WLZ4 and WZIP to [lzbench](https://github.com/inikep/lzbench), or updates them (lzbench has them since 1.0.1) |
+| `contrib/turbobench/` | adds WLZ4 and WZIP to [TurboBench](https://github.com/powturbo/TurboBench) (which has them since 1.0.1, as a submodule) |
 | `python/` | the Python package `wzip` (`pyproject.toml`, `setup.py` at the root) |
 
 ## License
