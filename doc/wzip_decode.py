@@ -306,9 +306,9 @@ def decode_l(data, n, dictionary=b''):
     """a WZIP_L payload (after the wrapper's size field) of n >= 32768 decoded bytes; the windows are those of the
     history, the dictionary and the output (5.2, 8)"""
     width = off_widths(n + len(dictionary))
-    if len(data) < 3 or data[2] >> 4 > 3:
+    if len(data) < 3 or data[2] >> 4 > 7:
         raise ValueError('bad window header')
-    fine, sized = data[2] >> 4 & 1, data[2] >> 5 & 1        # offset grouping; sized sequence blocks
+    fine, sized, filtered = data[2] >> 4 & 1, data[2] >> 5 & 1, data[2] >> 6 & 1   # offset grouping; sized blocks; filters
     gaps = [data[0] & 15, data[0] >> 4, data[1] & 15, data[1] >> 4, data[2] & 15]
     for k in range(3, 8):
         width[k] = width[8] - gaps[k - 3]
@@ -316,6 +316,8 @@ def decode_l(data, n, dictionary=b''):
         raise ValueError('windows must widen with the length')
     group_of, gsize = offset_groups(width, fine)
     pos = 3
+    if filtered:
+        region, filters, pos = read_filter_map(data, pos, n)
     nlen = 4 if n >> 16 else 2
     nlits = int.from_bytes(data[pos:pos + nlen], 'little')
     pos += nlen
@@ -405,7 +407,54 @@ def decode_l(data, n, dictionary=b''):
         raise ValueError('decoded %d bytes, expected %d' % (len(out), n))
     if lp != nlits:
         raise ValueError('literals left over')
+    if filtered:
+        unfilter(out, region, filters)
     return bytes(out)
+
+
+DELTA_STRIDES = [1, 2, 3, 4, 8, 16, 24]                 # filters 2-8
+
+
+def read_filter_map(data, pos, n):
+    """the filter map (5.6): the region size, each region's filter, and the position after the map"""
+    if pos >= len(data) or not 12 <= data[pos] <= 24:
+        raise ValueError('bad filter map: region log')
+    region = 1 << data[pos]
+    pos += 1
+    count = -(-n // region)
+    filters = []
+    while len(filters) < count:
+        u = 0
+        for k in range(4):                               # LEB128, at most 4 bytes
+            if pos >= len(data):
+                raise ValueError('filter map past the input')
+            c = data[pos]
+            pos += 1
+            u |= (c & 127) << 7 * k
+            if not c & 128:
+                break
+        else:
+            raise ValueError('bad filter map: a run of more than 4 bytes')
+        f, run = u & 15, (u >> 4) + 1
+        if f > 8 or len(filters) + run > count:
+            raise ValueError('bad filter map: filter %d, or a run past the last region' % f)
+        filters += [f] * run
+    return region, filters, pos
+
+
+def unfilter(b, region, filters):
+    """restores the filtered output b in place, region by region from the first (5.6)"""
+    for r, f in enumerate(filters):
+        a, e = r * region, min(len(b), (r + 1) * region)
+        if f == 1:                                       # x86: relative targets back from absolute ones
+            for i in range(a, e - 4):
+                if b[i] & 0xFE == 0xE8 and b[i + 4] in (0x00, 0xFF):                    # call, jmp
+                    v = (b[i + 1] | b[i + 2] << 8 | b[i + 3] << 16 | (b[i + 4] & 1) << 24) - (i + 5) & 0x1FFFFFF
+                    b[i + 1:i + 5] = bytes((v & 255, v >> 8 & 255, v >> 16 & 255, 0xFF if v >> 24 else 0x00))
+        elif f >= 2:                                     # delta by s
+            s = DELTA_STRIDES[f - 2]
+            for i in range(max(a, s), e):
+                b[i] = (b[i] + b[i - s]) & 255
 
 # ------------------------------------------------------------------------------------------------- WZIP_M (6)
 

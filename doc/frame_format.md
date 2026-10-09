@@ -70,8 +70,8 @@ FLG:
 | 5-7 | reserved, 0 |
 
 Codec format versions: **1** for both codecs, the formats of October 2026 specified in `WZIP_format.md` and
-`WLZ4_format.md`; **2** for WZIP only, version 1 with sized sequence blocks (`WZIP_format.md`, section 5.4), which
-1.0 decoders reject. (WLZ4's format changed in October 2026, before frames existed; there is no version 0 frame.)
+`WLZ4_format.md`; **2** for WZIP only, version 1 with sized sequence blocks and filters (`WZIP_format.md`,
+sections 5.4 and 5.6), which 1.0 decoders reject. (WLZ4's format changed in October 2026, before frames existed; there is no version 0 frame.)
 
 The magic number's first byte is not ASCII, so a channel that strips the eighth bit spoils it; its last byte is a
 line feed, so a text-mode conversion to CR LF spoils it too.
@@ -149,8 +149,9 @@ Check values: XXH32 of no bytes is `0x02CC5D05`, of `abc` `0x32D153FF`.
 ## 9. The reference encoder (informative)
 
 `WZF_compress` and the command-line tool write format version 0 frames, with codec format version 2 for WZIP at
-levels 2-13 (which write sized sequence blocks) and 1 otherwise. They write the content size when it is known
-(always for `WZF_compress`, and for regular files in the tool) and the checksum unless asked not to. Their blocks:
+levels 2-13 (which write sized sequence blocks, and from level 7 filters) and 1 otherwise. They write the content
+size when it is known (always for `WZF_compress`, and for regular files in the tool) and the checksum unless asked
+not to. Their blocks:
 
 - by default, one block for the content, of size log `b`, the smallest of 16 and up with `2^b` at least the
   content size, at most 30 (1 GiB), so that content up to 1 GiB is one block and compresses as in the benchmarks;

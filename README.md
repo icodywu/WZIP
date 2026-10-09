@@ -11,7 +11,8 @@ before offsets, so the decoder knows each match's window and no extra field is s
   - **WZIP_L**, for inputs of 32 KB and more, sizes its windows to the input (up to 128 MB) and sends fresh Huffman
     tables, among them a 1020-symbol joint code, for each block of up to 16,384 sequences, ending blocks where the
     statistics change, or reuses the last ones where they cost fewer bits: rich statistics whose description pays off
-    on a large input.
+    on a large input. From level 7 it filters regions where that compresses better, found by trial: x86 code (call
+    targets made absolute) and tables, audio and images (deltas by 1-24 bytes).
   - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
     that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
   - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
@@ -67,8 +68,8 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | **WLZ4 12** | 3.186 | 1.71 | 3535 | 41 |
 | Zstandard 19 | 4.005 | 3.52 | 1393 | 82 |
 | Zstandard 22 | 4.045 | 2.53 | 1312 | 642 |
-| **WZIP 11** | 4.091 | 1.70 | 1187 | 566 |
-| **WZIP 13** | 4.112 | 0.78 | 1120 | 949 |
+| **WZIP 11** | 4.185 | 1.68 | 1170 | 599 |
+| **WZIP 13** | 4.207 | 0.77 | 1097 | 998 |
 | Brotli 11 | 4.276 | 0.68 | 506 | 241 |
 | xz -9e | 4.374 | 2.41 | 149 | 505 |
 
@@ -76,11 +77,12 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 |---|---:|---:|---:|---:|
 | Zstandard 22 | 4.676 | 1.41 | 966 | 649 |
 | xz -9e | 4.722 | 1.43 | 165 | 674 |
-| **WZIP 11** | 4.506 | 1.22 | 1177 | 550 |
-| **WZIP 12** | 4.645 | 0.89 | 1069 | 1062 |
-| **WZIP 13** | 4.760 | 0.48 | 970 | 1911 |
+| **WZIP 11** | 4.506 | 1.23 | 1172 | 550 |
+| **WZIP 12** | 4.645 | 0.90 | 1074 | 1062 |
+| **WZIP 13** | 4.760 | 0.47 | 971 | 1911 |
 
-Memory is the encoder's (the growth of the peak resident set while compressing). **Each level has its own window**,
+Memory is the encoder's (the growth of the peak resident set while compressing); from level 7 WZIP holds a
+filtered copy of an input whose regions it filters (on Silesia, mozilla's 51 MB). **Each level has its own window**,
 which sizes the encoder's tables: WZIP searches 2^27 bytes back at the top level of each parser (lazy 6, optimal 13)
 and half as far per level below (2^21 at levels 0 and 7), WLZ4's hash-chain and optimal levels the format's 8 MiB at
 levels 7 and 12, down to 64 KiB at level 0 and 512 KiB at level 8. Inputs no larger than a level's window compress
@@ -236,7 +238,7 @@ EPYC 9334, threads unpinned:
 | level 13 | 0.47 MB/s | | | 6.40 MB/s | 4.7593 / 4.7586 |
 
 (Level 13 with one thread: the benchmark above. This table was measured with 1.0; 1.1's sized blocks change these
-enwik9 ratios by at most 0.02%.) Linked blocks decode in one thread, 3-5% slower than one stream, with the level's
+enwik9 ratios by at most 0.02%, and its filters leave text as it is.) Linked blocks decode in one thread, 3-5% slower than one stream, with the level's
 window and a block in memory (`results/epyc_linked.txt`).
 
 ## Python

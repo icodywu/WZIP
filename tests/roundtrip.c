@@ -495,6 +495,60 @@ static void fill_counters(unsigned char* b, int n)
 	}
 }
 
+/* x86-like code: a few instruction patterns, conditional jumps (left alone), and every few bytes a call (E8 and a
+   relative 32-bit operand) to one of 256 functions, whose targets repeat once the x86 filter makes them absolute */
+static void fill_x86(unsigned char* b, int n)
+{
+	static const unsigned char ops[8][3] = { { 0x8B, 0x45, 0xF8 }, { 0x89, 0x45, 0xFC }, { 0x83, 0xC4, 0x08 }, { 0x50 },
+	                                         { 0x5D, 0xC3 }, { 0x8D, 0x4D, 0xF0 }, { 0x33, 0xC0 }, { 0x85, 0xC0 } };
+	static const int opLen[8] = { 3, 3, 3, 1, 2, 3, 2, 2 };
+	int fn[256];
+	for (int k = 0; k < 256; k++) fn[k] = (int)(next_rand() % (unsigned)n);
+	for (int p = 0; p < n; ) {
+		const unsigned r = next_rand() % 8;
+		if (r <= 1 && p + 5 <= n) {
+			const unsigned rel = (unsigned)(fn[next_rand() % 256] - (p + 5));
+			b[p] = 0xE8; b[p + 1] = (unsigned char)rel; b[p + 2] = (unsigned char)(rel >> 8);
+			b[p + 3] = (unsigned char)(rel >> 16); b[p + 4] = (unsigned char)(rel >> 24);
+			p += 5;
+		}
+		else if (r == 2 && p + 6 <= n) {                 /* a conditional jump (0F 80-8F) nearby */
+			const unsigned rel = (unsigned)((int)(next_rand() % 512) - 256);
+			b[p] = 0x0F; b[p + 1] = (unsigned char)(0x80 + next_rand() % 16); b[p + 2] = (unsigned char)rel;
+			b[p + 3] = (unsigned char)(rel >> 8); b[p + 4] = (unsigned char)(rel >> 16); b[p + 5] = (unsigned char)(rel >> 24);
+			p += 6;
+		}
+		else {
+			const int o = (int)(next_rand() % 8);
+			for (int k = 0; k < opLen[o] && p < n; k++) b[p++] = ops[o][k];
+		}
+	}
+}
+
+/* 16-bit little-endian samples of a slowly varying signal: the delta filter by 2 bytes pays */
+static void fill_samples(unsigned char* b, int n)
+{
+	int v = 0, dv = 0;
+	for (int i = 0; i + 2 <= n; i += 2) {
+		dv += (int)(next_rand() % 33) - 16;
+		dv = dv > 200 ? 200 : dv < -200 ? -200 : dv;
+		v += dv;
+		if (v > 30000 || v < -30000) { v = v > 0 ? 30000 : -30000; dv = -dv; }
+		b[i] = (unsigned char)v; b[i + 1] = (unsigned char)((unsigned)v >> 8);
+	}
+	if (n & 1) b[n - 1] = 0;
+}
+
+/* text, x86-like code and samples, in regions of their own and across region boundaries */
+static void fill_mixed(unsigned char* b, int n)
+{
+	const int q = n / 8;
+	fill_words(b, q);
+	fill_x86(b + q, 3 * q);
+	fill_samples(b + 4 * q, 2 * q + 1000);
+	fill_words(b + 6 * q + 1000, n - 6 * q - 1000);
+}
+
 /* A stretch without any match longer than a literal run can be (2^24), then text: levels 0 and 1 must still compress
    the text (1.0.0 stored the whole input), and the stream must decode. */
 static void test_long_stretch(void)
@@ -535,17 +589,18 @@ static void test_same_output(void)
 #endif
 	if (sizeof(void*) != 8 || *(const unsigned char*)&one != 1) { printf("%-28s (64-bit little-endian only)\n", "same output everywhere"); return; }
 	static const struct { const char* name; int n; unsigned expect; } cases[] = {
-		{ "counters 256 KiB", 1 << 18, 0x2B5E9D4Au }, { "words 256 KiB", 1 << 18, 0xCCE20CA1u }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
+		{ "counters 256 KiB", 1 << 18, 0xC072921Cu }, { "words 256 KiB", 1 << 18, 0xCCE20CA1u }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
+		{ "x86-like 256 KiB", 1 << 18, 0x6424F36Du }, { "samples 256 KiB", 1 << 18, 0x7C05AF93u },          /* filters at levels 7-13 */
 	};
 	const int n = 1 << 18;
 	unsigned char* b = (unsigned char*)malloc(n);
 	const int bound = WZIP_Cap_CmprSize(n);
 	unsigned char* cmp = (unsigned char*)malloc(bound);
 	if (!b || !cmp) { printf("out of memory\n"); exit(2); }
-	for (int k = 0; k < 3; k++) {
+	for (int k = 0; k < (int)(sizeof cases / sizeof cases[0]); k++) {
 		const unsigned saved = rng;
-		rng = 777;                                       /* the same words whatever ran before */
-		if (k == 0) fill_counters(b, n); else fill_words(b, n);
+		rng = 777;                                       /* the same data whatever ran before */
+		if (k == 0) fill_counters(b, n); else if (k <= 2) fill_words(b, n); else if (k == 3) fill_x86(b, n); else fill_samples(b, n);
 		rng = saved;
 		unsigned h = 2166136261u;
 		for (int level = 0; level <= 13; level++) {
@@ -562,6 +617,83 @@ static void test_same_output(void)
 	}
 	printf("%-28s %10s        %s\n", "same output everywhere", "", "done");
 	free(b); free(cmp);
+}
+
+/* filter f of doc/WZIP_format.md, section 5.6, on region [a, e) of x, into y (written apart from the library's) */
+static void filter_region(unsigned char* y, const unsigned char* x, int a, int e, int f)
+{
+	static const int stride[9] = { 0, 0, 1, 2, 3, 4, 8, 16, 24 };
+	memcpy(y + a, x + a, (size_t)(e - a));
+	if (f == 1) {
+		for (int i = e - 5; i >= a; i--)
+			if ((y[i] == 0xE8 || y[i] == 0xE9) && (y[i + 4] == 0x00 || y[i + 4] == 0xFF)) {
+				unsigned v = y[i + 1] | y[i + 2] << 8 | y[i + 3] << 16 | (unsigned)(y[i + 4] & 1) << 24;
+				v = (v + (unsigned)i + 5) & 0x1FFFFFF;
+				y[i + 1] = (unsigned char)v; y[i + 2] = (unsigned char)(v >> 8); y[i + 3] = (unsigned char)(v >> 16);
+				y[i + 4] = v >> 24 ? 0xFF : 0x00;
+			}
+	}
+	else if (f >= 2)
+		for (int i = a; i < e; i++) y[i] = (unsigned char)(x[i] - (i >= stride[f] ? x[i - stride[f]] : 0));
+}
+
+/* The decoders' filters against the format, every filter: the input filtered by filter_region, compressed at level 5
+   (which filters nothing), with a filter map put after the window header, must decode to the input; damaged maps
+   must be rejected. */
+static void test_filter_map(void)
+{
+	const int R = 12, n = 9 * (1 << 12) + 1234;          /* 10 regions, the last of 1234 bytes */
+	unsigned char* x = (unsigned char*)malloc(n);
+	unsigned char* y = (unsigned char*)malloc(n);
+	const int bound = WZIP_Cap_CmprSize(n);
+	unsigned char* cmp = (unsigned char*)malloc(bound);
+	unsigned char* s = (unsigned char*)malloc(bound + 64);
+	unsigned char* dec = guarded(n);
+	if (!x || !y || !cmp || !s) { printf("out of memory\n"); exit(2); }
+	fill_x86(x, n / 2);
+	fill_samples(x + n / 2, n - n / 2);
+	static const int filt[10] = { 1, 0, 2, 3, 4, 5, 6, 7, 8, 8 };   /* regions 8 and 9: one run of 2 */
+	for (int r = 0; r < 10; r++) filter_region(y, x, r << R, (r + 1) << R < n ? (r + 1) << R : n, filt[r]);
+	int cap = bound;
+	const int c = wzip_compress(y, n, cmp, &cap, 5);
+	checks++;
+	if (c < 8 || (cmp[0] | cmp[1] << 8) == 0 || (cmp[6] >> 4) > 3) { fail("filters", "map", 5, "level 5 compressed unexpectedly"); goto done; }
+	static const unsigned char map[10] = { 12, 1, 0, 2, 3, 4, 5, 6, 7, 1 << 4 | 8 };
+	static const struct { int at; unsigned char to; const char* what; } bad[] = {
+		{ -1, 0, NULL }, { 0, 11, "region log 11" }, { 0, 25, "region log 25" }, { 1, 9, "filter 9" },
+		{ 9, 2 << 4 | 8, "a run past the last region" }, { 2, 0x80, "a run of 5 bytes" },
+	};
+	for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+		unsigned char m[16];
+		int mapSize = (int)sizeof map;
+		memcpy(m, map, sizeof map);
+		if (bad[k].at >= 0) m[bad[k].at] = bad[k].to;
+		if (bad[k].to == 0x80) { memcpy(m + 2, "\x80\x80\x80\x80\x00", 5); memcpy(m + 7, map + 3, 7); mapSize += 4; }
+		memcpy(s, cmp, 7);
+		s[6] |= 4 << 4;                                   /* the filter flag */
+		memcpy(s + 7, m, mapSize);
+		memcpy(s + 7 + mapSize, cmp + 7, c - 7);
+		const int sc = c + mapSize;
+		int dcap = n;
+		memset(dec, 0, n);
+		const int d = wzip_decompress(s, sc, dec, &dcap);
+		checks++;
+		if (!guard_ok(dec, n)) fail("filters", bad[k].what ? bad[k].what : "map", -1, "decoder wrote past the decoded size");
+		if (bad[k].at < 0) {
+			if (d != n || memcmp(dec, x, n)) fail("filters", "every filter", -1, "decoded data differs");
+			unsigned char* t = (unsigned char*)malloc((size_t)sc + WZIP_TRUSTED_SRC_PAD);
+			memcpy(t, s, sc);
+			memset(t + sc, 0, WZIP_TRUSTED_SRC_PAD);
+			memset(dec, 0, n);
+			dcap = n;
+			if (wzip_decompress_trusted(t, sc, dec, &dcap) != n || memcmp(dec, x, n)) fail("filters", "every filter", -1, "trusted mode differs");
+			free(t);
+		}
+		else if (d != 0) fail("filters", bad[k].what, -1, "accepted an invalid filter map");
+	}
+done:
+	printf("%-28s %10d bytes  %s\n", "filter map, every filter", n, "done");
+	free(x); free(y); free(cmp); free(s); free(dec);
 }
 
 static void synthetic(void)
@@ -592,6 +724,13 @@ static void synthetic(void)
 	for (int i = 0; i < n; i++)                          /* long runs with literal bursts */
 		b[i] = (unsigned char)((i / 1000) & 1 ? next_rand() : (i / 2000) & 0xFF);
 	test_all(b, n, "runs and bursts 1 MB");
+	fill_x86(b, n / 2);                                  /* filtered regions (levels 7-13) */
+	test_all(b, n / 2, "x86-like 512 KiB");
+	fill_samples(b, n / 2);
+	test_all(b, n / 2, "samples 512 KiB");
+	fill_mixed(b, n);
+	test_all(b, n, "mixed 1 MB");
+	test_filter_map();
 	free(b);
 	test_long_stretch();
 	test_same_output();

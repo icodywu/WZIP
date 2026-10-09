@@ -37,4 +37,26 @@ cat small.txt text.txt > concat.ref
 cat text.txt bin.dat text.txt > mixed.dat
 "$W" -q -f -9 -c mixed.dat > mixed.dat.L9.wz
 "$W" -q -f -13 -B16 -c mixed.dat > mixed.dat.L13.B16.wz
+# 1.1.0: filters (x86-like code, 16-bit samples, then text: x86 and delta filters, and a region left alone)
+python - <<'PY'
+import random
+r = random.Random(2027)
+ops = [b'\x8b\x45\xf8', b'\x89\x45\xfc', b'\x83\xc4\x08', b'\x50', b'\x5d\xc3', b'\x8d\x4d\xf0', b'\x33\xc0', b'\x85\xc0']
+fns = [r.randrange(131072) for _ in range(300)]
+code = bytearray()
+while len(code) < 131072:
+    if r.randrange(4) == 0:
+        code += b'\xe8' + ((r.choice(fns) - (len(code) + 5)) & 0xFFFFFFFF).to_bytes(4, 'little')
+    else:
+        code += r.choice(ops)
+samples, v, dv = bytearray(), 0, 0
+for i in range(65536):
+    dv = max(-200, min(200, dv + r.randrange(33) - 16))
+    v += dv
+    if abs(v) > 30000:
+        v, dv = (30000 if v > 0 else -30000), -dv
+    samples += (v & 0xFFFF).to_bytes(2, 'little')
+open('filters.dat', 'wb').write(bytes(code[:131072]) + bytes(samples) + open('text.txt', 'rb').read()[:32768])
+PY
+"$W" -q -f -9 -c filters.dat > filters.dat.L9.wz
 ls -l

@@ -264,6 +264,23 @@ int main(int argc, char** argv)
 	fuzz_all(b, 70000, "mixed 70000", iters);               /* literal-heavy blocks */
 	for (int i = 0; i < n; i++) b[i] = (unsigned char)((i / 1000) & 1 ? next_rand() : (i / 2000) & 0xFF);
 	fuzz_all(b, 100000, "runs 100000", iters);
+	for (int p = 0; p < 140000; ) {                         /* x86-like calls, then 16-bit samples: filters (levels 7+) */
+		if (next_rand() % 4 == 0) {
+			const unsigned rel = (unsigned)((int)(next_rand() % 1024) * 128 - (p + 5));
+			b[p] = 0xE8; b[p + 1] = (unsigned char)rel; b[p + 2] = (unsigned char)(rel >> 8);
+			b[p + 3] = (unsigned char)(rel >> 16); b[p + 4] = (unsigned char)(rel >> 24);
+			p += 5;
+		}
+		else b[p++] = (unsigned char)(0x40 + next_rand() % 8);
+	}
+	for (int i = 140000, v = 0, dv = 0; i + 2 <= 280000; i += 2) {
+		dv += (int)(next_rand() % 33) - 16;
+		dv = dv > 200 ? 200 : dv < -200 ? -200 : dv;
+		v += dv;
+		if (v > 30000 || v < -30000) { v = v > 0 ? 30000 : -30000; dv = -dv; }
+		b[i] = (unsigned char)v; b[i + 1] = (unsigned char)((unsigned)v >> 8);
+	}
+	fuzz_all(b, 280000, "x86 and samples 280000", iters);
 
 	free(b);
 	printf("%d damaged streams decoded, %d failures\n", decodes, failures);

@@ -13,7 +13,7 @@
 
 #define WZF_FRAME_VERSION   0
 #define WZF_CODEC_VERSION   1           /* the WZIP and WLZ4 formats of October 2026 */
-#define WZF_CODEC_VERSION_2 2           /* WZIP with sized sequence blocks (1.1.0, levels 2-13), which 1.0 cannot decode */
+#define WZF_CODEC_VERSION_2 2           /* WZIP with sized sequence blocks and filters (1.1.0, levels 2-13), which 1.0 cannot decode */
 #define WZF_FLAG_CHECKSUM   0x04
 #define WZF_FLAG_SIZE       0x08
 #define WZF_FLAG_LINKED     0x10        /* linked blocks: a window log follows the block size log; WZIP only, b <= 30 */

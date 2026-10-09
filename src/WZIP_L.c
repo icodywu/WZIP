@@ -192,6 +192,7 @@ typedef struct {
 	int   litRunTooLong;                               /* set by the encoder: a literal run the format cannot code */
 	int   seqSized;                                    /* 1: each sequence block starts with its sequence count */
 	int   seqSplit;                                    /* the encoder's: 1 to split buffers of sequences into sized blocks */
+	int   noFilters;                                   /* the encoder's: 1 not to try filters (a filter trial's state) */
 } WZL_Sched;
 #define   OffWidth             (S_->offWidth)
 #define   SrchWidth            (S_->srchWidth)
@@ -761,8 +762,10 @@ static Uint64 Seq_Split_Best(WZL_Sched* const S_, const Seq_Hist* const chunk, c
 	const Uint64 whole = Seq_Hist_Bits16(S_, &h);
 	if (depth < SEQ_SplitDepth && c1 - c0 >= 2) {
 		const int save = *nEnds, mid = (c0 + c1) / 2;
-		const Uint64 halves = Seq_Split_Best(S_, chunk, c0, mid, depth + 1, ends, nEnds)
-		                    + Seq_Split_Best(S_, chunk, mid, c1, depth + 1, ends, nEnds);
+		/* the left half first, so that its ends come first (the order of the operands of + is unspecified, and
+		   MSVC evaluates the right one first) */
+		const Uint64 left = Seq_Split_Best(S_, chunk, c0, mid, depth + 1, ends, nEnds);
+		const Uint64 halves = left + Seq_Split_Best(S_, chunk, mid, c1, depth + 1, ends, nEnds);
 		if (halves < whole) return halves;
 		*nEnds = save;
 	}
@@ -3111,9 +3114,367 @@ static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* cons
 	return size;
 }
 
+/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Region filters (format 2) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+/* A filter recodes a region of the input (2^R bytes; the last one may be shorter) before compression, and the decoder
+   undoes it once the whole input is decoded, region by region from the first (doc/WZIP_format.md, section 5.6):
+   FLT_X86    x86 calls and jumps: at each position i of the region, from its end down, where byte E8 or E9 (call, jmp)
+              is followed by a little-endian 32-bit operand inside the region whose top byte is 00 or FF, the
+              operand's low 25 bits v become v + i + 5 mod 2^25 (i counted from the input's start: relative targets
+              turn absolute) and its top byte the result's sign, 00 or FF. Going up, the decoder sees each position
+              as the encoder did. (Conditional jumps, 0F 80-8F, gain on some x86-64 code and lose more on other.)
+   delta s    each byte less the byte s before it in the input (0 before the input's start), mod 256; filters
+              FLT_Delta to FLT_Count - 1 have the strides of FLT_Stride.
+   From FLT_MinLevel on, the encoder tries them per region: it compresses the region at level 0 as it is and filtered,
+   and keeps the smallest (sizes, so that every platform chooses alike). */
+enum { FLT_None, FLT_X86, FLT_Delta, FLT_Count = FLT_Delta + 7 };
+static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24 };
+#define   FLT_HasMap           4                         /* the window header's flag (top nibble): a filter map follows */
+#define   FLT_IdBits           4                         /* a run of the map: LEB128 (length - 1) << FLT_IdBits | filter */
+#define   FLT_MinLog           12                        /* the map's region log, FLT_MinLog to FLT_MaxLog */
+#define   FLT_MaxLog           24
+#define   FLT_RegionLog        16                        /* the encoder's */
+#ifndef FLT_MinLevel
+#define   FLT_MinLevel         7                         /* the lowest level that tries filters */
+#endif
+#define   FLT_MinRegion        (1 << 15)                 /* shorter regions (an input's tail) stay unfiltered */
+#define   FLT_X86Calls         64                        /* x86 is tried on a region with this many plausible calls */
+#define   FLT_DeltaGate        64                        /* delta is tried where it lowers the order-0 entropy of a
+                                                            sample of the region by 1/4 bit a byte (in 1/256 bit) */
+#define   FLT_DeltaMargin      2                         /* and kept if it beats the plain region by 2% */
+#define   FLT_GoodEnough       3                         /* a filter that beats it by 3% ends the trials */
+#define   FLT_SampleLog        10                        /* the entropy sample: 2^10 bytes of every 2^12 */
+#define   FLT_WorthLog         12                        /* filters are used if they save 1/2^12 of the input */
+/* the filters each level tries, the most common first: x86 code; 16-, 32- and 64-bit numbers (audio, images, tables);
+   from level 9 bytes and RGB pixels; from level 11 records of 16 and 24 bytes (e.g. ELF tables) */
+static int FLT_Tries(const int level, Uint8* const ids)
+{
+	static const Uint8 order[FLT_Count - 1] = { FLT_X86, FLT_Delta + 1, FLT_Delta + 3, FLT_Delta + 4, FLT_Delta,
+	                                            FLT_Delta + 2, FLT_Delta + 5, FLT_Delta + 6 };
+	const int n = level >= 11 ? 8 : level >= 9 ? 6 : 4;
+	memcpy(ids, order, (size_t)n);
+	return n;
+}
+
+#define   X86_IS_CALL(p)       (((p)[0] & 0xFE) == 0xE8 && (Uint8)((p)[4] + 1) <= 1)       /* E8/E9, operand < 2^24 */
+static Uint32 X86_Get25(const Uint8* const p) { return p[1] | (Uint32)p[2] << 8 | (Uint32)p[3] << 16 | (Uint32)(p[4] & 1) << 24; }
+static void X86_Put25(Uint8* const p, const Uint32 v)
+{
+	p[1] = (Uint8)v; p[2] = (Uint8)(v >> 8); p[3] = (Uint8)(v >> 16); p[4] = (Uint8)(0 - (v >> 24 & 1));
+}
+
+/* region [from, to) of the input src, filtered into dst (dst[0] is the region's first byte) */
+static void Flt_Encode(Uint8* const dst, const Uint8* const src, const int from, const int to, const int id)
+{
+	if (id == FLT_X86) {
+		memcpy(dst, src + from, (size_t)(to - from));
+		for (int i = to - 5; i >= from; i--) {
+			Uint8* const p = dst + (i - from);
+			if (X86_IS_CALL(p)) X86_Put25(p, (X86_Get25(p) + (Uint32)i + 5) & 0x1FFFFFF);
+		}
+	}
+	else if (id >= FLT_Delta) {
+		const int s = FLT_Stride[id];
+		int i = from;
+		for (; i < to && i < s; i++) dst[i - from] = src[i];
+		for (; i < to; i++) dst[i - from] = (Uint8)(src[i] - src[i - s]);
+	}
+	else memcpy(dst, src + from, (size_t)(to - from));
+}
+
+#define   SWAR_LO7             0x7F7F7F7F7F7F7F7FULL
+#define   SWAR_HI              0x8080808080808080ULL
+#define   SWAR_ONE             0x0101010101010101ULL
+/* the index of the lowest nonzero byte of m != 0 */
+static int Low_Byte64(Uint64 m)
+{
+#if defined(__GNUC__) || defined(__clang__)
+	return __builtin_ctzll(m) >> 3;
+#elif defined(_MSC_VER) && defined(_WIN64)
+	unsigned long r;
+	_BitScanForward64(&r, m);
+	return (int)(r >> 3);
+#else
+	int k = 0;
+	if (!(m & 0xFFFFFFFFu)) { m >>= 32; k = 4; }
+	if (!(m & 0xFFFF)) { m >>= 16; k += 2; }
+	return k + !(m & 0xFF);
+#endif
+}
+
+/* x + y bytewise, without carries between the bytes */
+static Uint64 Add_Bytes8(const Uint64 x, const Uint64 y) { return ((x & SWAR_LO7) + (y & SWAR_LO7)) ^ ((x ^ y) & SWAR_HI); }
+
+/* undoes the filter of region [from, to) of the decoded input b, whose regions before it are restored */
+static void Flt_Decode(Uint8* const b, const int from, const int to, const int id)
+{
+	if (id == FLT_X86) {
+		const int last = to - 5;                           /* the last position that can hold a call */
+		for (int i = from; i <= last; ) {
+			if (i + 7 <= last) {                           /* 8 positions at a time: on to the first E8 or E9 */
+				const Uint64 t = (MemReadLE8(b + i) & 0xFEFEFEFEFEFEFEFEULL) ^ 0xE8E8E8E8E8E8E8E8ULL;
+				const Uint64 m = (t - SWAR_ONE) & ~t & SWAR_HI;     /* its lowest byte is exact */
+				if (!m) { i += 8; continue; }
+				i += Low_Byte64(m);
+			}
+			/* restored if a call, without a branch (half the E8 and E9 bytes of code are none) */
+			const Uint32 w = MemReadLE4(b + i + 1), v = ((w & 0x1FFFFFF) - (Uint32)i - 5) & 0x1FFFFFF;
+			const Uint32 call = 0u - (Uint32)(((b[i] & 0xFE) == 0xE8) & ((Uint8)(b[i + 4] + 1) <= 1));
+			MemWriteLE4(b + i + 1, (w & ~call) | (((v & 0xFFFFFF) | (0u - (v >> 24)) << 24) & call));
+			i++;
+		}
+	}
+	else if (id >= FLT_Delta) {                            /* b[i] += b[i - s], going up */
+		const int s = FLT_Stride[id];
+		int i = max(from, s);
+		if (s >= 8)                                        /* 8 bytes at a time, from bytes before them */
+			for (; i + 8 <= to; i += 8) MemWrite8(b + i, Add_Bytes8(MemRead8(b + i), MemRead8(b + i - s)));
+		else if (s == 4) {                                 /* 4 at a time, from the 4 just restored */
+			Uint32 c = MemRead4(b + i - 4);
+			for (; i + 4 <= to; i += 4) { c = (Uint32)Add_Bytes8(MemRead4(b + i), c); MemWrite4(b + i, c); }
+		}
+		else if (s == 2) {
+			Uint8 c0 = b[i - 2], c1 = b[i - 1];
+			for (; i + 2 <= to; i += 2) { b[i] = c0 = (Uint8)(b[i] + c0); b[i + 1] = c1 = (Uint8)(b[i + 1] + c1); }
+		}
+		else if (s == 1) {
+			Uint8 c = b[i - 1];
+			for (; i < to; i++) b[i] = c = (Uint8)(b[i] + c);
+		}
+		for (; i < to; i++) b[i] = (Uint8)(b[i] + b[i - s]);
+	}
+}
+
+/* the plausible x86 calls in [from, to): E8 or E9 with a 00 or FF top byte, whose target lies in the input */
+static int X86_Calls(const Uint8* const src, const int n, const int from, const int to)
+{
+	int calls = 0;
+	for (int i = from; i <= to - 5; i++) {
+		if (!X86_IS_CALL(src + i)) continue;
+		const long long target = (long long)i + 5 + ((int)(X86_Get25(src + i) ^ 0x1000000) - 0x1000000);
+		calls += target >= 0 && target < n;
+	}
+	return calls;
+}
+
+/* the order-0 entropy of a sample of region [from, to), delta-coded by s (0: as it is), in 1/256 bit a byte (integer
+   logarithms: every platform gets the same) */
+static Uint32 Flt_Entropy(const Uint8* const src, const int from, const int to, const int s)
+{
+	Uint32 hist[256] = { 0 }, total = 0;
+	for (int b = from; b < to; b += 4 << FLT_SampleLog) {
+		const int e = min(to, b + (1 << FLT_SampleLog));
+		int i = b;
+		if (0 == s) for (; i < e; i++) hist[src[i]]++;
+		for (; i < e && i < s; i++) hist[src[i]]++;
+		for (; i < e; i++) hist[(Uint8)(src[i] - src[i - s])]++;
+		total += (Uint32)(e - b);
+	}
+	Uint64 bits = (Uint64)total * Lg16(total);
+	for (int k = 0; k < 256; k++)
+		if (hist[k]) bits -= (Uint64)hist[k] * Lg16(hist[k]);
+	return (Uint32)(bits * 16 / total);
+}
+
+/* a trial: the size of p[0, n) compressed at level 0 with the state st (of a region, without filters; level 0 resets
+   its table on every call) */
+static int Flt_Trial_Size(WZIP_State_Str* const st, const Uint8* const p, const int n, Uint8* const tmp, const int tmpCap)
+{
+	const int size = WZIP_Compress_L(st, p, n, tmp, tmpCap);
+	return size > 0 ? size : n;
+}
+
+/* the filter of regions first, first + step, ... of src[0, n) (regions of 2^FLT_RegionLog bytes, whose map entries are
+   FLT_None); returns the bytes the filters saved in the trials */
+static Uint64 Flt_Choose_Part(const Uint8* const src, const int n, const int level, Uint8* const map, const int first, const int step)
+{
+	const int region = 1 << FLT_RegionLog, nRegions = (int)(((Uint32)n + region - 1) >> FLT_RegionLog);
+	const int tmpCap = WZIP_Cap_CmprSize(region);
+	Uint8* const buf = (Uint8*)malloc((size_t)region + tmpCap);
+	WZIP_State_Str* const st = WZIP_New_State_L(0, region, NULL, 0);
+	if (NULL == buf || NULL == st) { free(buf); WZIP_Free_State(st); return 0; }
+	((WZL_Sched*)st->sched)->noFilters = 1;
+	Uint8* const tmp = buf + region;
+	Uint8 ids[FLT_Count];
+	const int nIds = FLT_Tries(level, ids);
+	Uint64 saved = 0;
+	for (int r = first; r < nRegions; r += step) {
+		const int from = r << FLT_RegionLog, to = n - from > region ? from + region : n, len = to - from;
+		if (len < FLT_MinRegion) continue;
+		/* cheap checks first: which filters could pay; x86 is tried first, then the deltas, the best estimate first */
+		Uint8 cand[FLT_Count];
+		Uint32 gain[FLT_Count], plain = 0;
+		int nCand = 0;
+		for (int k = 0; k < nIds; k++) {
+			const int id = ids[k];
+			if (id == FLT_X86) {
+				if (X86_Calls(src, n, from, to) >= FLT_X86Calls) { cand[nCand] = (Uint8)id; gain[nCand++] = ~(Uint32)0; }
+				continue;
+			}
+			if (0 == plain) plain = Flt_Entropy(src, from, to, 0) + 1;
+			const Uint32 bits = Flt_Entropy(src, from, to, FLT_Stride[id]) + 1;
+			if (bits + FLT_DeltaGate < plain) {
+				int j = nCand++;                                 /* by gain, the first of equals first */
+				for (; j > 0 && gain[j - 1] < plain - bits; j--) { cand[j] = cand[j - 1]; gain[j] = gain[j - 1]; }
+				cand[j] = (Uint8)id; gain[j] = plain - bits;
+			}
+		}
+		if (0 == nCand) continue;
+		const int plainSize = Flt_Trial_Size(st, src + from, len, tmp, tmpCap);
+		int best = FLT_None, bestSize = plainSize;
+		for (int k = 0; k < nCand; k++) {
+			const int id = cand[k];
+			Flt_Encode(buf, src, from, to, id);
+			const int size = Flt_Trial_Size(st, buf, len, tmp, tmpCap);
+			const int bar = id == FLT_X86 ? plainSize : plainSize - plainSize / 100 * FLT_DeltaMargin;
+			if (size < bestSize && size <= bar) { best = id; bestSize = size; }
+			if (bestSize <= plainSize - plainSize / 100 * FLT_GoodEnough) break;
+		}
+		map[r] = (Uint8)best;
+		saved += (Uint64)(plainSize - bestSize);
+	}
+	free(buf);
+	WZIP_Free_State(st);
+	return saved;
+}
+
+#if WZIP_MULTITHREAD
+typedef struct {
+	const Uint8* src;
+	Uint8* map;
+	int n, level, first, step;
+	Uint64 saved;
+	WZ_Thread thread;
+} Flt_Part;
+
+WZ_THREAD_FN(Flt_Part_Main, arg)
+{
+	Flt_Part* const p = (Flt_Part*)arg;
+	p->saved = Flt_Choose_Part(p->src, p->n, p->level, p->map, p->first, p->step);
+	return 0;
+}
+#endif
+
+/* the filter of each region of src[0, n), with up to `workers` threads (each region's choice is its own, so the map is
+   the same with any number); returns the bytes the filters saved in the trials */
+static Uint64 Flt_Choose(const Uint8* const src, const int n, const int level, Uint8* const map, int workers)
+{
+	const int nRegions = (int)(((Uint32)n + (1u << FLT_RegionLog) - 1) >> FLT_RegionLog);
+	memset(map, FLT_None, (size_t)nRegions);
+	workers = min(min(workers, WZIP_WORKERS_MAX), nRegions / 4);
+#if WZIP_MULTITHREAD
+	if (workers > 1) {
+		Flt_Part part[WZIP_WORKERS_MAX];
+		int started[WZIP_WORKERS_MAX] = { 0 };
+		for (int k = 1; k < workers; k++) {
+			part[k].src = src; part[k].map = map; part[k].n = n; part[k].level = level;
+			part[k].first = k; part[k].step = workers; part[k].saved = 0;
+			started[k] = WZ_THREAD_START(&part[k].thread, Flt_Part_Main, &part[k]);
+		}
+		Uint64 saved = Flt_Choose_Part(src, n, level, map, 0, workers);
+		for (int k = 1; k < workers; k++) {
+			if (started[k]) WZ_THREAD_JOIN(part[k].thread);
+			else part[k].saved = Flt_Choose_Part(src, n, level, map, k, workers);     /* no thread: here */
+			saved += part[k].saved;
+		}
+		return saved;
+	}
+#endif
+	return Flt_Choose_Part(src, n, level, map, 0, 1);
+}
+
+/* writes the filter map: the region log, then runs of equal filters, each LEB128 of (length - 1) << FLT_IdBits | filter;
+   returns its size, 0 if it does not fit in cap */
+static int Flt_Write_Map(Uint8* const out, const int cap, const Uint8* const map, const int nRegions, const int rlog)
+{
+	int k = 0;
+	if (cap < 1) return 0;
+	out[k++] = (Uint8)rlog;
+	for (int r = 0; r < nRegions; ) {
+		int e = r + 1;
+		while (e < nRegions && map[e] == map[r]) e++;
+		Uint32 v = (Uint32)(e - r - 1) << FLT_IdBits | map[r];
+		do {
+			if (k >= cap) return 0;
+			out[k++] = (Uint8)((v & 127) | (v > 127) << 7);
+			v >>= 7;
+		} while (v);
+		r = e;
+	}
+	return k;
+}
+
+/* the size of the filter map at src (srcSize bytes readable) of an n-byte input, 0 if it is invalid */
+static int Flt_Map_Size(const Uint8* const src, const int srcSize, const int n)
+{
+	if (srcSize < 1 || src[0] < FLT_MinLog || src[0] > FLT_MaxLog || n <= 0) return 0;
+	const Uint32 nRegions = ((Uint32)n + (1u << src[0]) - 1) >> src[0];
+	Uint32 covered = 0;
+	int k = 1;
+	while (covered < nRegions) {
+		Uint32 v = 0;
+		for (int sh = 0; ; sh += 7) {
+			if (k >= srcSize || sh > 21) return 0;            /* at most 4 bytes */
+			const Uint8 c = src[k++];
+			v |= (Uint32)(c & 127) << sh;
+			if (!(c & 128)) break;
+		}
+		if ((v & BitMask[FLT_IdBits]) >= FLT_Count || (v >> FLT_IdBits) >= nRegions - covered) return 0;
+		covered += (v >> FLT_IdBits) + 1;
+	}
+	return k;
+}
+
+/* undoes the filters of the decoded input b[0, n) by the map (checked by Flt_Map_Size), region by region */
+static void Flt_Undo(Uint8* const b, const int n, const Uint8* map)
+{
+	const int region = 1 << *map++;
+	for (int from = 0; from < n; ) {
+		Uint32 v = 0;
+		for (int sh = 0; ; sh += 7) {
+			const Uint8 c = *map++;
+			v |= (Uint32)(c & 127) << sh;
+			if (!(c & 128)) break;
+		}
+		const int id = (int)(v & BitMask[FLT_IdBits]);
+		for (Uint32 k = 0; k <= v >> FLT_IdBits; k++) {
+			const int to = n - from > region ? from + region : n;
+			Flt_Decode(b, from, to, id);
+			from = to;
+		}
+	}
+}
+
+/* Filters the input for compression at the level, if any region gains: writes the map at out (cap bytes), sets *mapSize
+   and returns the filtered copy (the caller frees it); NULL to compress the input as it is. */
+static Uint8* Flt_Filter(WZIP_State_Str* const wzipStr, const Uint8* const src, const int n, Uint8* const out, const int cap,
+	int* const mapSize)
+{
+	const int level = wzipStr->compressLevel;
+	*mapSize = 0;
+	if (level < FLT_MinLevel || n < FLT_MinRegion || ((WZL_Sched*)wzipStr->sched)->noFilters) return NULL;
+	const int nRegions = (int)(((Uint32)n + (1u << FLT_RegionLog) - 1) >> FLT_RegionLog);
+	Uint8* const map = (Uint8*)malloc((size_t)nRegions);
+	if (NULL == map) return NULL;
+	Uint8* filtered = NULL;
+	const Uint64 saved = Flt_Choose(src, n, level, map, wzipStr->nbWorkers);
+	/* worth a filtered copy of the input if the trials saved at least n >> FLT_WorthLog bytes (on enwik9 a few regions
+	   saved 0.0004%, not worth 1 GB more memory; mozilla's, the least of the binaries tested, 0.12%) */
+	if (saved > 0 && saved >= (Uint64)n >> FLT_WorthLog && (*mapSize = Flt_Write_Map(out, cap, map, nRegions, FLT_RegionLog)) > 0
+	    && NULL != (filtered = (Uint8*)malloc((size_t)n))) {
+		for (int r = 0; r < nRegions; r++) {
+			const int from = r << FLT_RegionLog, to = n - from > (1 << FLT_RegionLog) ? from + (1 << FLT_RegionLog) : n;
+			Flt_Encode(filtered + from, src, from, to, map[r]);
+		}
+	}
+	else *mapSize = 0;
+	free(map);
+	return filtered;
+}
+
 /* The stream starts with the windows of lengths 3 to 7, each as its distance below the widest window (that of length 8,
-   which the decoder derives from the size), 4 bits each: d3 | d4 << 4, d5 | d6 << 4, d7 | groups << 4, where groups is
-   0 for the natural offset groups and 1 for the fine layout (other values are reserved) */
+   which the decoder derives from the size), 4 bits each: d3 | d4 << 4, d5 | d6 << 4, d7 | flags << 4, where the flags
+   are 1 for the fine offset groups (else the natural ones), 2 for sized sequence blocks and 4 for a filter map, which
+   follows the header (format 2 has flags 2 and 4) */
 #define   WIN_HeaderSize       3
 /* optimal parsing prices far short matches exactly: its windows of lengths 3, 4, 5 reach at least this close to the
    widest (on Silesia: +0.7% at level 11 over the default windows, which suit the greedy and lazy parsers better) */
@@ -3126,27 +3487,34 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 {
 	SCHED(wzipStr);
 	Uint8* const header = (Uint8*)wzipStream;
+	if (wzipCapSize <= WIN_HeaderSize) return 0;
+	/* filters (format 2): the map follows the window header, and the filtered copy is compressed */
+	int mapSize;
+	Uint8* const filtered = Flt_Filter(wzipStr, (const Uint8*)source, srcSize, header + WIN_HeaderSize, wzipCapSize - WIN_HeaderSize,
+	                                   &mapSize);
+	Uint8* const in = filtered ? filtered : (Uint8*)source;
 	header[0] = (Uint8)((OffWidth[8] - OffWidth[3]) | (OffWidth[8] - OffWidth[4]) << 4);
 	header[1] = (Uint8)((OffWidth[8] - OffWidth[5]) | (OffWidth[8] - OffWidth[6]) << 4);
-	header[2] = (Uint8)((OffWidth[8] - OffWidth[7]) | (OffGroupsFine | SeqSized << 1) << 4);
-	Uint8* const stream = header + WIN_HeaderSize;
-	const int cap = wzipCapSize - WIN_HeaderSize;
+	header[2] = (Uint8)((OffWidth[8] - OffWidth[7]) | (OffGroupsFine | SeqSized << 1 | (filtered ? FLT_HasMap : 0)) << 4);
+	Uint8* const stream = header + WIN_HeaderSize + mapSize;
+	const int cap = wzipCapSize - WIN_HeaderSize - mapSize;
 	Uint32 size;
 	LitRunTooLong = 0;
 	/* a dictionary just before the input: its last 15 positions too, whose compares run on into the input */
-	if (wzipStr->dictSize && wzipStr->dictEnd == (Uint8*)source && wzipStr->compressLevel <= 6)
+	if (wzipStr->dictSize && wzipStr->dictEnd == in && wzipStr->compressLevel <= 6)
 		WZL_Insert_Dict(wzipStr, -min(wzipStr->dictSize, 15), -1);
 	if (0 == wzipStr->compressLevel && 0 == wzipStr->dictSize)      /* the fast mode; with a dictionary, level 1's loop */
-		size = WLZ2_Compress_Fast1(wzipStr, (Uint8*)source, srcSize, stream, cap);
+		size = WLZ2_Compress_Fast1(wzipStr, in, srcSize, stream, cap);
 	else if (wzipStr->compressLevel <= 1)
-		size = WLZ2_Compress_Fast(wzipStr, (Uint8*)source, srcSize, stream, cap);
+		size = WLZ2_Compress_Fast(wzipStr, in, srcSize, stream, cap);
 	else if (wzipStr->compressLevel >= 7)
-		size = WLZ2_Compress_Opt(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt, OPT_LevelSufficient[wzipStr->compressLevel - 7],
+		size = WLZ2_Compress_Opt(wzipStr, in, srcSize, stream, cap, wzipStr->maxSearchCnt, OPT_LevelSufficient[wzipStr->compressLevel - 7],
 		                         OPT_LevelPasses[wzipStr->compressLevel - 7], OPT_LevelStates[wzipStr->compressLevel - 7]);
 	else
-		size = WLZ2_Compress(wzipStr, (Uint8*)source, srcSize, stream, cap, wzipStr->maxSearchCnt);
+		size = WLZ2_Compress(wzipStr, in, srcSize, stream, cap, wzipStr->maxSearchCnt);
+	free(filtered);
 	if (LitRunTooLong) size = 0;                         /* a literal run the format cannot code: the caller stores */
-	return size ? (int)size + WIN_HeaderSize : 0;
+	return size ? (int)size + WIN_HeaderSize + mapSize : 0;
 }
 
 /* Inserts the dictionary positions from..to (negative) into the hash tables and chains of levels 0-6, each table only
@@ -3868,10 +4236,12 @@ int WZIP_Decompress_L(
 	const int histSize = dict && dictSize > 0 ? dictSize : 0;
 	Uint8* const dictEnd = histSize ? (Uint8*)dict + dictSize : NULL;
 
+	const Uint8* fltMap = NULL;                        /* the filter map, if any */
+
 	if (destSize <= 0) return 0;
 	WZIP_Set_OffWidth(WZL_History(destSize, histSize), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
-		if (srcSize < WIN_HeaderSize + 4 || (srcPtr[2] >> 4) > 3) return 0;      /* flags: fine groups, sized blocks */
+		if (srcSize < WIN_HeaderSize + 4 || (srcPtr[2] >> 4) > 7) return 0;   /* flags: fine groups, sized blocks, filters */
 		OffGroupsFine = srcPtr[2] >> 4 & 1;
 		SeqSized = srcPtr[2] >> 5 & 1;
 		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
@@ -3880,6 +4250,12 @@ int WZIP_Decompress_L(
 		for (i = 4; i <= 8; i++)
 			if (OffWidth[i] < OffWidth[i - 1]) return 0;
 		srcPtr += WIN_HeaderSize;
+		if (srcPtr[-1] >> 4 & FLT_HasMap) {
+			const int mapSize = Flt_Map_Size(srcPtr, (int)(srcEnd - srcPtr), destSize);
+			if (0 == mapSize || srcEnd - (srcPtr + mapSize) < 4) return 0;
+			fltMap = srcPtr;
+			srcPtr += mapSize;
+		}
 	}
 	i = 8;
 	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
@@ -3952,8 +4328,9 @@ int WZIP_Decompress_L(
 	free(T);
 	free(lits.buf);
 	free(lits.hst);
-	if (destSize == decSize) return decSize;
-	else return 0;
+	if (destSize != decSize) return 0;
+	if (fltMap) Flt_Undo((Uint8*)dest, destSize, fltMap);
+	return decSize;
 }
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Trusted mode (opt-in) ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -4161,9 +4538,11 @@ int WZIP_Decompress_L_Trusted(
 	Uint8* srcPtr = (Uint8*)source;
 	Uint8* const dictEnd = dict ? (Uint8*)dict + dictSize : NULL;
 
+	const Uint8* fltMap = NULL;                        /* the filter map, if any */
+
 	WZIP_Set_OffWidth(WZL_History(destSize, dict ? dictSize : 0), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
-		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 3) return 0;
+		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 7) return 0;
 		OffGroupsFine = srcPtr[2] >> 4 & 1;
 		SeqSized = srcPtr[2] >> 5 & 1;
 		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
@@ -4172,6 +4551,12 @@ int WZIP_Decompress_L_Trusted(
 		for (i = 4; i <= 8; i++)
 			if (OffWidth[i] < OffWidth[i - 1]) return 0;
 		srcPtr += WIN_HeaderSize;
+		if (srcPtr[-1] >> 4 & FLT_HasMap) {
+			const int mapSize = Flt_Map_Size(srcPtr, srcSize - WIN_HeaderSize, destSize);
+			if (0 == mapSize) return 0;
+			fltMap = srcPtr;
+			srcPtr += mapSize;
+		}
 	}
 	i = 8;
 	while (i > 0 && OffWidth[i] == OffWidth[i - 1])
@@ -4231,7 +4616,8 @@ int WZIP_Decompress_L_Trusted(
 	free(lits.buf);
 	free(lits.hst);
 	free(T);
-	if (destSize == decSize) return decSize;
-	else return 0;
+	if (destSize != decSize) return 0;
+	if (fltMap) Flt_Undo((Uint8*)dest, destSize, fltMap);
+	return decSize;
 }
 

@@ -14,11 +14,26 @@ a WZ frame records its frame format version and its codec's format version (`doc
   unchanged. Levels 0 and 1 still write format 1. Every 1.0 stream decodes; 1.0 decoders reject format 2 streams
   (the flag was reserved), and WZ frames of WZIP at levels 2-13 record codec format version 2, so that 1.0 tools
   report an unsupported version.
+- **WZIP format 2: filters.** A WZIP_L stream may recode regions of its input before compressing them (a flag in
+  the window header, then a map of the regions' filters; `doc/WZIP_format.md`, section 5.6): **x86** turns the
+  relative targets of calls and jumps (E8, E9) into absolute ones, which repeat, and **delta** by 1, 2, 3, 4, 8, 16
+  or 24 bytes suits tables of numbers, audio and images. From level 7 the encoder chooses per region of 64 KiB by
+  trial: where a cheap check (calls found, a lower entropy) names candidates, it compresses the region at level 0
+  as it is and with each, and keeps a filter only if it compresses smaller (a delta by 2%; one that saves 3% ends
+  the trials). Levels 7-8 try x86 and deltas by 2, 4 and 8, levels 9-10 add 1 and 3, levels 11-13 add 16 and 24.
+  At level 11 Silesia compresses 2.2% smaller (ooffice 14%, x-ray 11%, mr 6%), x86-64 executables and libraries
+  6-8% (Linux and Windows), Canterbury and Calgary 0.14% (geo); text is unchanged, and so are levels 0-6. The
+  trials cost about 4 ms per MB, 1-3% of the compression time from level 7 on, and run in threads with `-T`; filters
+  are used only if they save at least 1/4096 of the input, as the encoder then compresses a filtered copy (memory
+  grows by the input's size). A file with filtered regions decodes 8-15% slower (one more pass over them, at 2-4
+  GB/s), Silesia as a whole 1-2%; other files decode as fast.
 - **Decoding**: the sequence loop counts down (a register less in the hottest loop) and the joint code's decoding
   table is built without a branch per symbol, so 1.0's streams and those of levels 0-1 decode up to 1.6% faster.
   Format 2 streams of Silesia decode 0.6-1.6% slower than 1.0's did at the same levels (more blocks, so more tables
   to build); enwik9 decodes 2-5% faster at levels 11-13. Compression speed is unchanged.
-- Reference decoders, specification (`doc/WZIP_format.md`, `doc/frame_format.md`) and golden frames of format 2.
+- Reference decoders, specification (`doc/WZIP_format.md`, `doc/frame_format.md`) and golden frames of format 2;
+  tests of every filter against an encoder written apart, of damaged filter maps, and of the same output on every
+  platform with filters.
 
 ## 1.0.1 (2026-10-08)
 

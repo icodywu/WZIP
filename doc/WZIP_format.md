@@ -13,10 +13,12 @@ Sections 2-7 are normative; sections 8-10 describe the reference implementation 
 `wzip_compress` level (0-13) on Canterbury and Calgary, of levels 1, 9, 11 and 13 on four Silesia files, of edge
 inputs (stored, all-equal, long runs, incompressible prefixes, sizes 32767, 32768 and 65536), of WZIP_L and WZIP_M
 payloads compressed with a dictionary, and of 14,433 WZIP_S blocks of 4K, 8K, 16K and 5000 bytes at levels 1, 5 and 9
-with and without a dictionary, all identically to the input; that is how the specification was checked.
+with and without a dictionary, all identically to the input; that is how the specification was checked. For the
+filters of version 2 it also decodes streams of levels 1, 9, 11 and 13 on x86 code and images (Silesia's ooffice,
+mr and x-ray, and x86-64 executables) and a stream that uses every filter (made by `tests/roundtrip.c`).
 
-Format version: 2 (October 2026). Version 2 adds **sized sequence blocks** to WZIP_L (sections 5.2 and 5.4), which a
-flag in the window header announces; every version 1 stream is a version 2 stream. None of the formats carries a
+Format version: 2 (October 2026). Version 2 adds **sized sequence blocks** (sections 5.2 and 5.4) and **filters**
+(section 5.6) to WZIP_L, which flags in the window header announce; every version 1 stream is a version 2 stream. None of the formats carries a
 version field (WZIP_S reserves three header bits, which must be 0). Files and other self-describing data should use
 the WZ frame ([`frame_format.md`](frame_format.md)), which records the codec and the format version and adds a
 checksum.
@@ -47,8 +49,8 @@ a different interface:
 - **WZIP_L** (`n >= 32768`) adapts to its input: its windows are sized to `n` (up to `2^27` bytes), a 3-byte header
   sets the short lengths' windows, and it sends new Huffman tables for each block of up to 16384 sequences (a
   1020-symbol joint code and four or eight offset codes; from version 2, blocks of sizes the encoder chooses) and
-  every 32 KiB of literals, or reuses the last ones. These descriptions cost
-  little on a large input.
+  every 32 KiB of literals, or reuses the last ones. These descriptions cost little on a large input. From version 2
+  it may also filter regions of its input (x86 code, tables of numbers), as a map after its header says.
 - **WZIP_M** (`n < 32768`) sends one table header of four small codes (at most 30 symbols each), fixes its windows
   (8 KiB for length 3, 32 KiB for longer matches) so that no window header is needed, and splits its sequences into
   two streams, one read forward and one backward, which a decoder can follow at the same time.
@@ -222,10 +224,11 @@ linked blocks gives each block the content before it; `frame_format.md`, section
 ### 5.1 Payload
 
 ```
-window header (3 bytes) | literal count | literal stream | sequence block | sequence block | ...
+window header (3 bytes) | [filter map] | literal count | literal stream | sequence block | sequence block | ...
 ```
 
-The **literal count** `L` is a `u16` if `n < 65536`, else a `u32`; `L <= n`. The literal stream (section 4.2) holds `L`
+The filter map is present only if the window header's flag says so (section 5.6). The **literal count** `L` is a
+`u16` if `n < 65536`, else a `u32`; `L <= n`. The literal stream (section 4.2) holds `L`
 literals. Sequence blocks follow until `n` bytes are decoded.
 
 ### 5.2 Windows
@@ -257,7 +260,7 @@ The **window header** gives lengths 3-7 as gaps below `w(8)`, 4 bits each, and t
 |---|---|---|
 | 0 | `w(8) - w(3)` | `w(8) - w(4)` |
 | 1 | `w(8) - w(5)` | `w(8) - w(6)` |
-| 2 | `w(8) - w(7)` | bit 0: offset grouping, 0 natural, 1 fine; bit 1: sized sequence blocks (version 2); bits 2-3 reserved, 0 |
+| 2 | `w(8) - w(7)` | bit 0: offset grouping, 0 natural, 1 fine; bit 1: sized sequence blocks (version 2); bit 2: filter map (version 2, section 5.6); bit 3 reserved, 0 |
 
 Valid widths satisfy `w(3) >= 4` and `w(3) <= w(4) <= ... <= w(8)`. (The base widths of lengths 3-7 in the table are
 the reference encoder's starting point; only `w(8)` is derived by the decoder.)
@@ -354,11 +357,41 @@ block's last sequence completes the output, decoding ends there; the reference e
 further block, which decoders do not need to read.)
 After the last sequence all `L` literals have been consumed.
 
-### 5.6 Validity
+### 5.6 Filters (version 2)
 
-Beyond sections 3 and 4.5, a decoder must reject a payload whose window header is invalid, whose literal count
-exceeds `n`, whose literal stream or sequence blocks extend past the input, whose literal runs consume more than `L`
-literals or pass the end of the output, or that ends before `n` bytes are decoded.
+A **filter** recodes a region of the input before compression so that it compresses better, and the decoder undoes
+it. With the window header's filter flag, a **filter map** follows the window header:
+
+```
+region log R (1 byte) | runs
+```
+
+`R` is 12 to 24. The output is cut into `N = ceil(n / 2^R)` **regions** of `2^R` bytes (the last may be shorter). Each
+**run** is a LEB128 number `u` (7 bits per byte, the low bits first, bit 7 set in every byte but the last; at most 4
+bytes): the next `(u >> 4) + 1` regions have the filter `f = u & 15`. The runs cover the `N` regions exactly.
+
+The rest of the payload (sections 5.1-5.5) decodes, as described there, to the **filtered** output: its matches
+copy filtered bytes, and a dictionary is used as given. Once all `n` bytes are decoded, the decoder restores the
+output in place, region by region from the first, so that the bytes before a region are restored when it is. With
+`b` the output and positions `i` counted from its start (not the region's), region `[a, e)` is restored by its filter:
+
+| `f` | Filter | Restoring region `[a, e)` |
+|---|---|---|
+| 0 | none | nothing |
+| 1 | x86 | for `i = a, a + 1, ..., e - 5`: if `b[i]` is `E8` or `E9` and `b[i+4]` is `00` or `FF`, let `v = b[i+1] + 2^8 b[i+2] + 2^16 b[i+3] + 2^24 (b[i+4] & 1)` and `v' = (v - i - 5) mod 2^25`; `b[i+1..i+3]` become the three low bytes of `v'`, and `b[i+4]` becomes `FF` if `v' >= 2^24`, else `00` |
+| 2-8 | delta by `s` = 1, 2, 3, 4, 8, 16, 24 | for `i = max(a, s), ..., e - 1`: `b[i] = (b[i] + b[i-s]) mod 256` |
+| 9-15 | reserved | invalid |
+
+(The encoder applies the inverse: the x86 filter goes down from `i = e - 5` to `a` and adds `i + 5`, so that each
+position the decoder tests holds what the encoder tested there; a delta filter subtracts from each byte the input's
+byte `s` before it, 0 before the input's start. The x86 filter turns the relative targets of calls (`E8`) and jumps
+(`E9`) into absolute ones, which repeat; the delta filters suit tables of numbers, audio and images.)
+
+### 5.7 Validity
+
+Beyond sections 3 and 4.5, a decoder must reject a payload whose window header or filter map is invalid, whose
+literal count exceeds `n`, whose literal stream or sequence blocks extend past the input, whose literal runs consume
+more than `L` literals or pass the end of the output, or that ends before `n` bytes are decoded.
 
 ## 6. WZIP_M (n < 32768)
 
@@ -518,6 +551,11 @@ incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each c
   its match's source, and executes the sequence decoded 16 steps before. At level 11 on an AMD EPYC 9334 this decodes
   enwik8 44% and enwik9 62% faster, leaving Silesia unchanged; on inputs whose matches stay in cache the pipeline
   would cost up to 8%, which the rule avoids. The format is unchanged.
+- Filters (section 5.6) are undone in one pass over the filtered regions once the payload is decoded. The x86
+  filter skips eight positions at a time to the next `E8` or `E9` and restores an operand without a branch (about
+  half of these bytes in code start no call); the delta filters add eight or four bytes at a time where the stride
+  allows. On the EPYC 9334 the pass restores x86 code at about 2 GB/s and delta-filtered data at about 4 GB/s, so a
+  file whose regions are mostly filtered decodes 8-15% slower than unfiltered; other files are not affected.
 - WZIP_M reads two sequences per round, from streams A and B, so that their table lookups overlap; WZIP_S decodes
   all literals first from two or four streams, then the sequences with offsets from a separate stream. WZIP_S's
   literal-run, length and offset tables hold each symbol's value and extra-bit count beside its code length, so that
@@ -539,6 +577,21 @@ buffer of 16384 sequences in halves, recursively down to 1024 sequences, whereve
 own, are estimated to take fewer bits than the whole (the codes' symbols at their entropy, in integer arithmetic, plus
 their lengths and a fixed cost per block, which also stands for the decoder's table builds). On Silesia this gains
 0.3-0.4% (most on xml, mozilla and mr) and leaves uniform text such as enwik8 unchanged.
+
+From level 7, WZIP_L filters (section 5.6) regions of 64 KiB (`R = 16`) where that pays, decided by trial. A cheap
+check names the candidates: x86 where the region holds at least 64 plausible calls (`E8` or `E9`, a top byte of `00`
+or `FF`, a target inside the input), and a delta where it lowers the order-0 entropy of a quarter of the region by at
+least 1/4 bit a byte (integer logarithms). Levels 7-8 consider x86 and deltas by 2, 4 and 8 bytes, levels 9-10 also
+by 1 and 3, levels 11-13 also by 16 and 24 (record tables). The encoder then compresses the region at level 0 as it
+is and with each candidate, x86 first and then the deltas by falling entropy gain; a delta must save 2% and a filter
+that saves 3% ends the trials. The filters are used only if the trials saved at least 1/4096 of the input, as the
+encoder then compresses a filtered copy of it (on enwik9 a few regions would save 0.0004%). Only sizes decide, so
+every platform chooses alike, and with threads (`WZIP_Set_Workers`) the regions are tried in parallel to the same
+choices. At level 11 this gains 2.2% on Silesia
+(ooffice 14%, x-ray 11%, mr 6%, mozilla 0.3%), 6.2% on four x86-64 Linux executables and libraries and 8.4% on five
+Windows ones, and leaves text unchanged. The trials cost about 4 ms per MB on one thread, 1-3% of the compression
+time from level 7 on; at level 5 they would cost 6%, which is why the lower levels do not filter. (A filter that also
+converted conditional jumps, `0F 80-8F`, gained 1.5% more on GCC's `cc1` but lost up to 3% on other code.)
 
 Each level of WZIP_L searches at most its own window: 2^27 bytes at the top level of each parser (6 and 13) and one
 bit less per level below it, so 2^21 at levels 0 and 7 (level 0 searches 1 MiB in any case). It caps the widest of
