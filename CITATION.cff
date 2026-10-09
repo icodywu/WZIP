@@ -6,7 +6,7 @@ authors:
   - family-names: Wu
     given-names: "Yingquan (Cody)"
 version: 1.1.0
-date-released: "2026-10-08"
+date-released: "2026-10-09"
 license: BSD-2-Clause
 repository-code: "https://github.com/icodywu/WZIP"
 preferred-citation:
