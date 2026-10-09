@@ -1,0 +1,146 @@
+# Checks for the DCC paper's text, v1.1.0 (tag, 1f3016c), 2026-10-09, AMD EPYC 9334 cluster (wzip -b, one thread per
+# file, sizes of WZ frames without checksum, files compressed whole). 'without filters': built with -DFLT_MinLevel=99;
+# WLZ4 'far 2^16': WLZhc_FAR8BITS 16 instead of 20. Ratios: total input over total output.
+# Only the sizes count here: the per-file runs went 24 at a time on one node, so their speeds are not comparable;
+# the enwik9 lines ran alone on a node.
+
+== Silesia (12 files), WZIP with filters / without filters
+level 11: 211938580 -> 50623744 (4.1865) / 51794778 (4.0919); filters: ratio +2.31%, size -2.26%
+level 12: 211938580 -> 50474348 (4.1989) / 51649655 (4.1034); filters: ratio +2.33%, size -2.28%
+level 13: 211938580 -> 50356907 (4.2087) / 51539394 (4.1122); filters: ratio +2.35%, size -2.29%
+per file at level 11, size change from the filters (others 0):
+  mozilla    -0.33%
+  mr         -6.46%
+  ooffice    -14.29%
+  samba      -0.36%
+  x-ray      -10.82%
+
+== x86-64 Linux executables and libraries, level 11, with / without filters
+  cc1                          25952992 ->    8702103 /    9531963  ratio +9.54%, size -8.71%
+  libavcodec.so.58.134.100     14886880 ->    5296423 /    5493474  ratio +3.72%, size -3.59%
+  libx265.so.199               16071296 ->    1109506 /    1135943  ratio +2.38%, size -2.33%
+  python3.10                    5937800 ->    2092281 /    2208534  ratio +5.56%, size -5.26%
+  total                        62848968 ->   17200313 /   18369914  ratio +6.80%, size -6.37%
+
+== x86-64 Windows executables and libraries, level 11, with / without filters
+  d3d11.dll                     2509680 ->     719462 /     789360  ratio +9.72%, size -8.86%
+  explorer.exe                  3389784 ->    1211045 /    1276927  ratio +5.44%, size -5.16%
+  mshtml.dll                   24023040 ->    7343059 /    8166977  ratio +11.22%, size -10.09%
+  ntdll.dll                     2522080 ->     991316 /    1016222  ratio +2.51%, size -2.45%
+  shell32.dll                   8009440 ->    2698486 /    2966484  ratio +9.93%, size -9.03%
+  total                        40454024 ->   12963368 /   14215970  ratio +9.66%, size -8.81%
+
+== Canterbury + Calgary (29 files), level 11, with / without filters
+  6040451 -> 1411777 (4.2786) / 1442713 (4.1869); size -2.14%; files that change: geo -3.06%, kennedy.xls -52.13%
+
+== Silesia, WLZ4 level 6, far table 2^20 (as released) / 2^16
+  211938580 -> 75163017 (2.8197) / 77895909 (2.7208)
+
+== enwik9, WZIP level 11, whole node, threads unpinned (as epyc_linked.txt for 1.0); /usr/bin/time
+  -T105: WZIP  11  enwik9   1000000000 ->    221886991   4.507     22.13 MB/s     710.6 MB/s
+  wall 0:47.41 peak KB 9634020
+  -T1:   WZIP  11  enwik9   1000000000 ->    221865009   4.507      1.20 MB/s     729.0 MB/s
+  wall 13:53.70 peak KB 2195372
+  105 threads: 18.4 times as fast, 0.0099% larger
+
+== raw lines (Silesia WZIP with filters, then without; WLZ4)
+-- base
+WZIP  11  dickens     10192446 ->      2845745   3.582      1.12 MB/s    1093.6 MB/s
+WZIP  12  dickens     10192446 ->      2837795   3.592      1.06 MB/s    1113.7 MB/s
+WZIP  13  dickens     10192446 ->      2831017   3.600      0.62 MB/s    1024.7 MB/s
+WZIP  11  mozilla     51220480 ->     14724543   3.479      1.44 MB/s     780.8 MB/s
+WZIP  12  mozilla     51220480 ->     14650297   3.496      1.34 MB/s     780.8 MB/s
+WZIP  13  mozilla     51220480 ->     14618206   3.504      0.82 MB/s     744.9 MB/s
+WZIP  11  mr      9970564 ->      2859003   3.487      0.85 MB/s     892.9 MB/s
+WZIP  12  mr      9970564 ->      2857772   3.489      0.75 MB/s     948.2 MB/s
+WZIP  13  mr      9970564 ->      2826259   3.528      0.57 MB/s     853.2 MB/s
+WZIP  11  nci     33553445 ->      1527466  21.967      1.43 MB/s    2893.7 MB/s
+WZIP  12  nci     33553445 ->      1514577  22.154      0.80 MB/s    3035.1 MB/s
+WZIP  13  nci     33553445 ->      1538987  21.802      0.68 MB/s    3026.4 MB/s
+WZIP  11  ooffice      6152192 ->      2222809   2.768      1.76 MB/s     521.8 MB/s
+WZIP  12  ooffice      6152192 ->      2212968   2.780      1.61 MB/s     514.6 MB/s
+WZIP  13  ooffice      6152192 ->      2212915   2.780      0.93 MB/s     494.9 MB/s
+WZIP  11  osdb     10085684 ->      3035874   3.322      1.70 MB/s    1332.6 MB/s
+WZIP  12  osdb     10085684 ->      3037032   3.321      1.44 MB/s    1317.6 MB/s
+WZIP  13  osdb     10085684 ->      3029294   3.329      0.86 MB/s    1285.8 MB/s
+WZIP  11  reymont      6627202 ->      1335978   4.961      1.18 MB/s    1260.6 MB/s
+WZIP  12  reymont      6627202 ->      1335095   4.964      1.20 MB/s    1243.8 MB/s
+WZIP  13  reymont      6627202 ->      1324382   5.004      0.69 MB/s    1189.9 MB/s
+WZIP  11  samba     21606400 ->      3877250   5.573      1.70 MB/s    1687.3 MB/s
+WZIP  12  samba     21606400 ->      3862173   5.594      1.14 MB/s    1705.3 MB/s
+WZIP  13  samba     21606400 ->      3846126   5.618      0.87 MB/s    1631.3 MB/s
+WZIP  11  sao      7251944 ->      4866676   1.490      1.33 MB/s     838.6 MB/s
+WZIP  12  sao      7251944 ->      4863561   1.491      1.80 MB/s     840.5 MB/s
+WZIP  13  sao      7251944 ->      4846954   1.496      0.90 MB/s     792.4 MB/s
+WZIP  11  webster     41458703 ->      8416484   4.926      1.21 MB/s    1177.1 MB/s
+WZIP  12  webster     41458703 ->      8383245   4.945      1.09 MB/s    1176.7 MB/s
+WZIP  13  webster     41458703 ->      8385547   4.944      0.63 MB/s    1118.0 MB/s
+WZIP  11  x-ray      8474240 ->      4454171   1.903      0.99 MB/s     554.5 MB/s
+WZIP  12  x-ray      8474240 ->      4461851   1.899      1.02 MB/s     570.6 MB/s
+WZIP  13  x-ray      8474240 ->      4443491   1.907      0.54 MB/s     535.9 MB/s
+WZIP  11  xml      5345280 ->       457745  11.677      1.90 MB/s    2540.8 MB/s
+WZIP  12  xml      5345280 ->       457982  11.671      1.02 MB/s    2529.1 MB/s
+WZIP  13  xml      5345280 ->       453729  11.781      0.83 MB/s    2363.4 MB/s
+-- noflt
+WZIP  11  dickens     10192446 ->      2845745   3.582      1.23 MB/s    1094.6 MB/s
+WZIP  12  dickens     10192446 ->      2837795   3.592      1.14 MB/s    1108.2 MB/s
+WZIP  13  dickens     10192446 ->      2831017   3.600      0.60 MB/s    1032.5 MB/s
+WZIP  11  mozilla     51220480 ->     14773332   3.467      1.40 MB/s     772.1 MB/s
+WZIP  12  mozilla     51220480 ->     14701306   3.484      1.33 MB/s     782.1 MB/s
+WZIP  13  mozilla     51220480 ->     14668032   3.492      0.80 MB/s     746.8 MB/s
+WZIP  11  mr      9970564 ->      3056443   3.262      0.93 MB/s    1032.9 MB/s
+WZIP  12  mr      9970564 ->      3061170   3.257      0.76 MB/s    1021.7 MB/s
+WZIP  13  mr      9970564 ->      3019845   3.302      0.58 MB/s     960.4 MB/s
+WZIP  11  nci     33553445 ->      1527466  21.967      1.43 MB/s    2910.8 MB/s
+WZIP  12  nci     33553445 ->      1514577  22.154      0.80 MB/s    3042.8 MB/s
+WZIP  13  nci     33553445 ->      1538987  21.802      0.68 MB/s    3113.2 MB/s
+WZIP  11  ooffice      6152192 ->      2593297   2.372      1.62 MB/s     572.5 MB/s
+WZIP  12  ooffice      6152192 ->      2587136   2.378      1.74 MB/s     567.8 MB/s
+WZIP  13  ooffice      6152192 ->      2586730   2.378      0.93 MB/s     541.0 MB/s
+WZIP  11  osdb     10085684 ->      3035874   3.322      1.83 MB/s    1343.3 MB/s
+WZIP  12  osdb     10085684 ->      3037032   3.321      1.63 MB/s    1338.6 MB/s
+WZIP  13  osdb     10085684 ->      3029294   3.329      0.93 MB/s    1290.1 MB/s
+WZIP  11  reymont      6627202 ->      1335978   4.961      1.29 MB/s    1262.3 MB/s
+WZIP  12  reymont      6627202 ->      1335095   4.964      1.19 MB/s    1249.9 MB/s
+WZIP  13  reymont      6627202 ->      1324382   5.004      0.74 MB/s    1193.6 MB/s
+WZIP  11  samba     21606400 ->      3891252   5.553      1.63 MB/s    1711.6 MB/s
+WZIP  12  samba     21606400 ->      3875832   5.575      1.13 MB/s    1709.5 MB/s
+WZIP  13  samba     21606400 ->      3862600   5.594      0.86 MB/s    1647.8 MB/s
+WZIP  11  sao      7251944 ->      4866676   1.490      1.64 MB/s     841.0 MB/s
+WZIP  12  sao      7251944 ->      4863561   1.491      1.91 MB/s     837.2 MB/s
+WZIP  13  sao      7251944 ->      4846954   1.496      0.98 MB/s     795.2 MB/s
+WZIP  11  webster     41458703 ->      8416484   4.926      1.25 MB/s    1175.0 MB/s
+WZIP  12  webster     41458703 ->      8383245   4.945      1.09 MB/s    1162.9 MB/s
+WZIP  13  webster     41458703 ->      8385547   4.944      0.64 MB/s    1121.1 MB/s
+WZIP  11  x-ray      8474240 ->      4994486   1.697      1.18 MB/s     543.2 MB/s
+WZIP  12  x-ray      8474240 ->      4994924   1.697      1.20 MB/s     548.5 MB/s
+WZIP  13  x-ray      8474240 ->      4992277   1.697      0.68 MB/s     531.1 MB/s
+WZIP  11  xml      5345280 ->       457745  11.677      1.81 MB/s    2535.8 MB/s
+WZIP  12  xml      5345280 ->       457982  11.671      1.05 MB/s    2529.0 MB/s
+WZIP  13  xml      5345280 ->       453729  11.781      0.85 MB/s    2370.4 MB/s
+-- wbase
+WLZ4   6  dickens     10192446 ->      4221080   2.415     25.19 MB/s    2687.7 MB/s
+WLZ4   6  mozilla     51220480 ->     20914076   2.449     28.44 MB/s    3526.8 MB/s
+WLZ4   6  mr      9970564 ->      4284237   2.327     32.33 MB/s    3008.1 MB/s
+WLZ4   6  nci     33553445 ->      3665131   9.155     67.74 MB/s    5862.3 MB/s
+WLZ4   6  ooffice      6152192 ->      3413981   1.802     35.09 MB/s    2550.4 MB/s
+WLZ4   6  osdb     10085684 ->      4070756   2.478     43.94 MB/s    3084.8 MB/s
+WLZ4   6  reymont      6627202 ->      2130032   3.111     22.21 MB/s    3024.3 MB/s
+WLZ4   6  samba     21606400 ->      5603906   3.856     42.09 MB/s    3983.4 MB/s
+WLZ4   6  sao      7251944 ->      5668240   1.279     31.74 MB/s    3000.6 MB/s
+WLZ4   6  webster     41458703 ->     13260222   3.127     28.44 MB/s    2904.3 MB/s
+WLZ4   6  x-ray      8474240 ->      7201330   1.177     36.65 MB/s    2019.6 MB/s
+WLZ4   6  xml      5345280 ->       730026   7.322     55.30 MB/s    5217.0 MB/s
+-- wfar16
+WLZ4   6  dickens     10192446 ->      4522365   2.254     24.55 MB/s    2720.5 MB/s
+WLZ4   6  mozilla     51220480 ->     21604519   2.371     36.25 MB/s    3526.1 MB/s
+WLZ4   6  mr      9970564 ->      4384595   2.274     32.64 MB/s    3104.6 MB/s
+WLZ4   6  nci     33553445 ->      3731797   8.991     67.27 MB/s    5727.3 MB/s
+WLZ4   6  ooffice      6152192 ->      3511125   1.752     36.20 MB/s    2573.7 MB/s
+WLZ4   6  osdb     10085684 ->      4115330   2.451     47.17 MB/s    3830.0 MB/s
+WLZ4   6  reymont      6627202 ->      2203179   3.008     21.75 MB/s    3115.8 MB/s
+WLZ4   6  samba     21606400 ->      5871724   3.680     44.54 MB/s    4073.2 MB/s
+WLZ4   6  sao      7251944 ->      5742931   1.263     32.19 MB/s    2963.5 MB/s
+WLZ4   6  webster     41458703 ->     14249669   2.909     29.42 MB/s    2900.5 MB/s
+WLZ4   6  x-ray      8474240 ->      7214511   1.175     38.78 MB/s    2013.9 MB/s
+WLZ4   6  xml      5345280 ->       744164   7.183     57.55 MB/s    5269.1 MB/s

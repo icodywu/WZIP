@@ -58,7 +58,7 @@ table, the README line and the CHANGELOG entry. The repository must be public at
    `inikep/lzbench`, saying what changed (CHANGELOG.md) and where the codecs stand (the top-level README has the
    numbers): WLZ4 decodes at 3.0-3.5 GB/s with its checked decoder, 1.6-2.4 times as fast as Zstandard at equal
    ratio, with ratios from 13% above LZ4's default mode to Zstandard 3's (16% above LZ4HC 12's), though Zstandard
-   compresses faster at every ratio; WZIP 11-13 compress Silesia 3.5-4.1% more than Zstandard 22 (1.1% at level 11
+   compresses faster at every ratio; WZIP 11-13 compress Silesia 3.5-4.1% more than Zstandard 22 (1.2% at level 11
    without the filters of 1.1.0) and decode at 83-88% of its speed in trusted mode (the checked decoder lzbench uses
    is 4-6% slower), and on enwik9 WZIP 13 passes xz -9e's ratio while decoding 3% slower than Zstandard 22; WZIP
    compresses more slowly than Zstandard 22.

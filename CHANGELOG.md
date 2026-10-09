@@ -23,8 +23,9 @@ a WZ frame records its frame format version and its codec's format version (`doc
   compresses smaller (a delta by 2%; one that saves 3% ends the trials). Levels 7-8 try x86 and deltas by 2, 4 and 8,
   levels 9-10 add 1 and 3, levels 11-13 add 16, 24 and 32 and the two other strides of 1-64 that lower a sample's
   entropy most (which must save 10%; Canterbury's kennedy.xls, of 13-byte records, compresses to half).
-  At level 11 Silesia compresses 2.2% smaller (ooffice 14%, x-ray 11%, mr 6%), x86-64 executables and libraries
-  6-8% (Linux and Windows), Canterbury and Calgary 0.14% (geo); text is unchanged, and so are levels 0-6. The
+  At level 11 Silesia compresses 2.3% smaller (ooffice 14%, x-ray 11%, mr 6%), x86-64 executables and libraries
+  6-9% (Linux and Windows), Canterbury and Calgary 2.1% (kennedy.xls half, geo 3%); text is unchanged, and so are
+  levels 0-6 (`results/paper_checks_v110.txt`). The
   trials cost about 4 ms per MB, 1-3% of the compression time from level 7 on, and run in threads with `-T`; filters
   are used only if they save at least 1/4096 of the input, as the encoder then compresses a filtered copy (memory
   grows by the input's size). A file with filtered regions decodes 8-15% slower (one more pass over them, at 2-4
