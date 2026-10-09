@@ -9,8 +9,9 @@ before offsets, so the decoder knows each match's window and no extra field is s
 - **WZIP** is an entropy-coded, Zstandard-class codec (Huffman coding only), in three formats, because what pays on a
   large input costs too much on a small one ([comparison](#the-three-wzip-variants)):
   - **WZIP_L**, for inputs of 32 KB and more, sizes its windows to the input (up to 128 MB) and sends fresh Huffman
-    tables, among them a 1020-symbol joint code, every 16,384 sequences, or reuses the last ones where they cost
-    fewer bits: rich statistics whose description pays off on a large input.
+    tables, among them a 1020-symbol joint code, for each block of up to 16,384 sequences, ending blocks where the
+    statistics change, or reuses the last ones where they cost fewer bits: rich statistics whose description pays off
+    on a large input.
   - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
     that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
   - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
@@ -34,7 +35,7 @@ before offsets, so the decoder knows each match's window and no extra field is s
 with no size kept beside the data (the LZ4 block format records none, LZ4 and Zstandard frames only optionally), and
 checks that decoding ends exactly there. WZIP gets more from it: which format follows (a size of 0 marks stored
 input), the window of WZIP_L's longest matches, which just covers the input, and the end of the stream: the last sequence
-is the one whose literals reach that size, so no end-of-block symbol or sequence count is coded. Incompressible input
+is the one whose literals reach that size, so no end-of-stream symbol or total count is coded. Incompressible input
 grows by at most 2 bytes with WZIP and 15 with WLZ4.
 
 <img src="doc/figures/wzip-size.svg" alt="The WZIP size field and what a decoder derives from it" width="620">
@@ -57,7 +58,7 @@ twice, on identical nodes; speeds are the best of both runs (of 3 compressions f
 raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
 them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
 `results/`), gave the same ratios at lower speeds. WZIP and WLZ4 decode in their trusted mode here, as in the paper
-(see Usage); their default, bounds-checked decoders are 5-7% (WZIP) and at most 9% (WLZ4) slower on Silesia.
+(see Usage); their default, bounds-checked decoders are 4-5% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress | Memory (MiB) |
 |---|---:|---:|---:|---:|
@@ -66,8 +67,8 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | **WLZ4 12** | 3.186 | 1.71 | 3535 | 41 |
 | Zstandard 19 | 4.005 | 3.52 | 1393 | 82 |
 | Zstandard 22 | 4.045 | 2.53 | 1312 | 642 |
-| **WZIP 11** | 4.078 | 1.71 | 1194 | 566 |
-| **WZIP 13** | 4.097 | 0.78 | 1138 | 949 |
+| **WZIP 11** | 4.091 | 1.70 | 1187 | 566 |
+| **WZIP 13** | 4.112 | 0.78 | 1120 | 949 |
 | Brotli 11 | 4.276 | 0.68 | 506 | 241 |
 | xz -9e | 4.374 | 2.41 | 149 | 505 |
 
@@ -75,9 +76,9 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 |---|---:|---:|---:|---:|
 | Zstandard 22 | 4.676 | 1.41 | 966 | 649 |
 | xz -9e | 4.722 | 1.43 | 165 | 674 |
-| **WZIP 11** | 4.506 | 1.23 | 1115 | 550 |
-| **WZIP 12** | 4.645 | 0.90 | 1029 | 1062 |
-| **WZIP 13** | 4.759 | 0.47 | 950 | 1911 |
+| **WZIP 11** | 4.506 | 1.22 | 1177 | 550 |
+| **WZIP 12** | 4.645 | 0.89 | 1069 | 1062 |
+| **WZIP 13** | 4.760 | 0.48 | 970 | 1911 |
 
 Memory is the encoder's (the growth of the peak resident set while compressing). **Each level has its own window**,
 which sizes the encoder's tables: WZIP searches 2^27 bytes back at the top level of each parser (lazy 6, optimal 13)
@@ -234,8 +235,9 @@ EPYC 9334, threads unpinned:
 | level 11 | 1.22 MB/s | 7.26 MB/s | 11.0 MB/s | 21.7 MB/s | 4.5059 / 4.5056 |
 | level 13 | 0.47 MB/s | | | 6.40 MB/s | 4.7593 / 4.7586 |
 
-(Level 13 with one thread: the benchmark above.) Linked blocks decode in one thread, 3-5% slower than one stream,
-with the level's window and a block in memory (`results/epyc_linked.txt`).
+(Level 13 with one thread: the benchmark above. This table was measured with 1.0; 1.1's sized blocks change these
+enwik9 ratios by at most 0.02%.) Linked blocks decode in one thread, 3-5% slower than one stream, with the level's
+window and a block in memory (`results/epyc_linked.txt`).
 
 ## Python
 
@@ -279,7 +281,7 @@ runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows
 with CMake.
 Big-endian support is not yet verified: a job on an emulated s390x runs the tests for information only. On x86 the
 decoders pick BMI2 code paths at run time. The library's version
-(1.0.1) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
+(1.1.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
 
 The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing
 outside the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated
@@ -343,7 +345,7 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 5-7% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
+On Silesia the trusted mode decodes 4-5% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
 on the laptop). Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 
@@ -354,10 +356,11 @@ a prepared WZIP_S dictionary may be shared.
 
 - WZIP's encoder memory follows the level's window: on a 50 MB input about 570 MB at level 11 and 940-950 MB at
   12-13, on enwik9 0.55, 1.06 and 1.9 GB at levels 11, 12 and 13 (Zstandard 22: 0.65 GB). The ratio of a large input drops
-  with the window (enwik9: 4.759, 4.645, 4.506 at levels 13, 12, 11). A codec stream holds at most 2 GB, and windows
+  with the window (enwik9: 4.760, 4.645, 4.506 at levels 13, 12, 11). A codec stream holds at most 2 GB, and windows
   reach 128 MB; the WZ frame stores larger content as several blocks.
-- A WZIP_L literal run holds at most 2^24 - 1 bytes: an input with about 16 MB in which no match is found (and data
-  after it worth compressing) is stored rather than compressed.
+- A WZIP_L literal run holds at most 2^24 - 1 bytes. The encoders end longer runs at a match of 3 bytes or more
+  (levels 0-1 by a scan, from 1.0.1); only an input with 16 MB in which no 3 bytes repeat within a few KB is stored
+  rather than compressed.
 
 ## Length-2 matches: measured, not used
 

@@ -535,7 +535,7 @@ static void test_same_output(void)
 #endif
 	if (sizeof(void*) != 8 || *(const unsigned char*)&one != 1) { printf("%-28s (64-bit little-endian only)\n", "same output everywhere"); return; }
 	static const struct { const char* name; int n; unsigned expect; } cases[] = {
-		{ "counters 256 KiB", 1 << 18, 0x5BE5F4B2u }, { "words 256 KiB", 1 << 18, 0xAF6A75CDu }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
+		{ "counters 256 KiB", 1 << 18, 0x2B5E9D4Au }, { "words 256 KiB", 1 << 18, 0xCCE20CA1u }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
 	};
 	const int n = 1 << 18;
 	unsigned char* b = (unsigned char*)malloc(n);

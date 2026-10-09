@@ -19,10 +19,10 @@ extern "C" {
 #endif
 
 #define WZF_VERSION_MAJOR    1                /* the library's version, as WZIP_VERSION_* in WZIP.h */
-#define WZF_VERSION_MINOR    0
-#define WZF_VERSION_RELEASE  1
+#define WZF_VERSION_MINOR    1
+#define WZF_VERSION_RELEASE  0
 #define WZF_VERSION_NUMBER   (WZF_VERSION_MAJOR * 10000 + WZF_VERSION_MINOR * 100 + WZF_VERSION_RELEASE)
-#define WZF_VERSION_STRING   "1.0.1"
+#define WZF_VERSION_STRING   "1.1.0"
 unsigned WZF_versionNumber(void);
 const char* WZF_versionString(void);
 

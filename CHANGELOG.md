@@ -3,6 +3,23 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
+## 1.1.0 (2026-10-09)
+
+- **WZIP format 2: sized sequence blocks.** A WZIP_L stream may give each sequence block its own number of sequences
+  (a flag in the window header's reserved bits, then a 14-bit count in each block's header), so that its codes
+  change where the data does. From level 2 the encoder splits each buffer of 16384 sequences in halves, recursively
+  down to 1024, wherever an integer estimate of the halves' bits (entropy, code lengths, and a cost per block that
+  also stands for the decoder's table builds) is lower. Silesia compresses 0.3-0.4% smaller (levels 2-13; at level
+  11 xml 1.1%, mozilla 0.8%, mr 0.5%, samba 0.3%), Canterbury and Calgary up to 0.1%; uniform text such as enwik8 is
+  unchanged. Levels 0 and 1 still write format 1. Every 1.0 stream decodes; 1.0 decoders reject format 2 streams
+  (the flag was reserved), and WZ frames of WZIP at levels 2-13 record codec format version 2, so that 1.0 tools
+  report an unsupported version.
+- **Decoding**: the sequence loop counts down (a register less in the hottest loop) and the joint code's decoding
+  table is built without a branch per symbol, so 1.0's streams and those of levels 0-1 decode up to 1.6% faster.
+  Format 2 streams of Silesia decode 0.6-1.6% slower than 1.0's did at the same levels (more blocks, so more tables
+  to build); enwik9 decodes 2-5% faster at levels 11-13. Compression speed is unchanged.
+- Reference decoders, specification (`doc/WZIP_format.md`, `doc/frame_format.md`) and golden frames of format 2.
+
 ## 1.0.1 (2026-10-08)
 
 Fixes from the review of the lzbench pull request (inikep/lzbench#341). The formats are unchanged, and so are the

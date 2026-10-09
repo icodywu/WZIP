@@ -13,6 +13,7 @@
 
 #define WZF_FRAME_VERSION   0
 #define WZF_CODEC_VERSION   1           /* the WZIP and WLZ4 formats of October 2026 */
+#define WZF_CODEC_VERSION_2 2           /* WZIP with sized sequence blocks (1.1.0, levels 2-13), which 1.0 cannot decode */
 #define WZF_FLAG_CHECKSUM   0x04
 #define WZF_FLAG_SIZE       0x08
 #define WZF_FLAG_LINKED     0x10        /* linked blocks: a window log follows the block size log; WZIP only, b <= 30 */
@@ -217,7 +218,7 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
 	wr32(o, WZF_MAGIC);
 	o[4] = (unsigned char)(params->codec | (c->checksum ? WZF_FLAG_CHECKSUM : 0) | (hasSize ? WZF_FLAG_SIZE : 0)
 	                       | (linked ? WZF_FLAG_LINKED : 0));
-	o[5] = (unsigned char)(WZF_FRAME_VERSION << 4 | WZF_CODEC_VERSION);
+	o[5] = (unsigned char)(WZF_FRAME_VERSION << 4 | (params->codec == WZF_CODEC_WZIP && params->level >= 2 ? WZF_CODEC_VERSION_2 : WZF_CODEC_VERSION));
 	o[6] = (unsigned char)c->blockLog;
 	if (linked) o[7] = (unsigned char)windowLog;
 	if (hasSize) wr64(o + 7 + linked, contentSize);
@@ -489,7 +490,8 @@ size_t WZF_decompressBegin(WZF_DCtx* d, const void* src, size_t srcSize)
 	if (srcSize < WZF_HEADER_MIN) return ERR(srcSize_wrong);
 	const unsigned flg = s[4], ver = s[5], bs = s[6];
 	const int linked = (flg & WZF_FLAG_LINKED) != 0;
-	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xE0) || (ver >> 4) != WZF_FRAME_VERSION || (ver & 15) != WZF_CODEC_VERSION
+	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xE0) || (ver >> 4) != WZF_FRAME_VERSION
+	    || ((ver & 15) != WZF_CODEC_VERSION && ((ver & 15) != WZF_CODEC_VERSION_2 || (flg & 3) != WZF_CODEC_WZIP))
 	    || bs < WZF_BLOCKLOG_MIN || bs > WZF_BLOCKLOG_MAX || (linked && ((flg & 3) != WZF_CODEC_WZIP || bs > 30)))
 		return ERR(unsupported);
 	const size_t hdr = WZF_HEADER_MIN + linked + ((flg & WZF_FLAG_SIZE) ? 8 : 0);

@@ -2,7 +2,7 @@
 #   cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release && cmake --build build-cmake && ctest --test-dir build-cmake
 #   cmake --install build-cmake --prefix /usr/local
 cmake_minimum_required(VERSION 3.13)
-project(wzip VERSION 1.0.1 DESCRIPTION "WZIP and WLZ4 compression" LANGUAGES C)
+project(wzip VERSION 1.1.0 DESCRIPTION "WZIP and WLZ4 compression" LANGUAGES C)
 
 option(WZIP_BUILD_SHARED   "Build the shared library"         ON)
 option(WZIP_BUILD_PROGRAMS "Build the wzip and wlz4 tools"    ON)

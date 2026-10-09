@@ -73,7 +73,7 @@ def decode(data):
         codec = flg & 3
         if codec > 1 or flg & 0xE0:
             raise ValueError('reserved codec or flag')
-        if ver >> 4 != 0 or ver & 15 != 1:
+        if ver >> 4 != 0 or ver & 15 not in ((1, 2) if codec == 0 else (1,)):    # WZIP 2: sized sequence blocks
             raise ValueError('unsupported format version')
         if not 10 <= bs <= 31:
             raise ValueError('block size log out of range')

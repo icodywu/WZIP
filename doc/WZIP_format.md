@@ -15,9 +15,11 @@ inputs (stored, all-equal, long runs, incompressible prefixes, sizes 32767, 3276
 payloads compressed with a dictionary, and of 14,433 WZIP_S blocks of 4K, 8K, 16K and 5000 bytes at levels 1, 5 and 9
 with and without a dictionary, all identically to the input; that is how the specification was checked.
 
-Format version: October 2026. None of the formats carries a version field (WZIP_S reserves three header bits, which
-must be 0). Files and other self-describing data should use the WZ frame ([`frame_format.md`](frame_format.md)),
-which records the codec and this format's version (1) and adds a checksum.
+Format version: 2 (October 2026). Version 2 adds **sized sequence blocks** to WZIP_L (sections 5.2 and 5.4), which a
+flag in the window header announces; every version 1 stream is a version 2 stream. None of the formats carries a
+version field (WZIP_S reserves three header bits, which must be 0). Files and other self-describing data should use
+the WZ frame ([`frame_format.md`](frame_format.md)), which records the codec and the format version and adds a
+checksum.
 
 ## 1. Overview
 
@@ -43,8 +45,9 @@ literals, and an offset symbol with extra bits for a new offset; the last sequen
 a different interface:
 
 - **WZIP_L** (`n >= 32768`) adapts to its input: its windows are sized to `n` (up to `2^27` bytes), a 3-byte header
-  sets the short lengths' windows, and it sends new Huffman tables every 16384 sequences (a 1020-symbol joint code
-  and four or eight offset codes) and every 32 KiB of literals, or reuses the last ones. These descriptions cost
+  sets the short lengths' windows, and it sends new Huffman tables for each block of up to 16384 sequences (a
+  1020-symbol joint code and four or eight offset codes; from version 2, blocks of sizes the encoder chooses) and
+  every 32 KiB of literals, or reuses the last ones. These descriptions cost
   little on a large input.
 - **WZIP_M** (`n < 32768`) sends one table header of four small codes (at most 30 symbols each), fixes its windows
   (8 KiB for length 3, 32 KiB for longer matches) so that no window header is needed, and splits its sequences into
@@ -254,7 +257,7 @@ The **window header** gives lengths 3-7 as gaps below `w(8)`, 4 bits each, and t
 |---|---|---|
 | 0 | `w(8) - w(3)` | `w(8) - w(4)` |
 | 1 | `w(8) - w(5)` | `w(8) - w(6)` |
-| 2 | `w(8) - w(7)` | grouping: 0 natural, 1 fine (2-15 reserved) |
+| 2 | `w(8) - w(7)` | bit 0: offset grouping, 0 natural, 1 fine; bit 1: sized sequence blocks (version 2); bits 2-3 reserved, 0 |
 
 Valid widths satisfy `w(3) >= 4` and `w(3) <= w(4) <= ... <= w(8)`. (The base widths of lengths 3-7 in the table are
 the reference encoder's starting point; only `w(8)` is derived by the decoder.)
@@ -282,17 +285,19 @@ natural grouping, and `min(m, 5) + [m >= 7] + [m >= 13]` with fine grouping.
 
 A sequence block is a header bit stream, aligned; a `u24` size `S`; then two sequence bit streams, each aligned at
 its end: **A**, of `S` bytes, holding the block's sequences 0, 2, 4, ..., and **B**, holding sequences 1, 3, 5, ...
-(up to 16384 sequences in all, each with all its fields). The next block follows B. A stream A that does not end
+(the block's sequences, each with all its fields). The next block follows B. A stream A that does not end
 exactly `S` bytes after its start is invalid. (The codes of one bit stream decode one after another, as each code
 starts where the previous one ends; two streams let a decoder decode two sequences at once.)
 
 The header:
 
 1. **1 bit**: 1 for a *slot-joint* block, 0 for a *classic* block;
-2. **1 bit per code**, in the order of item 4 (2 + the number of offset groups): 1 if the block **reuses** the code,
+2. with **sized sequence blocks** (the window header's flag) only: **14 bits**, the block's number of sequences less
+   one (1-16384 sequences); otherwise a block holds 16384 sequences;
+3. **1 bit per code**, in the order of item 5 (2 + the number of offset groups): 1 if the block **reuses** the code,
    0 if it sends it;
-3. if the block sends a code: the weight code (section 3.2);
-4. the coded tables (section 3.3) of the codes it sends, in this order:
+4. if the block sends a code: the weight code (section 3.2);
+5. the coded tables (section 3.3) of the codes it sends, in this order:
    - the literal-run code: 71 symbols, cap 11;
    - the joint code: 1020 symbols (slot-joint) or 204 (classic), cap 11;
    - one offset code per group, in group order: the group's alphabet size, cap 10.
@@ -343,9 +348,10 @@ Value table (WZIP_L literal-run symbols 32-70, and match lengths from 32):
 | 68-69 | `(s - 66) * 1024 + x` (2048-4095) | 10 |
 | 70 | `x` (literal runs only: 0 to `2^24 - 1`) | 24 |
 
-Decoding continues block after block until `n` bytes are decoded. A block holds at most 16384 sequences; the last
-sequence of the payload is the one of step 3. (If a block's 16384th sequence completes the output, decoding ends
-there; the reference encoder writes the last sequence in a further block, which decoders do not need to read.)
+Decoding continues block after block until `n` bytes are decoded. A block holds 16384 sequences, or with sized blocks
+the number its header gives; only the payload's last block may end early, with the last sequence (step 3). (If a
+block's last sequence completes the output, decoding ends there; the reference encoder writes the last sequence in a
+further block, which decoders do not need to read.)
 After the last sequence all `L` literals have been consumed.
 
 ### 5.6 Validity
@@ -527,6 +533,12 @@ incompatible with this version.) Splitting enwik9 into blocks of 128 MiB, each c
 | | 7-13 | optimal parsing (a bounded shortest path priced in 1/256 bit from running symbol statistics); from 7 the windows of lengths 3-5 are widened; 12-13 keep three path states per position (one per literal-run class); 13 makes a first pass for per-region prices and uses the fine offset grouping |
 | WZIP_M | 0, 1-9, 10-12 | fast, hash-chain, optimal (the one-call interface uses levels up to 12) |
 | WZIP_S | 1-9 | greedy (1-2) or lazy parsing with a 3-byte hash chain of 4 to 4096 steps; literal codes of at most 9 bits in blocks up to 8 KB (10 above) |
+
+From level 2, WZIP_L writes sized sequence blocks (version 2; levels 0-1 write version 1 streams): it splits each
+buffer of 16384 sequences in halves, recursively down to 1024 sequences, wherever the halves, each with codes of its
+own, are estimated to take fewer bits than the whole (the codes' symbols at their entropy, in integer arithmetic, plus
+their lengths and a fixed cost per block, which also stands for the decoder's table builds). On Silesia this gains
+0.3-0.4% (most on xml, mozilla and mr) and leaves uniform text such as enwik8 unchanged.
 
 Each level of WZIP_L searches at most its own window: 2^27 bytes at the top level of each parser (6 and 13) and one
 bit less per level below it, so 2^21 at levels 0 and 7 (level 0 searches 1 MiB in any case). It caps the widest of

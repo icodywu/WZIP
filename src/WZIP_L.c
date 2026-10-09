@@ -111,8 +111,8 @@ static size_t Seq_Stack_Place(Seq_Stack* q, Uint8* dst)
 }
 
 /* codes the sequences wlzSeq..wlzSeqPtr as a block and stacks it */
-#define   SEQ_PUT_BLOCK()      { const Uint32 n_ = Huffman_Compress_WLZ(S_, wlzSeq, wlzSeqPtr, wlzStream, SEQ_BlockBound, &huffmanSet, &seqPrev); \
-		if (!Seq_Stack_Push(&seqStack, wlzStream, n_, wzipLitPtr)) goto _lit_overflow; }
+#define   SEQ_PUT_BLOCK()      { if (!Seq_Put_Blocks(S_, wlzSeq, wlzSeqPtr, wlzStream, &huffmanSet, &seqPrev, &seqStack, wzipLitPtr)) \
+		goto _lit_overflow; }
 /* codes nLits_ literals of lzLitBuffer at wzipLitPtr (zipLitBlkSize: their size), below the stacked sequences */
 #define   LIT_PUT_BLOCK(nLits_) { if (wzipLitEnd - wzipLitPtr < (ptrdiff_t)(nLits_) + LIT_BlockSlack) goto _lit_overflow;   \
 		if (seqStack.tail - wzipLitPtr >= (ptrdiff_t)(nLits_) + LIT_BlockSlack)                                         \
@@ -126,6 +126,7 @@ static size_t Seq_Stack_Place(Seq_Stack* q, Uint8* dst)
 #define   OFF_SymBits          6                                   /* a sequence packs its offset symbol in 6 bits, raw bits above */
 #define   MaxMchOffGroup       8
 #define   SEQ_BlockSize        (1<<14)                   /*unit size of WLZ sequence to be Huffman coded */
+#define   SEQ_CountBits        14                        /* a sized block's count of sequences, less one */
 
 #define   OffCasheSize          4                                   /* cashe size for the latest matching offsets */
 #define   WINDOW(w)            ( (1<<w) -OffCasheSize +1 )
@@ -189,6 +190,8 @@ typedef struct {
 	int   offGroupsFine;                               /* 1: the eight-group layout (lengths 3, 4, 5, 6, 7, 8-9, 10-15, 16+) */
 	Uint8 offGroupOf[N_HufMchLen];                     /* length symbol -> offset group */
 	int   litRunTooLong;                               /* set by the encoder: a literal run the format cannot code */
+	int   seqSized;                                    /* 1: each sequence block starts with its sequence count */
+	int   seqSplit;                                    /* the encoder's: 1 to split buffers of sequences into sized blocks */
 } WZL_Sched;
 #define   OffWidth             (S_->offWidth)
 #define   SrchWidth            (S_->srchWidth)
@@ -197,6 +200,8 @@ typedef struct {
 #define   OffGroupsFine        (S_->offGroupsFine)
 #define   OffGroupOf           (S_->offGroupOf)
 #define   LitRunTooLong        (S_->litRunTooLong)
+#define   SeqSized             (S_->seqSized)
+#define   SeqSplit             (S_->seqSplit)
 #define   SCHED(wzipStr)       WZL_Sched* const S_ = (WZL_Sched*)(wzipStr)->sched
 
 /* Offset groups, contiguous ranges of length symbols: by default one per length below the widest window (natural) and
@@ -286,6 +291,7 @@ typedef struct {
 	Uint32 maxLitRunHufWt;
 	Uint32 maxMchLenHufWt;
 	Uint32 slotJoint;                                  /* the block's joint symbol carries the cache slot */
+	Uint32 seqCount;                                   /* the block's sequences: SEQ_BlockSize, or its count if sized */
 	Uint32 maxMchOffHufWt[MaxMchOffGroup];
 	Uint8 litRunHufWt[N_HufLitRun];
 	Uint8 mchLenHufWt[N_HufJoint];
@@ -636,6 +642,7 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wl
 	}
 
 	BITStream_Write(bitStream, (Uint32)slotJoint, 1);          /* the block's coding */
+	if (SeqSized) BITStream_Write(bitStream, (Uint32)(wlzSeqEnd - wlzSeq - 1), SEQ_CountBits);   /* its sequences - 1 */
 	for (Uint32 t = 0; t < nTab; t++)
 		BITStream_Write(bitStream, reuse[t], 1);              /* each table: its own code, or the last one */
 	BITStream_Write_Flush(bitStream);
@@ -672,6 +679,123 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wl
 	return (Uint32)(wzipBufPtr - wzipBuffer);
 }
 
+
+/* Sized sequence blocks (the window header's flag; levels SEQ_SizedLevel and up): a buffer of up to SEQ_BlockSize
+   sequences is coded as one block, or split in halves, recursively down to chunks of SEQ_SplitChunk sequences,
+   wherever the halves, each with codes of its own, are estimated to take fewer bits. The estimate counts each code's
+   symbols at their entropy (an integer log2 in 1/16 bit, so that every platform splits alike), 4 bits for each used
+   symbol's length, the joint code as the cheaper of the slot-joint and classic codings, and SEQ_BlockBits for the
+   rest of a block's header. */
+#define   SEQ_SizedLevel       2
+#define   SEQ_SplitDepth       4                         /* halvings: down to SEQ_BlockSize >> 4 sequences */
+#define   SEQ_SplitChunk       (SEQ_BlockSize >> SEQ_SplitDepth)
+#define   SEQ_BlockBits        1024                      /* a block's header but for its codes' lengths, what a split
+                                                            costs the codes in general, and the decoder's table builds
+                                                            (tuned on Silesia: 512 gains 0.03% more and decodes 1-1.3%
+                                                            slower, 2048 decodes 1% faster and gains 0.08% less) */
+#define   SEQ_SymBits          4                         /* a used symbol's length in the code's header */
+
+typedef struct {
+	Uint16 joint[N_HufJoint];                            /* slot-joint symbols */
+	Uint16 classic[N_HufJointClassic];                   /* classic joint symbols */
+	Uint16 litRun[N_HufLitRun];                          /* literal-run symbols of runs of 2 and more */
+	Uint16 off[MaxMchOffGroup][N_HufMchOffMax];          /* new offsets (and run counts) per group; 0-3 unused */
+	Uint16 slot[MaxMchOffGroup][OffCasheSize];           /* cache hits per group, which classic blocks code as offsets */
+} Seq_Hist;
+
+/* log2(x) in 1/16 bit, linear between powers of two, for x >= 1 */
+static Uint32 Lg16(const Uint32 x)
+{
+	const Uint32 msb = High_Bit32(x);
+	return msb * 16 + ((x << (31 - msb)) >> 27 & 15);
+}
+
+/* a code's bits in 1/16 bit: its symbols at their entropy, and 4 bits for each used symbol's length */
+static Uint64 Hist_Bits16(const Uint16* h, const int n)
+{
+	Uint32 total = 0, used = 0;
+	Uint64 sum = 0;
+	for (int i = 0; i < n; i++)
+		if (h[i]) { total += h[i]; sum += (Uint64)h[i] * Lg16(h[i]); used++; }
+	return total ? (Uint64)total * Lg16(total) - sum + 16 * SEQ_SymBits * (Uint64)used : 0;
+}
+
+static void Seq_Hist_Count(WZL_Sched* const S_, Seq_Hist* const h, const WLZ_Set* q, const WLZ_Set* const end)
+{
+	for (; q < end; q++) {
+		const Uint32 l = q->litRun & 255, last = q->mchLen == 255, m = last ? 0 : q->mchLen & 255, o = q->mchOff & BitMask[OFF_SymBits];
+		const Uint32 slotSel = last || m == RunSym || o >= OffCasheSize ? OffCasheSize : o;
+		h->joint[JointIdx(slotSel, LitClass(l), m)]++;
+		h->classic[LitClass(l) * N_HufMchLen + m]++;
+		if (!last && slotSel == OffCasheSize) h->off[OffGroupOf[m]][o]++;
+		if (!last && slotSel < OffCasheSize) h->slot[OffGroupOf[m]][slotSel]++;
+		if (l >= 2) h->litRun[l]++;
+	}
+}
+
+/* the estimated bits of a block of the sequences counted in h, in 1/16 bit */
+static Uint64 Seq_Hist_Bits16(WZL_Sched* const S_, const Seq_Hist* const h)
+{
+	Uint64 sj = Hist_Bits16(h->joint, N_HufJoint), cl = Hist_Bits16(h->classic, N_HufJointClassic);
+	for (int g = 0; g < MchOffGroup; g++) {
+		Uint16 withSlots[N_HufMchOffMax];
+		memcpy(withSlots, h->off[g], N_HufMchOff[g] * sizeof(Uint16));
+		for (int k = 0; k < OffCasheSize; k++) withSlots[k] = h->slot[g][k];
+		sj += Hist_Bits16(h->off[g], N_HufMchOff[g]);
+		cl += Hist_Bits16(withSlots, N_HufMchOff[g]);
+	}
+	return min(sj, cl) + Hist_Bits16(h->litRun, N_HufLitRun) + 16 * SEQ_BlockBits;
+}
+
+/* the cheaper of chunks [c0, c1) as one block or split in halves (recursively); appends the chunk ends of its blocks */
+static Uint64 Seq_Split_Best(WZL_Sched* const S_, const Seq_Hist* const chunk, const int c0, const int c1, const int depth,
+	int* const ends, int* const nEnds)
+{
+	Seq_Hist h;
+	memcpy(&h, &chunk[c0], sizeof(h));
+	for (int c = c0 + 1; c < c1; c++) {
+		const Uint16* const a = (const Uint16*)&chunk[c];
+		Uint16* const s = (Uint16*)&h;
+		for (size_t i = 0; i < sizeof(h) / sizeof(Uint16); i++) s[i] = (Uint16)(s[i] + a[i]);
+	}
+	const Uint64 whole = Seq_Hist_Bits16(S_, &h);
+	if (depth < SEQ_SplitDepth && c1 - c0 >= 2) {
+		const int save = *nEnds, mid = (c0 + c1) / 2;
+		const Uint64 halves = Seq_Split_Best(S_, chunk, c0, mid, depth + 1, ends, nEnds)
+		                    + Seq_Split_Best(S_, chunk, mid, c1, depth + 1, ends, nEnds);
+		if (halves < whole) return halves;
+		*nEnds = save;
+	}
+	ends[(*nEnds)++] = c1;
+	return whole;
+}
+
+/* codes the sequences seq..seqEnd as one block or several (sized blocks), and stacks them; 0 if the output is full */
+static int Seq_Put_Blocks(WZL_Sched* const S_, WLZ_Set* const seq, WLZ_Set* const seqEnd, Uint8* const wlzStream,
+	WLZ_Huffman_Set* const huffmanSet, Seq_Prev* const prev, Seq_Stack* const stack, const Uint8* const litEnd)
+{
+	const int n = (int)(seqEnd - seq);
+	int ends[(SEQ_BlockSize / SEQ_SplitChunk) + 1], nEnds = 0;
+	if (SeqSplit && n >= 2 * SEQ_SplitChunk) {
+		const int nChunks = (n + SEQ_SplitChunk - 1) / SEQ_SplitChunk;
+		Seq_Hist* const chunk = (Seq_Hist*)calloc((size_t)nChunks, sizeof(Seq_Hist));
+		if (chunk) {
+			for (int c = 0; c < nChunks; c++)
+				Seq_Hist_Count(S_, &chunk[c], seq + c * SEQ_SplitChunk, seq + min(n, (c + 1) * SEQ_SplitChunk));
+			Seq_Split_Best(S_, chunk, 0, nChunks, 0, ends, &nEnds);
+			free(chunk);
+		}
+	}
+	if (0 == nEnds) ends[nEnds++] = (n + SEQ_SplitChunk - 1) / SEQ_SplitChunk;
+	WLZ_Set* from = seq;
+	for (int k = 0; k < nEnds; k++) {
+		WLZ_Set* const to = seq + min(n, ends[k] * SEQ_SplitChunk);
+		const Uint32 len = Huffman_Compress_WLZ(S_, from, to, wlzStream, SEQ_BlockBound, huffmanSet, prev);
+		if (!Seq_Stack_Push(stack, wlzStream, len, litEnd)) return 0;
+		from = to;
+	}
+	return 1;
+}
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Fast compression without using hash-chain  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
@@ -3004,7 +3128,7 @@ int WZIP_Compress_L(WZIP_State_Str* wzipStr, const void* const source, int srcSi
 	Uint8* const header = (Uint8*)wzipStream;
 	header[0] = (Uint8)((OffWidth[8] - OffWidth[3]) | (OffWidth[8] - OffWidth[4]) << 4);
 	header[1] = (Uint8)((OffWidth[8] - OffWidth[5]) | (OffWidth[8] - OffWidth[6]) << 4);
-	header[2] = (Uint8)((OffWidth[8] - OffWidth[7]) | OffGroupsFine << 4);
+	header[2] = (Uint8)((OffWidth[8] - OffWidth[7]) | (OffGroupsFine | SeqSized << 1) << 4);
 	Uint8* const stream = header + WIN_HeaderSize;
 	const int cap = wzipCapSize - WIN_HeaderSize;
 	Uint32 size;
@@ -3126,6 +3250,8 @@ WZIP_State_Str* WZIP_New_State_L(int level, int srcSize, const void* dict, int d
 
 	OffGroupsFine = level == 13;
 	Set_Offset_Groups(S_, wzipStr->hash2Len - MinMatchLen + 1, OffGroupsFine);
+	SeqSized = level >= SEQ_SizedLevel;                  /* levels 0 and 1 keep 1.0's fixed blocks (and their speed) */
+	SeqSplit = SeqSized;
 	
 
 	wzipStr->hash0Mask = BitMask[SrchWidth[3] + 4];
@@ -3186,16 +3312,22 @@ typedef struct {
 static void Build_Joint_DecTable(const Uint32 maxBits, const Uint8* wt, Joint_DemapX1* table)
 {
 	if (0 == maxBits) return;
-	Uint32 start[MAX_HufWeight + 2] = { 0 }, pos = 0;
-	Uint32 count[MAX_HufWeight + 2] = { 0 };
+	/* the used symbols in canonical order (by length, then symbol), sorted without a branch per symbol: most of the
+	   1020 are unused, unpredictably, and a branch on each cost more than the rest of the build */
+	Uint32 count[MAX_HufWeight + 2] = { 0 }, at[MAX_HufWeight + 2];
+	Uint16 order[N_HufJoint];
 	for (Uint32 k = 0; k < N_HufJoint; k++) count[wt[k]]++;
-	for (Uint32 b = 1; b <= maxBits; b++) { start[b] = pos; pos += count[b] << (maxBits - b); }
-	for (Uint32 k = 0; k < N_HufJoint; k++) {
-		const Uint32 b = wt[k];
-		if (!b) continue;
+	at[1] = 0;
+	for (Uint32 b = 1; b <= maxBits; b++) at[b + 1] = at[b] + count[b];
+	at[0] = at[maxBits + 1];                             /* unused symbols after the used ones */
+	for (Uint32 k = 0; k < N_HufJoint; k++) order[at[wt[k]]++] = (Uint16)k;
+	Joint_DemapX1* t = table;
+	const Uint32 nUsed = N_HufJoint - count[0];
+	for (Uint32 i = 0; i < nUsed; i++) {
+		const Uint32 k = order[i], b = wt[k];
 		const Joint_DemapX1 e = { (Uint8)(k % N_HufMchLen), (Uint8)(k / N_HufMchLen % N_LitClass), (Uint8)(k / (N_HufMchLen * N_LitClass)), (Uint8)b };
-		for (Uint32 r = 0; r < (1u << (maxBits - b)); r++) table[start[b] + r] = e;
-		start[b] += 1u << (maxBits - b);
+		for (Uint32 r = 0; r < (1u << (maxBits - b)); r++) t[r] = e;
+		t += 1u << (maxBits - b);
 	}
 }
 
@@ -3566,8 +3698,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	const Uint32 lastOffGroup = MchOffGroup - 1;
 	(void)hufWtSet;
 
-	int seqNo;
-	for(seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+	int left = (int)hufWtSet->seqCount;              /* counted down to 0: no register holds the bound (2% at level 1) */
+	for (; left > 0; left--) {
 
 		Uint32 litClass, slotSel;
 		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
@@ -3670,7 +3802,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 #endif
 
 	lits->exec = lzLitBufPtr;
-	if (seqNo & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
+	if (((int)hufWtSet->seqCount - left) & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
 	BITStream_Read_FlushEnd(bitStream);
 	BITStream_Read_FlushEnd(otherStream);
 	if (bitStream.streamPtr != seqA + sizeA) return -1;   /* corrupt: stream A is not of its stated size */
@@ -3739,8 +3871,9 @@ int WZIP_Decompress_L(
 	if (destSize <= 0) return 0;
 	WZIP_Set_OffWidth(WZL_History(destSize, histSize), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
-		if (srcSize < WIN_HeaderSize + 4 || (srcPtr[2] >> 4) > 1) return 0;
-		OffGroupsFine = srcPtr[2] >> 4;
+		if (srcSize < WIN_HeaderSize + 4 || (srcPtr[2] >> 4) > 3) return 0;      /* flags: fine groups, sized blocks */
+		OffGroupsFine = srcPtr[2] >> 4 & 1;
+		SeqSized = srcPtr[2] >> 5 & 1;
 		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
 		for (i = 3; i <= 7; i++) OffWidth[i] = OffWidth[8] - gap[i - 3];
 		if (OffWidth[3] < 4) return 0;
@@ -3796,6 +3929,11 @@ int WZIP_Decompress_L(
 		bitStream.nUsedBits = 0;
 		bitStream.container = MemReadBE8(bitStream.streamPtr);
 		BITStream_Read(bitStream, 1, hufWtSet.slotJoint);           /* the block's coding: slot-joint or classic */
+		if (SeqSized) {                                              /* and its count of sequences */
+			BITStream_Read(bitStream, SEQ_CountBits, hufWtSet.seqCount);
+			hufWtSet.seqCount++;
+		}
+		else hufWtSet.seqCount = SEQ_BlockSize;
 		if (!Seq_Read_Tables(S_, &bitStream, &hufWtSet, T, 0)) { decSize = -1; break; }
 
 		const int blockStart = decSize;
@@ -3881,8 +4019,8 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 	(void)hufWtSet;
 	const Uint32 lastOffGroup = MchOffGroup - 1;
 
-	int seqNo;
-	for(seqNo=0; seqNo<SEQ_BlockSize; seqNo++) {
+	int left = (int)hufWtSet->seqCount;              /* counted down to 0: no register holds the bound (2% at level 1) */
+	for (; left > 0; left--) {
 
 		Uint32 litClass, slotSel;
 		if (slotJoint) {                                 /* joint symbol: cache slot (or new), literal-run class, length */
@@ -3983,7 +4121,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 #endif
 
 	lits->exec = lzLitBufPtr;
-	if (seqNo & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
+	if (((int)hufWtSet->seqCount - left) & 1) { const Bit_Stream t_ = bitStream; bitStream = otherStream; otherStream = t_; }   /* bitStream: A */
 	BITStream_Read_FlushEnd(otherStream);
 	*wzipSeqStart = otherStream.streamPtr;
 	return (Uint32)(destPtr - dest);
@@ -4025,8 +4163,9 @@ int WZIP_Decompress_L_Trusted(
 
 	WZIP_Set_OffWidth(WZL_History(destSize, dict ? dictSize : 0), OffWidth);
 	{   /* the windows of lengths 3-7, stored below the widest one; they must not narrow with length */
-		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 1) return 0;
-		OffGroupsFine = srcPtr[2] >> 4;
+		if (srcSize < WIN_HeaderSize || (srcPtr[2] >> 4) > 3) return 0;
+		OffGroupsFine = srcPtr[2] >> 4 & 1;
+		SeqSized = srcPtr[2] >> 5 & 1;
 		const int gap[5] = { srcPtr[0] & 15, srcPtr[0] >> 4, srcPtr[1] & 15, srcPtr[1] >> 4, srcPtr[2] & 15 };
 		for (i = 3; i <= 7; i++) OffWidth[i] = OffWidth[8] - gap[i - 3];
 		if (OffWidth[3] < 4) return 0;
@@ -4068,6 +4207,11 @@ int WZIP_Decompress_L_Trusted(
 	Uint8* const destEnd = (Uint8*)dest + destSize;
 	while (decSize < destSize) {
 		BITStream_Read(bitStream, 1, hufWtSet.slotJoint);           /* the block's coding: slot-joint or classic */
+		if (SeqSized) {                                              /* and its count of sequences */
+			BITStream_Read(bitStream, SEQ_CountBits, hufWtSet.seqCount);
+			hufWtSet.seqCount++;
+		}
+		else hufWtSet.seqCount = SEQ_BlockSize;
 		Seq_Read_Tables(S_, &bitStream, &hufWtSet, T, 1);
 		
 		const int blockStart = decSize;

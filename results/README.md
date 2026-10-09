@@ -10,7 +10,9 @@ unless a file name says `checked`.
 Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see `bench/README.md`), one run per
 8-core complex, on 2026-10-07: every codec, in both runs, with the final code (`CHANGELOG.md`, up to and including
 WZIP_L's two sequence streams). The paper's tables are `gen_tables.py` applied to `epyc_*` and `epyc_control_*`
-together:
+together, as they were at the paper's version (tag v1.0.0). On 2026-10-09 every WZIP line (and its log lines) was
+measured again with 1.1.0 (sized sequence blocks, format 2), in both runs the same way; the README's WZIP numbers
+are these.
 
 | File | Contents |
 |---|---|

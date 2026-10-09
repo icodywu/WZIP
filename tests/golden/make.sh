@@ -33,4 +33,8 @@ PY
 "$L" -q -f -2 -B10 -c bin.dat > bin.dat.L2.B10.wlz4
 { "$W" -q -c small.txt; printf 'P*M\030\004\000\000\000meta'; "$L" -q -12 -c text.txt; } > concat.wz
 cat small.txt text.txt > concat.ref
+# 1.1.0: WZIP format 2, sized sequence blocks (text, records, text: blocks of several sizes)
+cat text.txt bin.dat text.txt > mixed.dat
+"$W" -q -f -9 -c mixed.dat > mixed.dat.L9.wz
+"$W" -q -f -13 -B16 -c mixed.dat > mixed.dat.L13.B16.wz
 ls -l

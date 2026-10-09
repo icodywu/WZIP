@@ -306,9 +306,9 @@ def decode_l(data, n, dictionary=b''):
     """a WZIP_L payload (after the wrapper's size field) of n >= 32768 decoded bytes; the windows are those of the
     history, the dictionary and the output (5.2, 8)"""
     width = off_widths(n + len(dictionary))
-    if len(data) < 3 or data[2] >> 4 > 1:
+    if len(data) < 3 or data[2] >> 4 > 3:
         raise ValueError('bad window header')
-    fine = data[2] >> 4
+    fine, sized = data[2] >> 4 & 1, data[2] >> 5 & 1        # offset grouping; sized sequence blocks
     gaps = [data[0] & 15, data[0] >> 4, data[1] & 15, data[1] >> 4, data[2] & 15]
     for k in range(3, 8):
         width[k] = width[8] - gaps[k - 3]
@@ -329,6 +329,7 @@ def decode_l(data, n, dictionary=b''):
     while len(out) < n:                                  # sequence blocks (5.4)
         bits = Bits(data, pos)
         slot_joint = bits.read(1)
+        count = bits.read(14) + 1 if sized else 16384        # the block's sequences
         reuse = [bits.read(1) for _ in range(2 + len(gsize))]
         if (reuse[0] and lr_code is None) or (reuse[1] and joint_sj != slot_joint) or                 any(reuse[2 + g] and off_codes[g] is None for g in range(len(gsize))):
             raise ValueError('a sequence block reuses a code not sent before')
@@ -345,7 +346,7 @@ def decode_l(data, n, dictionary=b''):
         size_a = int.from_bytes(data[pos:pos + 3], 'little')
         streams = [Bits(data, pos + 3), Bits(data, pos + 3 + size_a)]
         done = False
-        for k in range(16384):
+        for k in range(count):
             bits = streams[k & 1]
             j = joint.decode(bits)
             if slot_joint:
