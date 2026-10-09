@@ -340,7 +340,7 @@ def decode_l(data, n, dictionary=b''):
             if not reuse[0]:
                 lr_code = read_table(bits, wcode, 71, 11)
             if not reuse[1]:
-                joint, joint_sj = read_table(bits, wcode, 1020 if slot_joint else 204, 11), slot_joint
+                joint, joint_sj = read_table(bits, wcode, 1020 if slot_joint else 204, 12 if sized else 11), slot_joint
             for g in range(len(gsize)):
                 if not reuse[2 + g]:
                     off_codes[g] = read_table(bits, wcode, gsize[g], 10)
@@ -436,15 +436,21 @@ def read_filter_map(data, pos, n):
         else:
             raise ValueError('bad filter map: a run of more than 4 bytes')
         f, run = u & 15, (u >> 4) + 1
-        if f > 9 or len(filters) + run > count:
+        if f > 10 or len(filters) + run > count:
             raise ValueError('bad filter map: filter %d, or a run past the last region' % f)
-        filters += [f] * run
+        s = DELTA_STRIDES[f - 2] if 2 <= f <= 9 else 0
+        if f == 10:                                      # delta by a stride of its own, in the next byte
+            if pos >= len(data) or data[pos] == 0:
+                raise ValueError('bad filter map: no stride, or 0')
+            s = data[pos]
+            pos += 1
+        filters += [(f, s)] * run
     return region, filters, pos
 
 
 def unfilter(b, region, filters):
     """restores the filtered output b in place, region by region from the first (5.6)"""
-    for r, f in enumerate(filters):
+    for r, (f, s) in enumerate(filters):
         a, e = r * region, min(len(b), (r + 1) * region)
         if f == 1:                                       # x86: relative targets back from absolute ones
             for i in range(a, e - 4):
@@ -452,7 +458,6 @@ def unfilter(b, region, filters):
                     v = (b[i + 1] | b[i + 2] << 8 | b[i + 3] << 16 | (b[i + 4] & 1) << 24) - (i + 5) & 0x1FFFFFF
                     b[i + 1:i + 5] = bytes((v & 255, v >> 8 & 255, v >> 16 & 255, 0xFF if v >> 24 else 0x00))
         elif f >= 2:                                     # delta by s
-            s = DELTA_STRIDES[f - 2]
             for i in range(max(a, s), e):
                 b[i] = (b[i] + b[i - s]) & 255
 

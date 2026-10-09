@@ -58,8 +58,8 @@ Silesia directory, which by mistake also held Calgary's trans (93,695 bytes, 0.0
 lines ran the 12 files in one job, 1.0.1 and 1.1.0 without filters (commit 6c26cbf) beside 1.1.0, one complex
 each, up to 6 threads, one run each. With 5 threads or more the parser is the slowest stage, and the sized blocks
 and the filters (filtered regions take it longer) cost the threads part of their gain: 2.32 at level 11, 1.0.1 2.84.
-(These ran before delta by 32 joined levels 11-13, which changes mozilla's stream by +134 bytes at level 11 and -449
-at level 13.)
+(These ran before delta by 32, the stride scan and 12-bit joint codes joined; at level 11 they change Silesia's size by
+0.05%, and its compression time by less than the runs differ.)
 == S9, 1.1.0 (taskset: one 8-core complex)
 level 9 dict 0 KB: 212032275 -> 52832682 (4.0133), outputs identical, decoded ok
   workers 1: 65.7 s, 3.23 MB/s, x1.00

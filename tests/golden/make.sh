@@ -59,4 +59,30 @@ for i in range(65536):
 open('filters.dat', 'wb').write(bytes(code[:131072]) + bytes(samples) + open('text.txt', 'rb').read()[:32768])
 PY
 "$W" -q -f -9 -c filters.dat > filters.dat.L9.wz
+# 1.1.0: delta by a stride of its own (13-byte records, filter 10) and 12-bit joint codes (SDF-like text)
+python - <<'PY'
+import random
+r = random.Random(2028)
+out = bytearray()
+t = 1_700_000_000; price = 10000
+for i in range(16000):                       # 13-byte records: id (u32), time (u32), price (u16), qty (u16), flag (u8)
+    t += r.randrange(1, 40); price += r.randrange(-30, 31)
+    out += i.to_bytes(4, 'little') + t.to_bytes(4, 'little') + (price & 0xFFFF).to_bytes(2, 'little') + r.randrange(1, 500).to_bytes(2, 'little') + bytes([r.randrange(3)])
+open('records.dat', 'wb').write(bytes(out))
+r = random.Random(2029)
+el = ["C", "C", "C", "C", "O", "N", "H", "H", "H", "S", "Cl"]
+out, mol = [], 0
+while sum(len(x) for x in out) < 150000:
+    mol += 1
+    n = r.randrange(6, 30); b = n - 1 + r.randrange(0, 3)
+    out.append("%d\n  -OEChem-0926%02d%d2D\n\n%3d%3d  0     0  0  0  0  0  0999 V2000\n" % (mol, r.randrange(10, 20), r.randrange(10), n, b))
+    for i in range(n):
+        out.append("%10.4f%10.4f%10.4f %-3s 0  0  0  0  0  0  0  0  0  0  0  0\n" % (r.uniform(-5, 5), r.uniform(-5, 5), 0.0, r.choice(el)))
+    for i in range(b):
+        out.append("%3d%3d%3d  0  0  0  0\n" % (r.randrange(1, n + 1), r.randrange(1, n + 1), r.choice([1, 1, 1, 2])))
+    out.append("M  END\n> <NSC>\n%d\n\n$$$$\n" % (r.randrange(1, 800000)))
+open('sdf.dat', 'w', newline='\n').write(''.join(out))
+PY
+"$W" -q -f -11 -c records.dat > records.dat.L11.wz
+"$W" -q -f -11 -c sdf.dat > sdf.dat.L11.wz
 ls -l

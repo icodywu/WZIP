@@ -17,10 +17,12 @@ a WZ frame records its frame format version and its codec's format version (`doc
 - **WZIP format 2: filters.** A WZIP_L stream may recode regions of its input before compressing them (a flag in
   the window header, then a map of the regions' filters; `doc/WZIP_format.md`, section 5.6): **x86** turns the
   relative targets of calls and jumps (E8, E9) into absolute ones, which repeat, and **delta** by 1, 2, 3, 4, 8, 16,
-  24 or 32 bytes suits tables of numbers, audio and images. From level 7 the encoder chooses per region of 64 KiB by
-  trial: where a cheap check (calls found, a lower entropy) names candidates, it compresses the region at level 0
-  as it is and with each, and keeps a filter only if it compresses smaller (a delta by 2%; one that saves 3% ends
-  the trials). Levels 7-8 try x86 and deltas by 2, 4 and 8, levels 9-10 add 1 and 3, levels 11-13 add 16, 24 and 32.
+  24 or 32 bytes, or by any stride up to 255 given in the map, suits tables of numbers, records, audio and images.
+  From level 7 the encoder chooses per region of 64 KiB by trial: where a cheap check (calls found, a lower entropy)
+  names candidates, it compresses the region at level 0 as it is and with each, and keeps a filter only if it
+  compresses smaller (a delta by 2%; one that saves 3% ends the trials). Levels 7-8 try x86 and deltas by 2, 4 and 8,
+  levels 9-10 add 1 and 3, levels 11-13 add 16, 24 and 32 and the two other strides of 1-64 that lower a sample's
+  entropy most (which must save 10%; Canterbury's kennedy.xls, of 13-byte records, compresses to half).
   At level 11 Silesia compresses 2.2% smaller (ooffice 14%, x-ray 11%, mr 6%), x86-64 executables and libraries
   6-8% (Linux and Windows), Canterbury and Calgary 0.14% (geo); text is unchanged, and so are levels 0-6. The
   trials cost about 4 ms per MB, 1-3% of the compression time from level 7 on, and run in threads with `-T`; filters
@@ -29,6 +31,9 @@ a WZ frame records its frame format version and its codec's format version (`doc
   GB/s), Silesia as a whole 1-2%; other files decode as fast. With threads the parser, the slowest stage from 5
   threads, has more to do: level 11 compresses Silesia 2.3 times as fast with 6 threads as with one (1.0: 2.8; the
   sized blocks alone: 2.7).
+- **WZIP format 2: 12-bit joint codes.** With sized blocks a sequence block's joint code may use 12-bit lengths (1.0
+  capped them at 11); the encoder lets it where that saves at least 1/64 bit per sequence, as it doubles the
+  decoder's table: 0.02% on Silesia at level 11 (nci 0.2%), decoding within 1% as fast.
 - **Decoding**: the sequence loop counts down (a register less in the hottest loop) and the joint code's decoding
   table is built without a branch per symbol, so 1.0's streams and those of levels 0-1 decode up to 1.6% faster.
   Format 2 streams of Silesia decode 0.6-1.6% slower than 1.0's did at the same levels (more blocks, so more tables

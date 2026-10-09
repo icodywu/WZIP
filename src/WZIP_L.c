@@ -25,6 +25,16 @@
 #define   CapHufLitBits        MAX_HufWeight     
 #define   CapHufLitRunBits     11
 #define   CapHufMchLenBits     11
+/* with sized sequence blocks (format 2) the joint code may use 12-bit lengths: the encoder lets it where that saves
+   JOINT_WIDE_MIN bits or more, 1/64 bit a sequence, as a 12-bit code doubles the decoder's table (at level 11, wherever
+   it saves anything: Silesia 0.024% smaller, decoding 1.3% slower; with this bar 0.020%, decoding within 1%) */
+#define   CapHufJointWide      12
+#ifndef JOINT_WIDE_SHIFT
+#define   JOINT_WIDE_SHIFT     6
+#endif
+#ifndef JOINT_WIDE_MIN
+#define   JOINT_WIDE_MIN(nSeq) ((Uint64)(nSeq) >> JOINT_WIDE_SHIFT)
+#endif
 #define   CapHufMchOffBits     10
 
 #define   MinMatchLen          3
@@ -52,7 +62,7 @@
 #define   LitRunDirect         32
 #define   n_hufMachOff(offwidth) (2*offWidth)
 #define   N_HufMchOffMax       (27*2)                              /* offsets of up to 27 bits */
-#define   SEQ_BlockBound       (SEQ_BlockSize * 12 + 8192)         /* a block of sequences writes at most this: 93 bits a sequence, tables */
+#define   SEQ_BlockBound       (SEQ_BlockSize * 12 + 8192)         /* a block of sequences writes at most this: 94 bits a sequence, tables */
 /* The sequence blocks wait at the end of the output buffer while the literal stream, which the stream puts first, grows
    from its start; at the end they move up behind the literals. Each block is coded in a scratch buffer of
    SEQ_BlockBound bytes (wlzStream) and stacked downward from the end of the capacity, so that no buffer of the
@@ -580,6 +590,13 @@ ForceInlineTemplate Uint32 Huffman_Compress_WLZ(WZL_Sched* const S_, WLZ_Set* wl
 	const Uint32 nJoint = slotJoint ? N_HufJoint : N_HufJointClassic;
 	Build_Huffman_Table(huffmanSet->litRunHuf, N_HufLitRun, CapHufLitRunBits, hufCodeSet.litRun);
 	Build_Huffman_Table(huffmanSet->mchLenHuf, nJoint, CapHufMchLenBits, hufCodeSet.mchLen);
+	if (SeqSized) {                                          /* a 12-bit joint code, where it saves enough */
+		HufCode_Str wide[N_HufJoint];
+		Build_Huffman_Table(huffmanSet->mchLenHuf, nJoint, CapHufJointWide, wide);
+		const Uint64 narrowBits = Huffman_Code_Bits(huffmanSet->mchLenHuf, hufCodeSet.mchLen, nJoint);
+		const Uint64 wideBits = Huffman_Code_Bits(huffmanSet->mchLenHuf, wide, nJoint);
+		if (wideBits + JOINT_WIDE_MIN(wlzSeqEnd - wlzSeq) < narrowBits) memcpy(hufCodeSet.mchLen, wide, nJoint * sizeof(HufCode_Str));
+	}
 	for (i = 0; i < MchOffGroup; i++) {
 		Build_Huffman_Table(huffmanSet->mchOffHuf[i], N_HufMchOff[i], CapHufMchOffBits, hufCodeSet.mchOff[i]);
 	}
@@ -3123,11 +3140,16 @@ static Uint32 WLZ2_Compress_Opt(WZIP_State_Str* const wzipStr, const Uint8* cons
               turn absolute) and its top byte the result's sign, 00 or FF. Going up, the decoder sees each position
               as the encoder did. (Conditional jumps, 0F 80-8F, gain on some x86-64 code and lose more on other.)
    delta s    each byte less the byte s before it in the input (0 before the input's start), mod 256; filters
-              FLT_Delta to FLT_Count - 1 have the strides of FLT_Stride.
+              FLT_Delta to FLT_DeltaS - 1 have the strides of FLT_Stride, FLT_DeltaS any stride of 1-255, in a byte
+              after its run in the map.
    From FLT_MinLevel on, the encoder tries them per region: it compresses the region at level 0 as it is and filtered,
    and keeps the smallest (sizes, so that every platform chooses alike). */
-enum { FLT_None, FLT_X86, FLT_Delta, FLT_Count = FLT_Delta + 8 };
-static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32 };
+enum { FLT_None, FLT_X86, FLT_Delta, FLT_DeltaS = FLT_Delta + 8, FLT_Count };
+static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32, 0 };
+/* a region's filter in the encoder's map: the filter, and FLT_DeltaS's stride << 8 */
+#define   FLT_ENTRY(id, s)     ((Uint16)((id) | ((id) == FLT_DeltaS ? (s) << 8 : 0)))
+#define   FLT_ID(e)            ((e) & 15)
+#define   FLT_STRIDE(e)        (FLT_ID(e) == FLT_DeltaS ? (e) >> 8 : FLT_Stride[FLT_ID(e)])
 #define   FLT_HasMap           4                         /* the window header's flag (top nibble): a filter map follows */
 #define   FLT_IdBits           4                         /* a run of the map: LEB128 (length - 1) << FLT_IdBits | filter */
 #define   FLT_MinLog           12                        /* the map's region log, FLT_MinLog to FLT_MaxLog */
@@ -3144,8 +3166,18 @@ static const Uint8 FLT_Stride[FLT_Count] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32 };
 #define   FLT_GoodEnough       3                         /* a filter that beats it by 3% ends the trials */
 #define   FLT_SampleLog        10                        /* the entropy sample: 2^10 bytes of every 2^12 */
 #define   FLT_WorthLog         12                        /* filters are used if they save 1/2^12 of the input */
+#ifndef FLT_ScanLevel
+#define   FLT_ScanLevel        11                        /* from this level, every stride of 1 to FLT_ScanStrides */
+#endif
+#define   FLT_ScanStrides      64
+#define   FLT_ScanSampleLog    14                        /* the scan's sample: 2^10 bytes of every 2^14 */
+#define   FLT_ScanTop          2                         /* the strides of the scan tried, at most */
+#define   FLT_ScanMargin       10                        /* and kept if they beat the plain region by 10% (a fast
+                                                            trial may favor them where the optimal parser does not:
+                                                            sao's 28-byte records, 2-8% at level 0, lost 4% at 11) */
 /* the filters each level tries, the most common first: x86 code; 16-, 32- and 64-bit numbers (audio, images, tables);
-   from level 9 bytes and RGB pixels; from level 11 records of 16, 24 and 32 bytes (e.g. ELF tables) */
+   from level 9 bytes and RGB pixels; from level 11 records of 16, 24 and 32 bytes (e.g. ELF tables); from
+   FLT_ScanLevel also the other strides of 1 to FLT_ScanStrides that lower the entropy most (records of any size) */
 static int FLT_Tries(const int level, Uint8* const ids)
 {
 	static const Uint8 order[FLT_Count - 1] = { FLT_X86, FLT_Delta + 1, FLT_Delta + 3, FLT_Delta + 4, FLT_Delta,
@@ -3163,8 +3195,9 @@ static void X86_Put25(Uint8* const p, const Uint32 v)
 }
 
 /* region [from, to) of the input src, filtered into dst (dst[0] is the region's first byte) */
-static void Flt_Encode(Uint8* const dst, const Uint8* const src, const int from, const int to, const int id)
+static void Flt_Encode(Uint8* const dst, const Uint8* const src, const int from, const int to, const Uint16 e)
 {
+	const int id = FLT_ID(e);
 	if (id == FLT_X86) {
 		memcpy(dst, src + from, (size_t)(to - from));
 		for (int i = to - 5; i >= from; i--) {
@@ -3173,7 +3206,7 @@ static void Flt_Encode(Uint8* const dst, const Uint8* const src, const int from,
 		}
 	}
 	else if (id >= FLT_Delta) {
-		const int s = FLT_Stride[id];
+		const int s = FLT_STRIDE(e);
 		int i = from;
 		for (; i < to && i < s; i++) dst[i - from] = src[i];
 		for (; i < to; i++) dst[i - from] = (Uint8)(src[i] - src[i - s]);
@@ -3205,7 +3238,7 @@ static int Low_Byte64(Uint64 m)
 static Uint64 Add_Bytes8(const Uint64 x, const Uint64 y) { return ((x & SWAR_LO7) + (y & SWAR_LO7)) ^ ((x ^ y) & SWAR_HI); }
 
 /* undoes the filter of region [from, to) of the decoded input b, whose regions before it are restored */
-static void Flt_Decode(Uint8* const b, const int from, const int to, const int id)
+static void Flt_Decode(Uint8* const b, const int from, const int to, const int id, const int stride)
 {
 	if (id == FLT_X86) {
 		const int last = to - 5;                           /* the last position that can hold a call */
@@ -3224,7 +3257,7 @@ static void Flt_Decode(Uint8* const b, const int from, const int to, const int i
 		}
 	}
 	else if (id >= FLT_Delta) {                            /* b[i] += b[i - s], going up */
-		const int s = FLT_Stride[id];
+		const int s = stride;
 		int i = max(from, s);
 		if (s >= 8)                                        /* 8 bytes at a time, from bytes before them */
 			for (; i + 8 <= to; i += 8) MemWrite8(b + i, Add_Bytes8(MemRead8(b + i), MemRead8(b + i - s)));
@@ -3256,12 +3289,12 @@ static int X86_Calls(const Uint8* const src, const int n, const int from, const 
 	return calls;
 }
 
-/* the order-0 entropy of a sample of region [from, to), delta-coded by s (0: as it is), in 1/256 bit a byte (integer
-   logarithms: every platform gets the same) */
-static Uint32 Flt_Entropy(const Uint8* const src, const int from, const int to, const int s)
+/* the order-0 entropy of a sample of region [from, to), 2^FLT_SampleLog bytes of every 2^every, delta-coded by s (0: as
+   it is), in 1/256 bit a byte (integer logarithms: every platform gets the same) */
+static Uint32 Flt_Entropy(const Uint8* const src, const int from, const int to, const int s, const int every)
 {
 	Uint32 hist[256] = { 0 }, total = 0;
-	for (int b = from; b < to; b += 4 << FLT_SampleLog) {
+	for (int b = from; b < to; b += 1 << every) {
 		const int e = min(to, b + (1 << FLT_SampleLog));
 		int i = b;
 		if (0 == s) for (; i < e; i++) hist[src[i]]++;
@@ -3285,7 +3318,7 @@ static int Flt_Trial_Size(WZIP_State_Str* const st, const Uint8* const p, const 
 
 /* the filter of regions first, first + step, ... of src[0, n) (regions of 2^FLT_RegionLog bytes, whose map entries are
    FLT_None); returns the bytes the filters saved in the trials */
-static Uint64 Flt_Choose_Part(const Uint8* const src, const int n, const int level, Uint8* const map, const int first, const int step)
+static Uint64 Flt_Choose_Part(const Uint8* const src, const int n, const int level, Uint16* const map, const int first, const int step)
 {
 	const int region = 1 << FLT_RegionLog, nRegions = (int)(((Uint32)n + region - 1) >> FLT_RegionLog);
 	const int tmpCap = WZIP_Cap_CmprSize(region);
@@ -3295,41 +3328,64 @@ static Uint64 Flt_Choose_Part(const Uint8* const src, const int n, const int lev
 	((WZL_Sched*)st->sched)->noFilters = 1;
 	Uint8* const tmp = buf + region;
 	Uint8 ids[FLT_Count];
-	const int nIds = FLT_Tries(level, ids);
+	const int nIds = FLT_Tries(level, ids), scan = level >= FLT_ScanLevel;
 	Uint64 saved = 0;
 	for (int r = first; r < nRegions; r += step) {
 		const int from = r << FLT_RegionLog, to = n - from > region ? from + region : n, len = to - from;
 		if (len < FLT_MinRegion) continue;
 		/* cheap checks first: which filters could pay; x86 is tried first, then the deltas, the best estimate first */
-		Uint8 cand[FLT_Count];
-		Uint32 gain[FLT_Count], plain = 0;
-		int nCand = 0;
+		Uint16 cand[FLT_Count + FLT_ScanTop];
+		Uint32 gain[FLT_Count + FLT_ScanTop], plain = 0;
+		int nCand = 0, strides[FLT_Count + FLT_ScanTop], nStrides = 0;
 		for (int k = 0; k < nIds; k++) {
 			const int id = ids[k];
 			if (id == FLT_X86) {
-				if (X86_Calls(src, n, from, to) >= FLT_X86Calls) { cand[nCand] = (Uint8)id; gain[nCand++] = ~(Uint32)0; }
-				continue;
+				if (X86_Calls(src, n, from, to) >= FLT_X86Calls) { cand[nCand] = (Uint16)id; gain[nCand++] = ~(Uint32)0; }
 			}
-			if (0 == plain) plain = Flt_Entropy(src, from, to, 0) + 1;
-			const Uint32 bits = Flt_Entropy(src, from, to, FLT_Stride[id]) + 1;
+			else strides[nStrides++] = FLT_Stride[id];
+		}
+		if (scan) {                                          /* the other strides that lower a small sample's entropy most */
+			const Uint32 plainS = Flt_Entropy(src, from, to, 0, FLT_ScanSampleLog);
+			Uint32 top[FLT_ScanTop] = { 0 };
+			int* const topS = strides + nStrides, nTop = 0;
+			for (int s = 1; s <= FLT_ScanStrides; s++) {
+				int fixed = 0;
+				for (int f = FLT_Delta; f < FLT_DeltaS; f++) fixed |= FLT_Stride[f] == s;
+				if (fixed) continue;
+				const Uint32 bits = Flt_Entropy(src, from, to, s, FLT_ScanSampleLog), g = plainS > bits ? plainS - bits : 0;
+				if (0 == g) continue;
+				int j = nTop < FLT_ScanTop ? nTop++ : FLT_ScanTop;   /* insert by gain, the smaller stride first */
+				for (; j > 0 && top[j - 1] < g; j--)
+					if (j < FLT_ScanTop) { top[j] = top[j - 1]; topS[j] = topS[j - 1]; }
+				if (j < FLT_ScanTop) { top[j] = g; topS[j] = s; }
+			}
+			nStrides += nTop;
+		}
+		for (int k = 0; k < nStrides; k++) {
+			const int s = strides[k];
+			if (0 == plain) plain = Flt_Entropy(src, from, to, 0, 2 + FLT_SampleLog) + 1;
+			const Uint32 bits = Flt_Entropy(src, from, to, s, 2 + FLT_SampleLog) + 1;
 			if (bits + FLT_DeltaGate < plain) {
+				int id = FLT_DeltaS;                             /* a stride with a filter of its own takes it */
+				for (int f = FLT_Delta; f < FLT_DeltaS; f++) if (FLT_Stride[f] == s) id = f;
 				int j = nCand++;                                 /* by gain, the first of equals first */
 				for (; j > 0 && gain[j - 1] < plain - bits; j--) { cand[j] = cand[j - 1]; gain[j] = gain[j - 1]; }
-				cand[j] = (Uint8)id; gain[j] = plain - bits;
+				cand[j] = FLT_ENTRY(id, s); gain[j] = plain - bits;
 			}
 		}
 		if (0 == nCand) continue;
 		const int plainSize = Flt_Trial_Size(st, src + from, len, tmp, tmpCap);
-		int best = FLT_None, bestSize = plainSize;
+		int bestSize = plainSize;
+		Uint16 best = FLT_None;
 		for (int k = 0; k < nCand; k++) {
-			const int id = cand[k];
-			Flt_Encode(buf, src, from, to, id);
+			Flt_Encode(buf, src, from, to, cand[k]);
 			const int size = Flt_Trial_Size(st, buf, len, tmp, tmpCap);
-			const int bar = id == FLT_X86 ? plainSize : plainSize - plainSize / 100 * FLT_DeltaMargin;
-			if (size < bestSize && size <= bar) { best = id; bestSize = size; }
+			const int bar = cand[k] == FLT_X86 ? plainSize
+			              : plainSize - plainSize / 100 * (FLT_ID(cand[k]) == FLT_DeltaS ? FLT_ScanMargin : FLT_DeltaMargin);
+			if (size < bestSize && size <= bar) { best = cand[k]; bestSize = size; }
 			if (bestSize <= plainSize - plainSize / 100 * FLT_GoodEnough) break;
 		}
-		map[r] = (Uint8)best;
+		map[r] = best;
 		saved += (Uint64)(plainSize - bestSize);
 	}
 	free(buf);
@@ -3340,7 +3396,7 @@ static Uint64 Flt_Choose_Part(const Uint8* const src, const int n, const int lev
 #if WZIP_MULTITHREAD
 typedef struct {
 	const Uint8* src;
-	Uint8* map;
+	Uint16* map;
 	int n, level, first, step;
 	Uint64 saved;
 	WZ_Thread thread;
@@ -3356,10 +3412,10 @@ WZ_THREAD_FN(Flt_Part_Main, arg)
 
 /* the filter of each region of src[0, n), with up to `workers` threads (each region's choice is its own, so the map is
    the same with any number); returns the bytes the filters saved in the trials */
-static Uint64 Flt_Choose(const Uint8* const src, const int n, const int level, Uint8* const map, int workers)
+static Uint64 Flt_Choose(const Uint8* const src, const int n, const int level, Uint16* const map, int workers)
 {
 	const int nRegions = (int)(((Uint32)n + (1u << FLT_RegionLog) - 1) >> FLT_RegionLog);
-	memset(map, FLT_None, (size_t)nRegions);
+	memset(map, 0, (size_t)nRegions * sizeof(Uint16));
 	workers = min(min(workers, WZIP_WORKERS_MAX), nRegions / 4);
 #if WZIP_MULTITHREAD
 	if (workers > 1) {
@@ -3382,9 +3438,9 @@ static Uint64 Flt_Choose(const Uint8* const src, const int n, const int level, U
 	return Flt_Choose_Part(src, n, level, map, 0, 1);
 }
 
-/* writes the filter map: the region log, then runs of equal filters, each LEB128 of (length - 1) << FLT_IdBits | filter;
-   returns its size, 0 if it does not fit in cap */
-static int Flt_Write_Map(Uint8* const out, const int cap, const Uint8* const map, const int nRegions, const int rlog)
+/* writes the filter map: the region log, then runs of equal filters, each LEB128 of (length - 1) << FLT_IdBits | filter,
+   and for FLT_DeltaS a byte of the stride; returns its size, 0 if it does not fit in cap */
+static int Flt_Write_Map(Uint8* const out, const int cap, const Uint16* const map, const int nRegions, const int rlog)
 {
 	int k = 0;
 	if (cap < 1) return 0;
@@ -3392,12 +3448,16 @@ static int Flt_Write_Map(Uint8* const out, const int cap, const Uint8* const map
 	for (int r = 0; r < nRegions; ) {
 		int e = r + 1;
 		while (e < nRegions && map[e] == map[r]) e++;
-		Uint32 v = (Uint32)(e - r - 1) << FLT_IdBits | map[r];
+		Uint32 v = (Uint32)(e - r - 1) << FLT_IdBits | FLT_ID(map[r]);
 		do {
 			if (k >= cap) return 0;
 			out[k++] = (Uint8)((v & 127) | (v > 127) << 7);
 			v >>= 7;
 		} while (v);
+		if (FLT_ID(map[r]) == FLT_DeltaS) {
+			if (k >= cap) return 0;
+			out[k++] = (Uint8)(map[r] >> 8);
+		}
 		r = e;
 	}
 	return k;
@@ -3419,6 +3479,7 @@ static int Flt_Map_Size(const Uint8* const src, const int srcSize, const int n)
 			if (!(c & 128)) break;
 		}
 		if ((v & BitMask[FLT_IdBits]) >= FLT_Count || (v >> FLT_IdBits) >= nRegions - covered) return 0;
+		if ((v & BitMask[FLT_IdBits]) == FLT_DeltaS && (k >= srcSize || 0 == src[k++])) return 0;   /* its stride, 1-255 */
 		covered += (v >> FLT_IdBits) + 1;
 	}
 	return k;
@@ -3435,10 +3496,10 @@ static void Flt_Undo(Uint8* const b, const int n, const Uint8* map)
 			v |= (Uint32)(c & 127) << sh;
 			if (!(c & 128)) break;
 		}
-		const int id = (int)(v & BitMask[FLT_IdBits]);
+		const int id = (int)(v & BitMask[FLT_IdBits]), stride = id == FLT_DeltaS ? *map++ : FLT_Stride[id];
 		for (Uint32 k = 0; k <= v >> FLT_IdBits; k++) {
 			const int to = n - from > region ? from + region : n;
-			Flt_Decode(b, from, to, id);
+			Flt_Decode(b, from, to, id, stride);
 			from = to;
 		}
 	}
@@ -3453,7 +3514,7 @@ static Uint8* Flt_Filter(WZIP_State_Str* const wzipStr, const Uint8* const src, 
 	*mapSize = 0;
 	if (level < FLT_MinLevel || n < FLT_MinRegion || ((WZL_Sched*)wzipStr->sched)->noFilters) return NULL;
 	const int nRegions = (int)(((Uint32)n + (1u << FLT_RegionLog) - 1) >> FLT_RegionLog);
-	Uint8* const map = (Uint8*)malloc((size_t)nRegions);
+	Uint16* const map = (Uint16*)malloc((size_t)nRegions * sizeof(Uint16));
 	if (NULL == map) return NULL;
 	Uint8* filtered = NULL;
 	const Uint64 saved = Flt_Choose(src, n, level, map, wzipStr->nbWorkers);
@@ -3704,8 +3765,8 @@ static void Build_Joint_DecTable(const Uint32 maxBits, const Uint8* wt, Joint_De
    CapHufMchOffBits width, at a fixed stride: a table is selected by arithmetic on the group, and all share one shift. */
 typedef struct {
 	Huffman_DemapX1 litRun[1 << CapHufLitRunBits];
-	Joint_DemapX1 joint[1 << CapHufMchLenBits];        /* slot-joint codes */
-	Huffman_DemapX1 mchLen[1 << CapHufMchLenBits];     /* classic codes */
+	Joint_DemapX1 joint[1 << CapHufJointWide];         /* slot-joint codes */
+	Huffman_DemapX1 mchLen[1 << CapHufJointWide];      /* classic codes */
 	Huffman_DemapX1 off[MaxMchOffGroup << CapHufMchOffBits];
 	Uint32 remLitRun, remMchLen;                       /* the shifts that look them up */
 	int haveLitRun, haveMchLen, haveOff[MaxMchOffGroup];
@@ -3744,7 +3805,8 @@ static int Seq_Read_Tables(WZL_Sched* const S_, Bit_Stream* const bs, WLZ_HufWt_
 			else if ((maxBits = Huffman_Read_Code_byHuffman(&bitStream, (Uint32)maxWt, wtHufDemapX1, n_, cap_, lens_)) < 0) return 0; \
 			else max_ = (Uint32)maxBits; }
 		if (!reuse[0]) SEQ_READ_CODE(N_HufLitRun, CapHufLitRunBits, w->litRunHufWt, w->maxLitRunHufWt);
-		if (!reuse[1]) SEQ_READ_CODE(w->slotJoint ? N_HufJoint : N_HufJointClassic, CapHufMchLenBits, w->mchLenHufWt, w->maxMchLenHufWt);
+		if (!reuse[1]) SEQ_READ_CODE(w->slotJoint ? N_HufJoint : N_HufJointClassic, SeqSized ? CapHufJointWide : CapHufMchLenBits,
+		                             w->mchLenHufWt, w->maxMchLenHufWt);
 		for (t = 2; t < nTab; t++)
 			if (!reuse[t]) SEQ_READ_CODE(N_HufMchOff[t - 2], CapHufMchOffBits, w->mchOffHufWt[t - 2], w->maxMchOffHufWt[t - 2]);
 #undef SEQ_READ_CODE
@@ -4118,7 +4180,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 		else n = slotSel;
 		if (likely(n >= OffCasheSize)) {
 			i = (n >> 1) - 1;
-			//lsBits = ExtHufMchOff[n].lsBits;
+			if (unlikely(bitStream.nUsedBits + i > BIT_CONTAINER_BITS)) BITStream_Read_Flush(bitStream);   /* far, after 12-bit joint codes */
 			BITStream_Read(bitStream, i, lsValue);
 			//matchOffset = (ExtHufMchOff[n].msValue << lsBits ^ lsValue) - (OffCasheSize - 1);
 			matchOffset = ((2 ^ (n & 1)) << i ^ lsValue) - (OffCasheSize - 1);
@@ -4447,7 +4509,7 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		else n = slotSel;
 		if (likely(n >= OffCasheSize)) {
 			i = (n >> 1) - 1;
-			//lsBits = ExtHufMchOff[n].lsBits;
+			if (unlikely(bitStream.nUsedBits + i > BIT_CONTAINER_BITS)) BITStream_Read_Flush(bitStream);   /* far, after 12-bit joint codes */
 			BITStream_Read(bitStream, i, lsValue);
 			//matchOffset = (ExtHufMchOff[n].msValue << lsBits ^ lsValue) - (OffCasheSize - 1);
 			matchOffset = ((2 ^ (n & 1)) << i ^ lsValue) - (OffCasheSize - 1);

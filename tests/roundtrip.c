@@ -590,7 +590,7 @@ static void test_same_output(void)
 	if (sizeof(void*) != 8 || *(const unsigned char*)&one != 1) { printf("%-28s (64-bit little-endian only)\n", "same output everywhere"); return; }
 	static const struct { const char* name; int n; unsigned expect; } cases[] = {
 		{ "counters 256 KiB", 1 << 18, 0xC072921Cu }, { "words 256 KiB", 1 << 18, 0xCCE20CA1u }, { "words 16 KiB", 1 << 14, 0xA8DC538Fu },
-		{ "x86-like 256 KiB", 1 << 18, 0x6424F36Du }, { "samples 256 KiB", 1 << 18, 0x7C05AF93u },          /* filters at levels 7-13 */
+		{ "x86-like 256 KiB", 1 << 18, 0x7912AEB3u }, { "samples 256 KiB", 1 << 18, 0x7C05AF93u },          /* filters at levels 7-13 */
 	};
 	const int n = 1 << 18;
 	unsigned char* b = (unsigned char*)malloc(n);
@@ -619,10 +619,12 @@ static void test_same_output(void)
 	free(b); free(cmp);
 }
 
-/* filter f of doc/WZIP_format.md, section 5.6, on region [a, e) of x, into y (written apart from the library's) */
-static void filter_region(unsigned char* y, const unsigned char* x, int a, int e, int f)
+/* filter f of doc/WZIP_format.md, section 5.6, on region [a, e) of x, into y (written apart from the library's); s is
+   filter 10's stride */
+static void filter_region(unsigned char* y, const unsigned char* x, int a, int e, int f, int s)
 {
 	static const int stride[10] = { 0, 0, 1, 2, 3, 4, 8, 16, 24, 32 };
+	const int d = f == 10 ? s : f >= 2 ? stride[f] : 0;
 	memcpy(y + a, x + a, (size_t)(e - a));
 	if (f == 1) {
 		for (int i = e - 5; i >= a; i--)
@@ -634,7 +636,7 @@ static void filter_region(unsigned char* y, const unsigned char* x, int a, int e
 			}
 	}
 	else if (f >= 2)
-		for (int i = a; i < e; i++) y[i] = (unsigned char)(x[i] - (i >= stride[f] ? x[i - stride[f]] : 0));
+		for (int i = a; i < e; i++) y[i] = (unsigned char)(x[i] - (i >= d ? x[i - d] : 0));
 }
 
 /* The decoders' filters against the format, every filter: the input filtered by filter_region, compressed at level 5
@@ -642,7 +644,7 @@ static void filter_region(unsigned char* y, const unsigned char* x, int a, int e
    must be rejected. */
 static void test_filter_map(void)
 {
-	const int R = 12, n = 10 * (1 << 12) + 1234;         /* 11 regions, the last of 1234 bytes */
+	const int R = 12, n = 11 * (1 << 12) + 1234;         /* 12 regions, the last of 1234 bytes */
 	unsigned char* x = (unsigned char*)malloc(n);
 	unsigned char* y = (unsigned char*)malloc(n);
 	const int bound = WZIP_Cap_CmprSize(n);
@@ -652,23 +654,23 @@ static void test_filter_map(void)
 	if (!x || !y || !cmp || !s) { printf("out of memory\n"); exit(2); }
 	fill_x86(x, n / 2);
 	fill_samples(x + n / 2, n - n / 2);
-	static const int filt[11] = { 1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 9 };   /* regions 9 and 10: one run of 2 */
-	for (int r = 0; r < 11; r++) filter_region(y, x, r << R, (r + 1) << R < n ? (r + 1) << R : n, filt[r]);
+	static const int filt[12] = { 1, 0, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10 };   /* regions 9 and 10: one run of 2 */
+	for (int r = 0; r < 12; r++) filter_region(y, x, r << R, (r + 1) << R < n ? (r + 1) << R : n, filt[r], 13);
 	int cap = bound;
 	const int c = wzip_compress(y, n, cmp, &cap, 5);
 	checks++;
 	if (c < 8 || (cmp[0] | cmp[1] << 8) == 0 || (cmp[6] >> 4) > 3) { fail("filters", "map", 5, "level 5 compressed unexpectedly"); goto done; }
-	static const unsigned char map[11] = { 12, 1, 0, 2, 3, 4, 5, 6, 7, 8, 1 << 4 | 9 };
+	static const unsigned char map[13] = { 12, 1, 0, 2, 3, 4, 5, 6, 7, 8, 1 << 4 | 9, 10, 13 };   /* 10 by 13 */
 	static const struct { int at; unsigned char to; const char* what; } bad[] = {
-		{ -1, 0, NULL }, { 0, 11, "region log 11" }, { 0, 25, "region log 25" }, { 1, 10, "filter 10" },
-		{ 10, 2 << 4 | 9, "a run past the last region" }, { 2, 0x80, "a run of 5 bytes" },
+		{ -1, 0, NULL }, { 0, 11, "region log 11" }, { 0, 25, "region log 25" }, { 1, 11, "filter 11" },
+		{ 10, 3 << 4 | 9, "a run past the last region" }, { 12, 0, "a stride of 0" }, { 2, 0x80, "a run of 5 bytes" },
 	};
 	for (unsigned k = 0; k < sizeof bad / sizeof bad[0]; k++) {
-		unsigned char m[16];
+		unsigned char m[24];
 		int mapSize = (int)sizeof map;
 		memcpy(m, map, sizeof map);
 		if (bad[k].at >= 0) m[bad[k].at] = bad[k].to;
-		if (bad[k].to == 0x80) { memcpy(m + 2, "\x80\x80\x80\x80\x00", 5); memcpy(m + 7, map + 3, 8); mapSize += 4; }
+		if (bad[k].to == 0x80) { memcpy(m + 2, "\x80\x80\x80\x80\x00", 5); memcpy(m + 7, map + 3, 10); mapSize += 4; }
 		memcpy(s, cmp, 7);
 		s[6] |= 4 << 4;                                   /* the filter flag */
 		memcpy(s + 7, m, mapSize);

@@ -12,7 +12,7 @@ before offsets, so the decoder knows each match's window and no extra field is s
     tables, among them a 1020-symbol joint code, for each block of up to 16,384 sequences, ending blocks where the
     statistics change, or reuses the last ones where they cost fewer bits: rich statistics whose description pays off
     on a large input. From level 7 it filters regions where that compresses better, found by trial: x86 code (call
-    targets made absolute) and tables, audio and images (deltas by 1-32 bytes).
+    targets made absolute) and tables, audio and images (deltas by any stride up to 64 bytes).
   - **WZIP_M**, below 32 KB, sends one set of small tables, fixes its windows (8 KB for length 3, 32 KB beyond) so
     that no window header is needed, and splits its sequences into two streams that the decoder reads in parallel.
   - **WZIP_S**, for independent 4-8 KB storage pages, spends one header byte per page, reuses its context and a
@@ -59,7 +59,7 @@ twice, on identical nodes; speeds are the best of both runs (of 3 compressions f
 raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
 them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
 `results/`), gave the same ratios at lower speeds. WZIP and WLZ4 decode in their trusted mode here, as in the paper
-(see Usage); their default, bounds-checked decoders are 4-5% (WZIP) and at most 9% (WLZ4) slower on Silesia.
+(see Usage); their default, bounds-checked decoders are 4-6% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
 | Silesia (212 MB, 12 files) | Ratio | Compress | Decompress | Memory (MiB) |
 |---|---:|---:|---:|---:|
@@ -68,8 +68,8 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 | **WLZ4 12** | 3.186 | 1.71 | 3535 | 41 |
 | Zstandard 19 | 4.005 | 3.52 | 1393 | 82 |
 | Zstandard 22 | 4.045 | 2.53 | 1312 | 642 |
-| **WZIP 11** | 4.185 | 1.66 | 1161 | 599 |
-| **WZIP 13** | 4.207 | 0.76 | 1098 | 998 |
+| **WZIP 11** | 4.187 | 1.67 | 1148 | 599 |
+| **WZIP 13** | 4.209 | 0.77 | 1089 | 998 |
 | Brotli 11 | 4.276 | 0.68 | 506 | 241 |
 | xz -9e | 4.374 | 2.41 | 149 | 505 |
 
@@ -77,9 +77,9 @@ them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), me
 |---|---:|---:|---:|---:|
 | Zstandard 22 | 4.676 | 1.41 | 966 | 649 |
 | xz -9e | 4.722 | 1.43 | 165 | 674 |
-| **WZIP 11** | 4.506 | 1.23 | 1172 | 550 |
-| **WZIP 12** | 4.645 | 0.90 | 1074 | 1062 |
-| **WZIP 13** | 4.760 | 0.47 | 971 | 1911 |
+| **WZIP 11** | 4.507 | 1.22 | 1133 | 550 |
+| **WZIP 12** | 4.646 | 0.89 | 1030 | 1062 |
+| **WZIP 13** | 4.761 | 0.47 | 939 | 1911 |
 
 Memory is the encoder's (the growth of the peak resident set while compressing); from level 7 WZIP holds a
 filtered copy of an input whose regions it filters (on Silesia, mozilla's 51 MB). **Each level has its own window**,
@@ -348,7 +348,7 @@ int dSize = wzip_decompress_trusted(dst, cSize, out, &decCap);                  
 unsigned dSize = WLZ_Decompress_Trusted(dst, out, cSize, n + WLZ_MEM_OVERHEAD);        /* WLZ4 */
 ```
 
-On Silesia the trusted mode decodes 4-5% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
+On Silesia the trusted mode decodes 4-6% faster for WZIP and up to 9% faster for WLZ4 on the EPYC (9-15% for WLZ4
 on the laptop). Never use it on data that
 may be damaged or crafted: a bad stream can make it read or write out of bounds.
 

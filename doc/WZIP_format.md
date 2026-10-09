@@ -15,7 +15,8 @@ inputs (stored, all-equal, long runs, incompressible prefixes, sizes 32767, 3276
 payloads compressed with a dictionary, and of 14,433 WZIP_S blocks of 4K, 8K, 16K and 5000 bytes at levels 1, 5 and 9
 with and without a dictionary, all identically to the input; that is how the specification was checked. For the
 filters of version 2 it also decodes streams of levels 1, 9, 11 and 13 on x86 code and images (Silesia's ooffice,
-mr and x-ray, and x86-64 executables) and a stream that uses every filter (made by `tests/roundtrip.c`).
+mr and x-ray, and x86-64 executables), a stream that uses every filter (made by `tests/roundtrip.c`), and the
+golden frames of 13-byte records (filter 10) and of 12-bit joint codes (`tests/golden`).
 
 Format version: 2 (October 2026). Version 2 adds **sized sequence blocks** (sections 5.2 and 5.4) and **filters**
 (section 5.6) to WZIP_L, which flags in the window header announce; every version 1 stream is a version 2 stream. None of the formats carries a
@@ -302,7 +303,7 @@ The header:
 4. if the block sends a code: the weight code (section 3.2);
 5. the coded tables (section 3.3) of the codes it sends, in this order:
    - the literal-run code: 71 symbols, cap 11;
-   - the joint code: 1020 symbols (slot-joint) or 204 (classic), cap 11;
+   - the joint code: 1020 symbols (slot-joint) or 204 (classic), cap 11, or 12 with sized sequence blocks (version 2);
    - one offset code per group, in group order: the group's alphabet size, cap 10.
 
 A reused code is the one the last block that sent it sent, the joint code only from a block of the same kind
@@ -368,7 +369,8 @@ region log R (1 byte) | runs
 
 `R` is 12 to 24. The output is cut into `N = ceil(n / 2^R)` **regions** of `2^R` bytes (the last may be shorter). Each
 **run** is a LEB128 number `u` (7 bits per byte, the low bits first, bit 7 set in every byte but the last; at most 4
-bytes): the next `(u >> 4) + 1` regions have the filter `f = u & 15`. The runs cover the `N` regions exactly.
+bytes): the next `(u >> 4) + 1` regions have the filter `f = u & 15`, and for `f = 10` a byte follows, its stride `s`
+(1-255; 0 is invalid). The runs cover the `N` regions exactly.
 
 The rest of the payload (sections 5.1-5.5) decodes, as described there, to the **filtered** output: its matches
 copy filtered bytes, and a dictionary is used as given. Once all `n` bytes are decoded, the decoder restores the
@@ -380,7 +382,8 @@ output in place, region by region from the first, so that the bytes before a reg
 | 0 | none | nothing |
 | 1 | x86 | for `i = a, a + 1, ..., e - 5`: if `b[i]` is `E8` or `E9` and `b[i+4]` is `00` or `FF`, let `v = b[i+1] + 2^8 b[i+2] + 2^16 b[i+3] + 2^24 (b[i+4] & 1)` and `v' = (v - i - 5) mod 2^25`; `b[i+1..i+3]` become the three low bytes of `v'`, and `b[i+4]` becomes `FF` if `v' >= 2^24`, else `00` |
 | 2-9 | delta by `s` = 1, 2, 3, 4, 8, 16, 24, 32 | for `i = max(a, s), ..., e - 1`: `b[i] = (b[i] + b[i-s]) mod 256` |
-| 10-15 | reserved | invalid |
+| 10 | delta by the `s` of the map | as for filters 2-9 |
+| 11-15 | reserved | invalid |
 
 (The encoder applies the inverse: the x86 filter goes down from `i = e - 5` to `a` and adds `i + 5`, so that each
 position the decoder tests holds what the encoder tested there; a delta filter subtracts from each byte the input's
@@ -576,22 +579,29 @@ From level 2, WZIP_L writes sized sequence blocks (version 2; levels 0-1 write v
 buffer of 16384 sequences in halves, recursively down to 1024 sequences, wherever the halves, each with codes of its
 own, are estimated to take fewer bits than the whole (the codes' symbols at their entropy, in integer arithmetic, plus
 their lengths and a fixed cost per block, which also stands for the decoder's table builds). On Silesia this gains
-0.3-0.4% (most on xml, mozilla and mr) and leaves uniform text such as enwik8 unchanged.
+0.3-0.4% (most on xml, mozilla and mr) and leaves uniform text such as enwik8 unchanged. A block's joint code may then
+have 12-bit lengths where they save at least 1/64 bit per sequence of the block, since they double the decoder's
+table: at level 11 Silesia shrinks by 0.02% (nci 0.2%), decoding within 1% as fast; 12-bit codes wherever they save
+anything would add 0.004% more and decode 1.3% slower (nci 7%).
 
 From level 7, WZIP_L filters (section 5.6) regions of 64 KiB (`R = 16`) where that pays, decided by trial. A cheap
 check names the candidates: x86 where the region holds at least 64 plausible calls (`E8` or `E9`, a top byte of `00`
 or `FF`, a target inside the input), and a delta where it lowers the order-0 entropy of a quarter of the region by at
 least 1/4 bit a byte (integer logarithms). Levels 7-8 consider x86 and deltas by 2, 4 and 8 bytes, levels 9-10 also
-by 1 and 3, levels 11-13 also by 16, 24 and 32 (records). The encoder then compresses the region at level 0 as it
-is and with each candidate, x86 first and then the deltas by falling entropy gain; a delta must save 2% and a filter
-that saves 3% ends the trials. The filters are used only if the trials saved at least 1/4096 of the input, as the
+by 1 and 3, levels 11-13 also by 16, 24 and 32 (records), and the two other strides of 1 to 64 that lower the
+entropy of a sixteenth of the region most (filter 10). The encoder then compresses the region at level 0 as it is and
+with each candidate, x86 first and then the deltas by falling entropy gain; a delta must save 2% (filter 10: 10%, as
+the fast trial overrates some, such as sao's 28-byte records, which saved 2-8% there and lost 4% at level 11) and a
+filter that saves 3% ends the trials. The filters are used only if the trials saved at least 1/4096 of the input, as the
 encoder then compresses a filtered copy of it (on enwik9 a few regions would save 0.0004%). Only sizes decide, so
 every platform chooses alike, and with threads (`WZIP_Set_Workers`) the regions are tried in parallel to the same
 choices. At level 11 this gains 2.2% on Silesia
 (ooffice 14%, x-ray 11%, mr 6%, mozilla 0.3%), 6.2% on four x86-64 Linux executables and libraries and 8.4% on five
 Windows ones, and leaves text unchanged. The trials cost about 4 ms per MB on one thread, 1-3% of the compression
 time from level 7 on; at level 5 they would cost 6%, which is why the lower levels do not filter. (A filter that also
-converted conditional jumps, `0F 80-8F`, gained 1.5% more on GCC's `cc1` but lost up to 3% on other code.)
+converted conditional jumps, `0F 80-8F`, gained 1.5% more on GCC's `cc1` but lost up to 3% on other code.) Filter
+10 adds 0.03% on Silesia at level 11 (samba 0.4%), 0.2-0.5% on the executables and halves Canterbury's kennedy.xls
+(13-byte records); its scan costs no measurable time.
 
 Each level of WZIP_L searches at most its own window: 2^27 bytes at the top level of each parser (6 and 13) and one
 bit less per level below it, so 2^21 at levels 0 and 7 (level 0 searches 1 MiB in any case). It caps the widest of
