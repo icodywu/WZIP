@@ -3,6 +3,16 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
+## Unreleased
+
+- **XXH64 checksum.** A WZ frame's content checksum may be the low 32 bits of XXH64, as in Zstandard's frames, which
+  runs about three times as fast as the XXH32 of 1.0 and 1.1 (15.5 against 5.4 GB/s on an AMD EPYC 9334); FLG bits
+  5-6, reserved before, name the function (`doc/frame_format.md`, sections 4 and 8.2). It is the default: checking
+  a WLZ4 frame now slows its decompression by 11-27% instead of 27-51%, and a WZIP frame's by 3-13% instead of
+  9-31% (Silesia files and enwik8). Frames with XXH32 still decode, and `--xxh32` (`WZF_params.checksumType =
+  WZF_CHECKSUM_XXH32`, Python `xxh32=True`) writes them for 1.0 and 1.1, whose decoders reject the XXH64 flag.
+  `WZF_XXH64()` is exported; `WZF_FrameHeader.checksumType` tells which a frame has; `wzip -l` shows it.
+
 ## 1.1.0 (2026-10-09)
 
 - **WZIP format 2: sized sequence blocks.** A WZIP_L stream may give each sequence block its own number of sequences

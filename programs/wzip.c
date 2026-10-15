@@ -47,6 +47,7 @@ static struct {
 	int op, codec, level, levelSet, blockLog, noCheck, toStdout, force, rmSource, verbosity, benchEnd, threads;
 	const char* outName;
 	const char* prog;
+	int xxh32;                                          /* --xxh32 */
 } g = { OP_COMPRESS, WZF_CODEC_WZIP, 1, 0, 0, 0, 0, 0, 0, 1, -100, 1, NULL, "wzip" };
 
 static const char* cur = "";                           /* the file being processed, for messages */
@@ -94,7 +95,8 @@ static void usage(FILE* f)
 "             with more (at levels 0-6, more than 1), content over 64 MiB is cut into blocks of 64 MiB,\n"
 "             compressed at once, each referring to the level's window before it. -d needs no option\n"
 "             Windows by level: WZIP 2^21 (0, 7) to 2^27 (6, 13), WLZ4 2^16 (0) to 2^23 (7, 12)\n"
-"  --no-check no content checksum\n"
+"  --no-check no content checksum (default: XXH64's low 32 bits, as Zstandard)\n"
+"  --xxh32    the XXH32 checksum, for wzip 1.0 and 1.1, which cannot check XXH64\n"
 "  -b         benchmark the level (in memory, no files written); -e# up to level #\n"
 "  -q, -v     fewer, more messages       -h  this help    -V  version\n",
 		g.prog);
@@ -140,7 +142,8 @@ static int file_exists(const char* name) { stat_t st; return stat_fn(name, &st) 
 static int compress_stream(FILE* in, FILE* out, unsigned long long contentSize, unsigned long long* inTotal,
                            unsigned long long* outTotal)
 {
-	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck, g.threads, 0 };      /* blocks by the content */
+	WZF_params p = { g.codec, g.level, g.blockLog, g.noCheck, g.threads, 0,          /* blocks by the content */
+	                 g.xxh32 ? WZF_CHECKSUM_XXH32 : WZF_CHECKSUM_XXH64 };
 	WZF_CCtx* c = WZF_createCCtx();
 	Buf src = { 0 }, dst = { 0 };
 	int ok = 0;
@@ -234,7 +237,7 @@ static int decompress_stream(FILE* in, FILE* out, unsigned long long* inTotal, u
 		if (info) {
 			info->frames++;
 			info->codecs |= 1 << fh->codec;
-			info->checksum |= fh->checksum;
+			if (fh->checksum) info->checksum |= fh->checksumType == WZF_CHECKSUM_XXH64 ? 2 : 1;
 			if (fh->blockLog > info->blockLog) info->blockLog = fh->blockLog;
 			if (fh->windowLog > info->windowLog) info->windowLog = fh->windowLog;
 		}
@@ -324,7 +327,8 @@ static int process(const char* inName)
 		if (g.op == OP_LIST && ok)
 			printf("%-30s %6llu %7llu  %-5s %3d %3s  %-5s %14llu %14llu  %6.3f\n", cur, info.frames, info.blocks,
 			       info.codecs == 1 ? "WZIP" : info.codecs == 2 ? "WLZ4" : info.codecs ? "mixed" : "-", info.blockLog, w,
-			       info.checksum ? "XXH32" : "-", inTotal, outTotal, inTotal ? (double)outTotal / inTotal : 0.0);
+			       info.checksum == 1 ? "XXH32" : info.checksum == 2 ? "XXH64" : info.checksum ? "mixed" : "-",
+			       inTotal, outTotal, inTotal ? (double)outTotal / inTotal : 0.0);
 		else if (ok) msg(2, "%s: OK (%llu bytes)\n", cur, outTotal);
 		if (!isStdin) fclose(in);
 		return ok;
@@ -470,6 +474,7 @@ int main(int argc, char** argv)
 			else if (!strcmp(a, "--verbose")) g.verbosity++;
 			else if (!strcmp(a, "--no-check")) g.noCheck = 1;
 			else if (!strcmp(a, "--check")) g.noCheck = 0;
+			else if (!strcmp(a, "--xxh32")) g.xxh32 = 1;
 			else if (!strcmp(a, "--wzip")) { g.codec = WZF_CODEC_WZIP; if (!g.levelSet) g.level = 1; }
 			else if (!strcmp(a, "--wlz4")) { g.codec = WZF_CODEC_WLZ4; if (!g.levelSet) g.level = -1; }
 			else if (!strcmp(a, "--fast")) { g.codec = WZF_CODEC_WLZ4; g.level = -2; g.levelSet = 1; }

@@ -189,7 +189,7 @@ with figures of every layout:
 - [`doc/WLZ4_format.md`](doc/WLZ4_format.md): the WLZ4 block, with a byte-by-byte worked example;
 - [`doc/WZIP_format.md`](doc/WZIP_format.md): the `wzip_compress` stream (WZIP_L, WZIP_M) and WZIP_S blocks;
 - [`doc/frame_format.md`](doc/frame_format.md): the WZ frame, the container for files: magic number, codec and
-  format version, blocks of bounded size, content size and XXH32 checksum.
+  format version, blocks of bounded size, content size and XXH64 checksum.
 
 Each comes with a small decoder written from the specification alone ([`doc/wlz4_decode.py`](doc/wlz4_decode.py),
 [`doc/wzip_decode.py`](doc/wzip_decode.py), [`doc/frame_decode.py`](doc/frame_decode.py)), which checks every
@@ -295,8 +295,8 @@ from such a buffer, and in trusted mode from a buffer with exactly the documente
 ## Usage
 
 For files, or whenever the data must identify itself, use the WZ frame (`wzframe.h`): it records the codec and its
-format version, splits content of any size into blocks, and checks an XXH32 checksum. Its functions take `size_t`
-sizes and return error codes.
+format version, splits content of any size into blocks, and checks an XXH64 checksum (XXH32 in frames from 1.0
+and 1.1). Its functions take `size_t` sizes and return error codes.
 
 ```c
 #include "wzframe.h"

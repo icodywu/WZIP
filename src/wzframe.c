@@ -17,6 +17,7 @@
 #define WZF_FLAG_CHECKSUM   0x04
 #define WZF_FLAG_SIZE       0x08
 #define WZF_FLAG_LINKED     0x10        /* linked blocks: a window log follows the block size log; WZIP only, b <= 30 */
+#define WZF_FLAG_XXH64      0x20        /* the checksum is XXH64's low 32 bits; bits 5-6 are the checksum type */
 
 unsigned WZF_versionNumber(void) { return WZF_VERSION_NUMBER; }
 const char* WZF_versionString(void) { return WZF_VERSION_STRING; }
@@ -38,12 +39,24 @@ const char* WZF_getErrorName(size_t code)
 }
 
 /*------   Little-endian fields   ------*/
-static uint32_t rd32(const unsigned char* p) { return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
-static uint64_t rd64(const unsigned char* p) { return rd32(p) | (uint64_t)rd32(p + 4) << 32; }
+/* one load each on a little-endian processor (the test folds to a constant), the bytes one by one otherwise */
+static int little_endian(void) { const uint32_t one = 1; unsigned char b; memcpy(&b, &one, 1); return b; }
+static uint32_t rd32(const unsigned char* p)
+{
+	uint32_t v;
+	if (little_endian()) { memcpy(&v, p, 4); return v; }
+	return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+static uint64_t rd64(const unsigned char* p)
+{
+	uint64_t v;
+	if (little_endian()) { memcpy(&v, p, 8); return v; }
+	return rd32(p) | (uint64_t)rd32(p + 4) << 32;
+}
 static void wr32(unsigned char* p, uint32_t v) { p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8); p[2] = (unsigned char)(v >> 16); p[3] = (unsigned char)(v >> 24); }
 static void wr64(unsigned char* p, uint64_t v) { wr32(p, (uint32_t)v); wr32(p + 4, (uint32_t)(v >> 32)); }
 
-/*------   XXH32 (doc/frame_format.md, section 8), incremental   ------*/
+/*------   XXH32 (doc/frame_format.md, section 8.1), incremental   ------*/
 #define P1 0x9E3779B1u
 #define P2 0x85EBCA77u
 #define P3 0xC2B2AE3Du
@@ -97,6 +110,84 @@ unsigned WZF_XXH32(const void* src, size_t srcSize, unsigned seed)
 	return xxh_digest(&s);
 }
 
+/*------   XXH64 (doc/frame_format.md, section 8.2), incremental: a stripe of 32 bytes is four 64-bit lanes,
+   twice as much per step as XXH32 on 64-bit processors   ------*/
+#define Q1 0x9E3779B185EBCA87ull
+#define Q2 0xC2B2AE3D27D4EB4Full
+#define Q3 0x165667B19E3779F9ull
+#define Q4 0x85EBCA77C2B2AE63ull
+#define Q5 0x27D4EB2F165667C5ull
+typedef struct { uint64_t v[4]; uint64_t seed, total; unsigned char buf[32]; unsigned bufLen; } XXH64_state;
+
+static uint64_t rotl64(uint64_t x, int r) { return (x << r) | (x >> (64 - r)); }
+static uint64_t xxh64_round(uint64_t v, uint64_t x) { return rotl64(v + x * Q2, 31) * Q1; }
+static uint64_t xxh64_merge(uint64_t h, uint64_t v) { return (h ^ xxh64_round(0, v)) * Q1 + Q4; }
+
+static void xxh64_reset(XXH64_state* s, uint64_t seed)
+{
+	s->v[0] = seed + Q1 + Q2; s->v[1] = seed + Q2; s->v[2] = seed; s->v[3] = seed - Q1;
+	s->seed = seed; s->total = 0; s->bufLen = 0;
+}
+
+static void xxh64_stripes(uint64_t v[4], const unsigned char* p, size_t n)    /* n a multiple of 32 */
+{
+	uint64_t a = v[0], b = v[1], c = v[2], d = v[3];
+	for (; n; p += 32, n -= 32) {
+		a = xxh64_round(a, rd64(p)); b = xxh64_round(b, rd64(p + 8));
+		c = xxh64_round(c, rd64(p + 16)); d = xxh64_round(d, rd64(p + 24));
+	}
+	v[0] = a; v[1] = b; v[2] = c; v[3] = d;
+}
+
+static void xxh64_update(XXH64_state* s, const unsigned char* p, size_t n)
+{
+	s->total += n;
+	if (s->bufLen) {                                    /* complete the buffered stripe */
+		const size_t k = n < 32 - s->bufLen ? n : 32 - s->bufLen;
+		memcpy(s->buf + s->bufLen, p, k);
+		s->bufLen += (unsigned)k; p += k; n -= k;
+		if (s->bufLen < 32) return;
+		xxh64_stripes(s->v, s->buf, 32);
+		s->bufLen = 0;
+	}
+	xxh64_stripes(s->v, p, n & ~(size_t)31);
+	p += n & ~(size_t)31;
+	n &= 31;
+	memcpy(s->buf, p, n);
+	s->bufLen = (unsigned)n;
+}
+
+static uint64_t xxh64_digest(const XXH64_state* s)
+{
+	uint64_t h;
+	if (s->total >= 32) {
+		h = rotl64(s->v[0], 1) + rotl64(s->v[1], 7) + rotl64(s->v[2], 12) + rotl64(s->v[3], 18);
+		for (int i = 0; i < 4; i++) h = xxh64_merge(h, s->v[i]);
+	}
+	else h = s->seed + Q5;
+	h += s->total;
+	unsigned i = 0;
+	for (; i + 8 <= s->bufLen; i += 8) h = rotl64(h ^ xxh64_round(0, rd64(s->buf + i)), 27) * Q1 + Q4;
+	if (i + 4 <= s->bufLen) { h = rotl64(h ^ (uint64_t)rd32(s->buf + i) * Q1, 23) * Q2 + Q3; i += 4; }
+	for (; i < s->bufLen; i++) h = rotl64(h ^ s->buf[i] * Q5, 11) * Q1;
+	h ^= h >> 33; h *= Q2; h ^= h >> 29; h *= Q3; h ^= h >> 32;
+	return h;
+}
+
+unsigned long long WZF_XXH64(const void* src, size_t srcSize, unsigned long long seed)
+{
+	XXH64_state s;
+	xxh64_reset(&s, seed);
+	xxh64_update(&s, (const unsigned char*)src, srcSize);
+	return xxh64_digest(&s);
+}
+
+/* The content checksum of a frame: XXH32, or XXH64's low 32 bits */
+typedef struct { int xxh64; XXH32_state h32; XXH64_state h64; } Checksum;
+static void ck_reset(Checksum* c, int xxh64) { c->xxh64 = xxh64; if (xxh64) xxh64_reset(&c->h64, 0); else xxh_reset(&c->h32, 0); }
+static void ck_update(Checksum* c, const unsigned char* p, size_t n) { if (c->xxh64) xxh64_update(&c->h64, p, n); else xxh_update(&c->h32, p, n); }
+static uint32_t ck_digest(const Checksum* c) { return c->xxh64 ? (uint32_t)xxh64_digest(&c->h64) : xxh_digest(&c->h32); }
+
 /*------   Linked blocks: the window   ------
    A buffer holds the last *len bytes of a frame's content; the next n bytes refer to the last min(*len, D) of them.
    win_room makes room for those n bytes right after them, by moving them to the front or by allocating a larger
@@ -126,7 +217,7 @@ struct WZF_CCtx_s {
 	WZF_params p;
 	int blockLog, checksum, stage;      /* stage: 0 before Begin, 1 in blocks, 2 ended */
 	unsigned long long contentSize, consumed;
-	XXH32_state xxh;
+	Checksum xxh;
 	WLZ_State_Str* ws;
 	WLZhc_State_Str* hs;
 	unsigned char* scratch;
@@ -175,6 +266,7 @@ static int params_ok(const WZF_params* p)
 	if (p->windowLog < -1 || (p->windowLog > 0 && (p->codec != WZF_CODEC_WZIP || p->windowLog < WZF_WINDOWLOG_MIN
 	                                               || p->windowLog > WZF_WINDOWLOG_MAX || p->blockLog > 30)))
 		return 0;
+	if (p->checksumType != WZF_CHECKSUM_XXH64 && p->checksumType != WZF_CHECKSUM_XXH32) return 0;
 	return p->blockLog == 0 || (p->blockLog >= WZF_BLOCKLOG_MIN && p->blockLog <= WZF_BLOCKLOG_MAX);
 }
 
@@ -209,7 +301,7 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
 	c->contentSize = contentSize;
 	c->consumed = 0;
 	c->winLen = 0;
-	xxh_reset(&c->xxh, 0);
+	ck_reset(&c->xxh, params->checksumType == WZF_CHECKSUM_XXH64);
 	if (params->codec == WZF_CODEC_WLZ4) {
 		if (params->level < 0 && !c->ws && !(c->ws = WLZ_New_State())) return ERR(memory);
 		if (params->level >= 0 && !c->hs && !(c->hs = WLZhc_New_State())) return ERR(memory);
@@ -217,7 +309,8 @@ size_t WZF_compressBegin(WZF_CCtx* c, void* dst, size_t dstCapacity, const WZF_p
 	unsigned char* o = (unsigned char*)dst;
 	wr32(o, WZF_MAGIC);
 	o[4] = (unsigned char)(params->codec | (c->checksum ? WZF_FLAG_CHECKSUM : 0) | (hasSize ? WZF_FLAG_SIZE : 0)
-	                       | (linked ? WZF_FLAG_LINKED : 0));
+	                       | (linked ? WZF_FLAG_LINKED : 0)
+	                       | (c->checksum && params->checksumType == WZF_CHECKSUM_XXH64 ? WZF_FLAG_XXH64 : 0));
 	o[5] = (unsigned char)(WZF_FRAME_VERSION << 4 | (params->codec == WZF_CODEC_WZIP && params->level >= 2 ? WZF_CODEC_VERSION_2 : WZF_CODEC_VERSION));
 	o[6] = (unsigned char)c->blockLog;
 	if (linked) o[7] = (unsigned char)windowLog;
@@ -393,7 +486,7 @@ static size_t compress_src(WZF_CCtx* c, unsigned char* o, size_t cap, const unsi
 	}
 	else r = compress_run(c, o, cap, s, 0, n);
 	if (WZF_isError(r)) return r;
-	if (c->checksum) xxh_update(&c->xxh, s, n);
+	if (c->checksum) ck_update(&c->xxh, s, n);
 	c->consumed += n;
 	return r;
 }
@@ -420,14 +513,14 @@ size_t WZF_compressEnd(WZF_CCtx* c, void* dst, size_t dstCapacity)
 	const size_t n = WZF_BLOCK_HEADER + (c->checksum ? 4 : 0);
 	if (dstCapacity < n) return ERR(dstSize_tooSmall);
 	wr32((unsigned char*)dst, 0);
-	if (c->checksum) wr32((unsigned char*)dst + 4, xxh_digest(&c->xxh));
+	if (c->checksum) wr32((unsigned char*)dst + 4, ck_digest(&c->xxh));
 	c->stage = 2;
 	return n;
 }
 
 size_t WZF_compressBound(size_t srcSize, const WZF_params* params)
 {
-	static const WZF_params byDefault = { WZF_CODEC_WZIP, 1, 0, 0, 256, 0 };   /* the most blocks by default */
+	static const WZF_params byDefault = { WZF_CODEC_WZIP, 1, 0, 0, 256, 0, 0 };   /* the most blocks by default */
 	if (!params) params = &byDefault;
 	const int codec = params->codec;
 	const int b = params->blockLog ? params->blockLog : auto_blockLog(params, srcSize);
@@ -462,7 +555,7 @@ struct WZF_DCtx_s {
 	int pendingRaw;
 	size_t pendingSize;
 	unsigned long long decoded;
-	XXH32_state xxh;
+	Checksum xxh;
 	unsigned char* win;                 /* linked blocks: the window, then the block being decoded */
 	size_t winCap, winLen;
 };
@@ -490,7 +583,9 @@ size_t WZF_decompressBegin(WZF_DCtx* d, const void* src, size_t srcSize)
 	if (srcSize < WZF_HEADER_MIN) return ERR(srcSize_wrong);
 	const unsigned flg = s[4], ver = s[5], bs = s[6];
 	const int linked = (flg & WZF_FLAG_LINKED) != 0;
-	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xE0) || (ver >> 4) != WZF_FRAME_VERSION
+	/* FLG bits 5-6: the checksum type, 0 (XXH32) or 1 (XXH64), 0 without a checksum; bit 7 reserved */
+	if ((flg & 3) > WZF_CODEC_WLZ4 || (flg & 0xC0) || ((flg & WZF_FLAG_XXH64) && !(flg & WZF_FLAG_CHECKSUM))
+	    || (ver >> 4) != WZF_FRAME_VERSION
 	    || ((ver & 15) != WZF_CODEC_VERSION && ((ver & 15) != WZF_CODEC_VERSION_2 || (flg & 3) != WZF_CODEC_WZIP))
 	    || bs < WZF_BLOCKLOG_MIN || bs > WZF_BLOCKLOG_MAX || (linked && ((flg & 3) != WZF_CODEC_WZIP || bs > 30)))
 		return ERR(unsupported);
@@ -501,6 +596,7 @@ size_t WZF_decompressBegin(WZF_DCtx* d, const void* src, size_t srcSize)
 	d->h.codecVersion = (int)(ver & 15);
 	d->h.blockLog = (int)bs;
 	d->h.checksum = (flg & WZF_FLAG_CHECKSUM) != 0;
+	d->h.checksumType = (flg & WZF_FLAG_XXH64) ? WZF_CHECKSUM_XXH64 : WZF_CHECKSUM_XXH32;
 	d->h.skippable = 0;
 	d->h.windowLog = linked ? s[7] : 0;
 	d->h.contentSize = (flg & WZF_FLAG_SIZE) ? rd64(s + 7 + linked) : WZF_CONTENTSIZE_UNKNOWN;
@@ -508,7 +604,7 @@ size_t WZF_decompressBegin(WZF_DCtx* d, const void* src, size_t srcSize)
 	d->stage = 1;
 	d->decoded = 0;
 	d->winLen = 0;
-	xxh_reset(&d->xxh, 0);
+	ck_reset(&d->xxh, (flg & WZF_FLAG_XXH64) != 0);
 	return hdr;
 }
 
@@ -609,7 +705,7 @@ static size_t decompress_block(WZF_DCtx* d, unsigned char* dst, size_t dstCapaci
 	if (WZF_isError(r)) return r;
 	d->decoded += r;
 	if (d->h.contentSize != WZF_CONTENTSIZE_UNKNOWN && d->decoded > d->h.contentSize) return ERR(contentSize);
-	if (d->h.checksum) xxh_update(&d->xxh, (const unsigned char*)dst, r);
+	if (d->h.checksum) ck_update(&d->xxh, (const unsigned char*)dst, r);
 	d->stage = 1;
 	return r;
 }
@@ -624,7 +720,7 @@ size_t WZF_endSize(const WZF_DCtx* d) { return d->stage == 3 && d->h.checksum ? 
 size_t WZF_decompressEnd(WZF_DCtx* d, const void* src, size_t srcSize)
 {
 	if (!d || d->stage != 3 || srcSize != WZF_endSize(d) || (srcSize && !src)) return ERR(parameter);
-	if (d->h.checksum && rd32((const unsigned char*)src) != xxh_digest(&d->xxh)) return ERR(checksum);
+	if (d->h.checksum && rd32((const unsigned char*)src) != ck_digest(&d->xxh)) return ERR(checksum);
 	if (d->h.contentSize != WZF_CONTENTSIZE_UNKNOWN && d->decoded != d->h.contentSize) return ERR(contentSize);
 	d->stage = 4;
 	return 0;

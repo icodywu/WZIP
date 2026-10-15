@@ -85,4 +85,7 @@ open('sdf.dat', 'w', newline='\n').write(''.join(out))
 PY
 "$W" -q -f -11 -c records.dat > records.dat.L11.wz
 "$W" -q -f -11 -c sdf.dat > sdf.dat.L11.wz
+# 1.2.0: the XXH64 checksum, the default from 1.2.0 (FLG bits 5-6 = 1); the frames above have XXH32 (--xxh32 since)
+"$W" -q -f -5 -c small.txt > small.txt.L5.xxh64.wz
+"$L" -q -f -c text.txt > text.txt.lazy.xxh64.wlz4
 ls -l

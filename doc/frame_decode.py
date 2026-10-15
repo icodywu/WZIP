@@ -12,6 +12,9 @@ import wzip_decode
 MAGIC = 0x0A5A578D
 M = 0xFFFFFFFF
 P1, P2, P3, P4, P5 = 0x9E3779B1, 0x85EBCA77, 0xC2B2AE3D, 0x27D4EB2F, 0x165667B1
+M64 = (1 << 64) - 1
+Q1, Q2, Q3, Q4, Q5 = (0x9E3779B185EBCA87, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9, 0x85EBCA77C2B2AE63,
+                      0x27D4EB2F165667C5)
 
 
 def _rotl(x, r):
@@ -46,6 +49,46 @@ def xxh32(data, seed=0):
     return h
 
 
+def _rotl64(x, r):
+    return ((x << r) | (x >> (64 - r))) & M64
+
+
+def _round64(v, x):
+    return (_rotl64((v + x * Q2) & M64, 31) * Q1) & M64
+
+
+def xxh64(data, seed=0):
+    """XXH64 as section 8.2 states it."""
+    n, p = len(data), 0
+    if n >= 32:
+        v = [(seed + Q1 + Q2) & M64, (seed + Q2) & M64, seed & M64, (seed - Q1) & M64]
+        while p + 32 <= n:
+            for i in range(4):
+                v[i] = _round64(v[i], int.from_bytes(data[p + 8 * i:p + 8 * i + 8], 'little'))
+            p += 32
+        h = (_rotl64(v[0], 1) + _rotl64(v[1], 7) + _rotl64(v[2], 12) + _rotl64(v[3], 18)) & M64
+        for i in range(4):
+            h = ((h ^ _round64(0, v[i])) * Q1 + Q4) & M64
+    else:
+        h = (seed + Q5) & M64
+    h = (h + n) & M64
+    while p + 8 <= n:
+        h = (_rotl64(h ^ _round64(0, int.from_bytes(data[p:p + 8], 'little')), 27) * Q1 + Q4) & M64
+        p += 8
+    if p + 4 <= n:
+        h = (_rotl64(h ^ (int.from_bytes(data[p:p + 4], 'little') * Q1) & M64, 23) * Q2 + Q3) & M64
+        p += 4
+    while p < n:
+        h = (_rotl64(h ^ (data[p] * Q5) & M64, 11) * Q1) & M64
+        p += 1
+    h ^= h >> 33
+    h = (h * Q2) & M64
+    h ^= h >> 29
+    h = (h * Q3) & M64
+    h ^= h >> 32
+    return h
+
+
 def _u32(data, pos):
     if pos + 4 > len(data):
         raise ValueError('truncated frame')
@@ -71,7 +114,8 @@ def decode(data):
             raise ValueError('truncated frame header')
         flg, ver, bs = data[pos + 4], data[pos + 5], data[pos + 6]
         codec = flg & 3
-        if codec > 1 or flg & 0xE0:
+        check = (flg >> 5) & 3                           # the checksum's function: 0 XXH32, 1 XXH64
+        if codec > 1 or flg & 0x80 or check > 1 or (check and not flg & 4):
             raise ValueError('reserved codec or flag')
         if ver >> 4 != 0 or ver & 15 not in ((1, 2) if codec == 0 else (1,)):    # WZIP 2: sized blocks, filters
             raise ValueError('unsupported format version')
@@ -116,7 +160,7 @@ def decode(data):
                 raise ValueError('block decodes to a size out of range')
             content += d
         if flg & 4:
-            if _u32(data, pos) != xxh32(content):
+            if _u32(data, pos) != (xxh64(content) & M if check else xxh32(content)):
                 raise ValueError('checksum mismatch')
             pos += 4
         if size is not None and size != len(content):

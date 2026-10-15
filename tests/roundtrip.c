@@ -260,6 +260,7 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 		const int level = codec ? wlz4Levels[li] : wzipLevels[li];
 		if (bi && n > (1 << 18) && level > 5) continue;  /* small blocks at slow levels: enough on the smaller inputs */
 		WZF_params p = { codec, level, blockLogs[bi], (li & 1) };     /* checksum on some, off on others */
+		p.checksumType = bi == 1 ? WZF_CHECKSUM_XXH32 : WZF_CHECKSUM_XXH64;   /* XXH32 too, as 1.0 and 1.1 wrote */
 		const size_t bound = WZF_compressBound((size_t)n, &p);
 		unsigned char* f = guarded(bound);
 		unsigned char* dec = guarded(n > 0 ? n : 1);
@@ -283,7 +284,10 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 		memset(dec, 0, n > 0 ? n : 1);
 		d = stream_decode(f, fs, dec, (size_t)n);
 		if (d != (size_t)n || memcmp(src, dec, n)) fail(what, name, level, "block-by-block decoding differs");
-		if (!(li & 1) && rd32le(f + fs - 4) != WZF_XXH32(src, (size_t)n, 0)) fail(what, name, level, "checksum differs from XXH32");
+		if (!(li & 1) && rd32le(f + fs - 4) != (p.checksumType == WZF_CHECKSUM_XXH32 ? WZF_XXH32(src, (size_t)n, 0)
+		                                       : (unsigned)WZF_XXH64(src, (size_t)n, 0)))
+			fail(what, name, level, p.checksumType == WZF_CHECKSUM_XXH32 ? "checksum differs from XXH32" : "checksum differs from XXH64");
+		if (!(li & 1) && ((f[4] >> 5) & 3) != (p.checksumType == WZF_CHECKSUM_XXH64)) fail(what, name, level, "wrong checksum type");
 		if (n > 0) {
 			if (WZF_getErrorCode(WZF_decompress(dec, (size_t)n - 1, f, fs)) != WZF_error_dstSize_tooSmall)
 				fail(what, name, level, "accepted a too-small output buffer");
@@ -310,6 +314,7 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 		for (int frame = 0; frame < 2; frame++) {
 			p.codec = frame;                              /* a WZIP frame (level 1), then a WLZ4 frame (lazy) */
 			p.level = frame ? -1 : 1;
+			p.checksumType = frame ? WZF_CHECKSUM_XXH64 : WZF_CHECKSUM_XXH32;     /* the old checksum, then the new */
 			const size_t h = WZF_compressBegin(c, f + pos, cap - pos, &p, frame ? WZF_CONTENTSIZE_UNKNOWN : (unsigned long long)n);
 			if (WZF_isError(h)) { fail("frame/stream", name, frame, WZF_getErrorName(h)); break; }
 			pos += h;
@@ -320,7 +325,8 @@ static void test_frames(const unsigned char* src, int n, const char* name)
 				pos += r; done += len;
 			}
 			pos += WZF_compressEnd(c, f + pos, cap - pos);
-			if (rd32le(f + pos - 4) != WZF_XXH32(src, (size_t)n, 0)) fail("frame/stream", name, frame, "checksum differs from XXH32");
+			if (rd32le(f + pos - 4) != (frame ? (unsigned)WZF_XXH64(src, (size_t)n, 0) : WZF_XXH32(src, (size_t)n, 0)))
+				fail("frame/stream", name, frame, frame ? "checksum differs from XXH64" : "checksum differs from XXH32");
 			if (!frame) {                                 /* a skippable frame between the two */
 				memcpy(f + pos, "\x5A\x2A\x4D\x18\x03\x00\x00\x00xyz", 11);
 				pos += 11;

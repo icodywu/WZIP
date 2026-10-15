@@ -60,6 +60,8 @@ WZF_ErrorCode WZF_getErrorCode(size_t code);
 const char* WZF_getErrorName(size_t code);
 
 /*------   Parameters   ------*/
+#define WZF_CHECKSUM_XXH64 0        /* WZF_params.checksumType */
+#define WZF_CHECKSUM_XXH32 1
 typedef struct {
 	int codec;          /* WZF_CODEC_WZIP or WZF_CODEC_WLZ4 */
 	int level;          /* WZIP: 0-13. WLZ4: -2 fast, -1 lazy, 0-7 hash chains, 8-12 optimal parsing */
@@ -74,6 +76,8 @@ typedef struct {
 	                       the level's window, 2^WZIP_LEVEL_WINDOW_LOG(level) bytes (independent at level 0, which
 	                       searches 1 MiB). -1: independent blocks.
 	                       10-27: linked blocks (blockLog 0: of 64 MiB at most). Decoders need no parameter */
+	int checksumType;   /* WZF_CHECKSUM_XXH64 (0, the default) or WZF_CHECKSUM_XXH32: XXH32, the only checksum of
+	                       1.0 and 1.1, whose decoders reject frames with XXH64 */
 } WZF_params;
 
 #define WZF_CONTENTSIZE_UNKNOWN (~0ULL)
@@ -131,6 +135,7 @@ typedef struct {
 	int codecVersion;
 	int blockLog;
 	int checksum;                       /* 1: the frame has a content checksum */
+	int checksumType;                   /* if so, WZF_CHECKSUM_XXH64 or WZF_CHECKSUM_XXH32 */
 	int skippable;                      /* 1: a skippable frame (the other fields are 0) */
 	int windowLog;                      /* linked blocks: each refers to up to 2^windowLog bytes before it; 0: none */
 } WZF_FrameHeader;
@@ -147,8 +152,9 @@ size_t WZF_blockDecodedSize(const WZF_DCtx* dctx, const void* src, size_t srcSiz
 size_t WZF_endSize(const WZF_DCtx* dctx);
 size_t WZF_decompressEnd(WZF_DCtx* dctx, const void* src, size_t srcSize);
 
-/* XXH32 (doc/frame_format.md, section 8), as the frames use it */
+/* XXH32 and XXH64 (doc/frame_format.md, section 8), as the frames use them */
 unsigned WZF_XXH32(const void* src, size_t srcSize, unsigned seed);
+unsigned long long WZF_XXH64(const void* src, size_t srcSize, unsigned long long seed);
 
 #if defined (__cplusplus)
 }

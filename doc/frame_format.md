@@ -10,8 +10,8 @@ Everything here is normative except where marked informative. `doc/frame_decode.
 this format, written from this document and handing the blocks to the codecs' reference decoders. It decodes 42
 frames of six Canterbury and Calgary files written by `WZF_compress` (both codecs, levels from fast to optimal, one
 block or blocks of 1 to 4 KiB, with and without checksum), and 20 frames of linked blocks of four of them (levels 1
-to 13, blocks of 32 and 64 KiB, windows of 1 KiB to 128 MiB), identically to the input, and its XXH32 agrees with
-the check values below.
+to 13, blocks of 32 and 64 KiB, windows of 1 KiB to 128 MiB), identically to the input, and its XXH32 and XXH64
+agree with the check values below.
 
 Frame format version: 0 (October 2026).
 
@@ -29,8 +29,8 @@ produced the data. A file needs more:
 
 ## 2. Conventions
 
-Multi-byte integers are little-endian. `u32` is 4 bytes, `u64` 8 bytes. XXH32 is the 32-bit xxHash function with
-seed 0 (section 8).
+Multi-byte integers are little-endian. `u32` is 4 bytes, `u64` 8 bytes. XXH32 and XXH64 are the 32-bit and 64-bit
+xxHash functions with seed 0 (section 8).
 
 ## 3. Layout
 
@@ -67,7 +67,8 @@ FLG:
 | 2 | 1: a content checksum follows the end mark |
 | 3 | 1: the content size follows the descriptor |
 | 4 | 1: **linked blocks** (section 5.1); WZIP only, with `b <= 30` |
-| 5-7 | reserved, 0 |
+| 5-6 | the checksum's function, with bit 2: 0 XXH32, 1 XXH64; 2 and 3 reserved; 0 without a checksum |
+| 7 | reserved, 0 |
 
 Codec format versions: **1** for both codecs, the formats of October 2026 specified in `WZIP_format.md` and
 `WLZ4_format.md`; **2** for WZIP only, version 1 with sized sequence blocks and filters (`WZIP_format.md`,
@@ -77,10 +78,11 @@ The magic number's first byte is not ASCII, so a channel that strips the eighth 
 line feed, so a text-mode conversion to CR LF spoils it too.
 
 A decoder must reject a frame with an unknown magic number, a reserved codec, a codec format version or frame
-format version it does not implement, a block size log outside 10-31, or a reserved bit set; and a frame with
-FLG bit 4 set whose codec is not WZIP, whose block size log is 31, or whose window log is outside 10-27. (Bit 4
-was reserved in development versions before 1.0.0, whose decoders reject linked blocks; frames without them are
-unchanged.)
+format version it does not implement, a block size log outside 10-31, or a reserved bit set; a frame with FLG
+bit 4 set whose codec is not WZIP, whose block size log is 31, or whose window log is outside 10-27; and a frame
+whose bits 5-6 are 2 or 3, or are not 0 without a checksum. (Bit 4 was reserved in development versions before
+1.0.0, whose decoders reject linked blocks; bits 5-6 were reserved before 1.2.0, whose decoders reject the XXH64
+checksum. Frames without these are unchanged.)
 
 ## 5. Blocks
 
@@ -119,7 +121,8 @@ level 11, enwik9 in blocks of 64 MiB, each with the 128 MiB before it, compresse
 
 After the end mark:
 
-- if FLG bit 2 is set, a `u32` **checksum**: XXH32 of the frame's content;
+- if FLG bit 2 is set, a `u32` **checksum** of the frame's content: its XXH32 if FLG bits 5-6 are 0, the low 32
+  bits of its XXH64 if they are 1 (as in Zstandard's frames);
 - if FLG bit 3 is set, the content size must equal the total decoded size of the blocks.
 
 A decoder must reject a frame whose checksum or content size does not match, and a frame that ends before its end
@@ -131,7 +134,9 @@ A **skippable frame** begins with a `u32` magic number from `0x184D2A50` to `0x1
 then `s` bytes of data that decoders ignore. Applications may use them for metadata. The same range marks
 skippable frames in the LZ4 and Zstandard frame formats.
 
-## 8. XXH32
+## 8. XXH32 and XXH64
+
+### 8.1 XXH32
 
 XXH32 of `n` bytes, with the constants `P1 = 0x9E3779B1`, `P2 = 0x85EBCA77`, `P3 = 0xC2B2AE3D`, `P4 = 0x27D4EB2F`,
 `P5 = 0x165667B1` and all arithmetic modulo `2^32` (`rotl(x, r)`: rotation left by `r` bits):
@@ -146,12 +151,32 @@ XXH32 of `n` bytes, with the constants `P1 = 0x9E3779B1`, `P2 = 0x85EBCA77`, `P3
 
 Check values: XXH32 of no bytes is `0x02CC5D05`, of `abc` `0x32D153FF`.
 
+### 8.2 XXH64
+
+XXH64 of `n` bytes, with the constants `P1 = 0x9E3779B185EBCA87`, `P2 = 0xC2B2AE3D27D4EB4F`,
+`P3 = 0x165667B19E3779F9`, `P4 = 0x85EBCA77C2B2AE63`, `P5 = 0x27D4EB2F165667C5`, all arithmetic modulo `2^64`, and
+`round(v, x) = rotl(v + x * P2, 31) * P1`:
+
+1. If `n >= 32`: `v1 = P1 + P2`, `v2 = P2`, `v3 = 0`, `v4 = -P1`; for each full 32-byte stripe, each `vi` takes the
+   `i`-th `u64` `x` of the stripe: `vi = round(vi, x)`. Then `h = rotl(v1, 1) + rotl(v2, 7) + rotl(v3, 12) +
+   rotl(v4, 18)`, and for each of `v1` to `v4` in turn, `h = (h ^ round(0, vi)) * P1 + P4`. Otherwise `h = P5`.
+2. `h = h + n`.
+3. For each remaining `u64` `x`: `h = rotl(h ^ round(0, x), 27) * P1 + P4`.
+4. If a `u32` `x` remains: `h = rotl(h ^ x * P1, 23) * P2 + P3`.
+5. For each remaining byte `y`: `h = rotl(h ^ y * P5, 11) * P1`.
+6. `h ^= h >> 33`; `h *= P2`; `h ^= h >> 29`; `h *= P3`; `h ^= h >> 32`.
+
+Check values: XXH64 of no bytes is `0xEF46DB3751D8E999`, of `abc` `0x44BC2CF5AD770999`.
+
+Informative: XXH64 takes 32 bytes per step where XXH32 takes 16, and on 64-bit processors runs at least twice as
+fast.
+
 ## 9. The reference encoder (informative)
 
 `WZF_compress` and the command-line tool write format version 0 frames, with codec format version 2 for WZIP at
 levels 2-13 (which write sized sequence blocks, and from level 7 filters) and 1 otherwise. They write the content
-size when it is known (always for `WZF_compress`, and for regular files in the tool) and the checksum unless asked
-not to. Their blocks:
+size when it is known (always for `WZF_compress`, and for regular files in the tool) and the XXH64 checksum unless
+asked not to (from 1.2.0; XXH32 if asked, which 1.0 and 1.1 can check). Their blocks:
 
 - by default, one block for the content, of size log `b`, the smallest of 16 and up with `2^b` at least the
   content size, at most 30 (1 GiB), so that content up to 1 GiB is one block and compresses as in the benchmarks;
