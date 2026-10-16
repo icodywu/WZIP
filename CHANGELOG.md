@@ -3,7 +3,7 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
-## Unreleased
+## 1.2.0 (2026-10-16)
 
 - **XXH64 checksum.** A WZ frame's content checksum may be the low 32 bits of XXH64, as in Zstandard's frames, which
   runs about three times as fast as the XXH32 of 1.0 and 1.1 (15.5 against 5.4 GB/s on an AMD EPYC 9334); FLG bits
