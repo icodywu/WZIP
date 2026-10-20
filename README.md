@@ -242,6 +242,30 @@ EPYC 9334, threads unpinned:
 enwik9 ratios by at most 0.02%, and its filters leave text as it is.) Linked blocks decode in one thread, 3-5% slower than one stream, with the level's
 window and a block in memory (`results/epyc_linked.txt`).
 
+**Pipes.** A file's size is known, so one thread compresses it as one stream, in one block up to 1 GiB. From a pipe
+the size is unknown: with one thread the tool reads blocks of 128 MiB for WZIP and 8 MiB for WLZ4, the codecs'
+widest windows, and compresses each on its own. Input up to that size compresses exactly as from a file (the header
+only lacks the content size); longer input loses the matches that would cross the cuts: on enwik9, 2.6% at WZIP
+level 6, 1.1% at level 11, 1.2% at WLZ4 level 6 and 0.1% in its lazy mode. Linking the blocks in one thread would
+take 29-34% longer at WZIP level 6 and 17% at level 11, for indexing each block's dictionary, so it is left to `-T`.
+For a large pipe, give WZIP `-T2` or more at levels 0-6 (`-T8` or more at levels 7-13): linked blocks, compressed at
+once, within 0.01% of the file's size and faster. Or give either codec `-B30`: one block up to 1 GiB, compressed
+exactly as a file of that size, with the memory to hold it. enwik9 on AMD EPYC 9334, each level's runs at once on one
+node, one core complex each, the best of two nodes (`results/epyc_pipes.txt`):
+
+| enwik9 | from the file | pipe | pipe, `-T2` (level 6) or `-T8` (11) | pipe, `-B30` |
+|---|---|---|---|---|
+| WZIP 6 | 4.2356, 2.79 MB/s, 2.6 GiB | 4.1270, 3.40 MB/s, 1.4 GiB | 4.2356, 4.04 MB/s, 3.0 GiB | 4.2356, 2.80 MB/s, 2.6 GiB |
+| WZIP 11 | 4.5072, 1.21 MB/s, 1.9 GiB | 4.4583, 1.25 MB/s, 0.7 GiB | 4.5068, 5.43 MB/s, 5.4 GiB | |
+| WLZ4 6 | 2.8592, 37.3 MB/s, 1.3 GiB | 2.8257, 37.7 MB/s, 18 MiB | | 2.8592, 37.0 MB/s, 1.3 GiB |
+
+(Ratio, compression speed, peak memory.)
+
+```sh
+tar cf - dir | wzip -6 -T2 > dir.tar.wz       # linked blocks: as small as from a file, and faster
+tar cf - dir | wlz4 -6 -B30 > dir.tar.wlz4    # one block up to 1 GiB
+```
+
 ## Python
 
 ```sh

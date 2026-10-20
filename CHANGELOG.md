@@ -3,6 +3,14 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
+## Unreleased
+
+- **Pipes documented.** `README.md` ("Pipes") and `wzip -h` say how the tool compresses input of unknown size: with
+  one thread, independent blocks of the codec's widest window (WZIP 128 MiB, WLZ4 8 MiB), which on enwik9 cost 2.6%
+  at WZIP level 6 and 1.1% at level 11; `-T2` (WZIP levels 0-6; `-T8` at 7-13) links the blocks, within 0.01% of
+  the file's size and faster, and `-B30` keeps up to 1 GiB in one block (`results/epyc_pipes.txt`). `doc/frame_format.md`:
+  level 1's linked window is 2^22, not 2^21. Outputs and formats are unchanged.
+
 ## 1.2.0 (2026-10-16)
 
 - **XXH64 checksum.** A WZ frame's content checksum may be the low 32 bits of XXH64, as in Zstandard's frames, which

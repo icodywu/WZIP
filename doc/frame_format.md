@@ -181,10 +181,10 @@ asked not to (from 1.2.0; XXH32 if asked, which 1.0 and 1.1 can check). Their bl
 - by default, one block for the content, of size log `b`, the smallest of 16 and up with `2^b` at least the
   content size, at most 30 (1 GiB), so that content up to 1 GiB is one block and compresses as in the benchmarks;
   content of unknown size (a pipe) uses `b = 27` (128 MiB) for WZIP and `b = 23` (8 MiB) for WLZ4, the codecs'
-  widest windows;
+  widest windows, so content longer than that compresses less than from a file (README.md, "Pipes");
 - with more threads than one WZIP block uses (more than 1 at levels 0-6, more than 7 at levels 7-13), WZIP content
   over 64 MiB, or of unknown size, is cut into blocks of 64 MiB (`b = 26`), compressed at once and linked with the
-  level's window (`W` from 21 at levels 1 and 7, one more per level, to 27 at levels 6 and 13; see
+  level's window (`W` 22 at level 1 and 21 at level 7, one more per level, to 27 at levels 6 and 13; see
   `doc/WZIP_format.md`, section 10), each primed with the content before it; at level 0, which searches 1 MiB, they
   are independent;
 - a block size given by the caller (`WZF_params.blockLog`, the tool's `-B`) makes independent blocks of that size.

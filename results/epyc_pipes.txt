@@ -1,0 +1,64 @@
+# The wzip tool on enwik9 from the file and from a pipe (README.md, "Pipes"), 2026-10-20, WZIP 1.2.0 (34fca62) built
+# with GCC 14.2 -O2 -DWZIP_MULTITHREAD=1 -pthread (programs/wzip.c src/*.c), on exclusive nodes of two AMD EPYC 9334.
+# enwik9 copied to the node's local disk first. One set of runs per node, all at once, each pinned with taskset to a
+# core complex of its own (CPUs 2, 10, 26, ...; -T2 on 18-19, -T8 on 16-23; cat on another, idle CPU); two
+# nodes per set. Columns: run, elapsed seconds and peak resident set in MiB (GNU time, of the compressor), output
+# bytes, ratio, `wzip -t` of the output.
+#   file:          wzip -L -c enwik9 > out                 (one block: content size known)
+#   pipe:          cat enwik9 | wzip -L -c > out           (one thread: independent blocks of 128 MiB, WZIP; 8 MiB, WLZ4)
+#   pipe_T2/_T8:   cat enwik9 | wzip -L -T2 (-T8) -c       (linked blocks of 64 MiB with the level's window, at once)
+#   pipe_B30:      cat enwik9 | wzip -L -B30 -c            (one block up to 1 GiB)
+#   linked*_1t:    the frame API in one thread, content size unknown (WZF_compressBegin with WZF_CONTENTSIZE_UNKNOWN,
+#                  nbWorkers 1, windowLog 27 at level 6 / 25 at level 11, blockLog 27 or 0 = 64 MiB), WZF_compressBlocks
+# "identical": the same blocks (frame headers aside) or the same frame. The WLZ4 sets ran in an earlier job of the same
+# build without -DWZIP_MULTITHREAD (WLZ4 compresses in one thread either way).
+
+host auh7-3b-gpu-052 set 0 (WZIP level 6) run 0
+w6_file                358.2 s     2664 MiB   236096461 bytes ratio 4.2356 ok
+w6_pipe                294.2 s     1477 MiB   242309184 bytes ratio 4.1270 ok
+w6_pipe_T2             247.4 s     3029 MiB   236096648 bytes ratio 4.2356 ok
+w6_pipe_B30            357.4 s     2664 MiB   236096453 bytes ratio 4.2356 ok
+w6_linked128_1t        380.3 s     3494 MiB   236098644 bytes ratio 4.2355 ok
+w6_linked64_1t         395.3 s     3454 MiB   236096648 bytes ratio 4.2356 ok
+w6_pipe_B30 = w6_file: identical
+w6_pipe_T2 = w6_linked64_1t: identical
+
+host auh7-4b-gpu-230 set 0 (WZIP level 6) run 1
+w6_file                358.8 s     2664 MiB   236096461 bytes ratio 4.2356 ok
+w6_pipe                295.4 s     1477 MiB   242309184 bytes ratio 4.1270 ok
+w6_pipe_T2             248.8 s     3028 MiB   236096648 bytes ratio 4.2356 ok
+w6_pipe_B30            358.5 s     2664 MiB   236096453 bytes ratio 4.2356 ok
+w6_linked128_1t        379.8 s     3494 MiB   236098644 bytes ratio 4.2355 ok
+w6_linked64_1t         398.6 s     3454 MiB   236096648 bytes ratio 4.2356 ok
+w6_pipe_B30 = w6_file: identical
+w6_pipe_T2 = w6_linked64_1t: identical
+
+host auh7-4b-gpu-229 set 1 (WZIP level 11) run 0
+w11_file               834.1 s     1912 MiB   221865013 bytes ratio 4.5072 ok
+w11_pipe               807.3 s      755 MiB   224301173 bytes ratio 4.4583 ok
+w11_pipe_T8            184.3 s     5508 MiB   221886987 bytes ratio 4.5068 ok
+w11_linked64_1t        934.4 s     2711 MiB   221886987 bytes ratio 4.5068 ok
+w11_pipe_T8 = w11_linked64_1t: identical
+
+host auh7-4b-gpu-231 set 1 (WZIP level 11) run 1
+w11_file               825.4 s     1912 MiB   221865013 bytes ratio 4.5072 ok
+w11_pipe               799.0 s      755 MiB   224301173 bytes ratio 4.4583 ok
+w11_pipe_T8            184.5 s     5507 MiB   221886987 bytes ratio 4.5068 ok
+w11_linked64_1t        939.2 s     2712 MiB   221886987 bytes ratio 4.5068 ok
+w11_pipe_T8 = w11_linked64_1t: identical
+
+host auh7-4b-gpu-131 set 2 (WLZ4) run 0
+l6_file                 26.8 s     1294 MiB   349744731 bytes ratio 2.8592 ok
+l6_pipe                 26.6 s       18 MiB   353892236 bytes ratio 2.8257 ok
+l6_pipe_B30             27.0 s     1294 MiB   349744723 bytes ratio 2.8592 ok
+lazy_file                5.3 s     1366 MiB   430149381 bytes ratio 2.3248 ok
+lazy_pipe                4.8 s       14 MiB   430546839 bytes ratio 2.3226 ok
+l6_pipe_B30 = l6_file: identical
+
+host auh7-4b-gpu-287 set 2 (WLZ4) run 1
+l6_file                 26.8 s     1294 MiB   349744731 bytes ratio 2.8592 ok
+l6_pipe                 26.5 s       18 MiB   353892236 bytes ratio 2.8257 ok
+l6_pipe_B30             27.6 s     1294 MiB   349744723 bytes ratio 2.8592 ok
+lazy_file                5.3 s     1366 MiB   430149381 bytes ratio 2.3248 ok
+lazy_pipe                5.0 s       14 MiB   430546839 bytes ratio 2.3226 ok
+l6_pipe_B30 = l6_file: identical
