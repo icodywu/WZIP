@@ -5,6 +5,16 @@ a WZ frame records its frame format version and its codec's format version (`doc
 
 ## Unreleased
 
+- **Faster WZIP_L decoding.** The sequence decoders keep each bit container shifted so that its next bit is the top
+  one (a lookup is a shift and a load), copy the offset cache into a local array that the match copies cannot reach,
+  move a cache hit to the front with masks instead of branches that mispredicted, and have an instance for streams
+  without a dictionary, where its checks fold away; the delta filter is undone sixteen bytes a step with SSE2 or NEON.
+  On an AMD EPYC 9334 (GCC 14.2), against 1.2.0: the trusted decoder is 5-11% faster on Silesia (11% at levels 11
+  and 12), 6-9% on Canterbury + Calgary and enwik8, and 3-10% on enwik9; the default, checked decoder 5-12% on
+  Silesia; WZ frames (checked, with their checksum) 4-6% on enwik9 and enwik8. WZIP 11 now decodes Silesia at 92% of
+  Zstandard 19's speed (82% with 1.2.0), and WZIP 13 decodes enwik9 about as fast as Zstandard 22 (970 against 966
+  MB/s; 97% with 1.2.0). Every WZIP line of `results/epyc_*` and the README was measured again. Streams, ratios and
+  formats are unchanged.
 - **Pipes documented.** `README.md` ("Pipes") and `wzip -h` say how the tool compresses input of unknown size: with
   one thread, independent blocks of the codec's widest window (WZIP 128 MiB, WLZ4 8 MiB), which on enwik9 cost 2.6%
   at WZIP level 6 and 1.1% at level 11; `-T2` (WZIP levels 0-6; `-T8` at 7-13) links the blocks, within 0.01% of

@@ -11,8 +11,11 @@ Nodes of two AMD EPYC 9334, Ubuntu 22.04, GCC 14.2, run by `bench/cluster/` (see
 8-core complex, on 2026-10-07: every codec, in both runs, with the final code (`CHANGELOG.md`, up to and including
 WZIP_L's two sequence streams). The paper's tables are `gen_tables.py` applied to `epyc_*` and `epyc_control_*`
 together. On 2026-10-09 every WZIP line (and its log lines) was measured again with the final 1.1.0 (format 2: sized
-sequence blocks, 12-bit joint codes and, from level 7, filters), in both runs the same way; the README's and the
-paper's WZIP numbers (tag v1.1.0) are these.
+sequence blocks, 12-bit joint codes and, from level 7, filters), in both runs the same way; the paper's WZIP numbers
+are these (the files at tag v1.1.0). On 2026-10-26 every WZIP line (and its log lines) was measured again the same
+way with 1.2.1, whose decoders are faster and whose streams are those of 1.1.0 (the same ratios and memory); the
+README's WZIP numbers are these. Zstandard, run beside them as a control, decoded 0.1% faster to 2.2% slower than on
+2026-10-07 (`epyc_recheck_zstd.txt`); the README keeps its earlier, faster speeds.
 
 | File | Contents |
 |---|---|
@@ -20,6 +23,7 @@ paper's WZIP numbers (tag v1.1.0) are these.
 | `epyc_checked_S.txt` | WZIP's and WLZ4's bounds-checked decoders on Silesia |
 | `epyc_control_*.txt` | all of the above again, two runs per node: speeds within noise of the first run (median difference 0.2%, 90% within 1.2%) |
 | `epyc_log.txt`, `epyc_control_log.txt` | node, core and seconds of each task |
+| `epyc_recheck_zstd.txt` | Zstandard levels 1, 19 and 22, run in both runs of 2026-10-26 beside the WZIP lines, against their speeds of 2026-10-07 |
 | `epyc_zstd_asm.txt` | Zstandard's decompression with (`asm`) and without (`noasm`, `-DZSTD_DISABLE_ASM`) its assembly Huffman decoder, three interleaved passes from saved streams: levels -1 to 22 on Silesia, then 1 to 22 on enwik9; the assembly gains 0.1-2.2% |
 | `epyc_blocks_S.txt`, `epyc_blocks_C.txt`, `epyc_control_blocks_*.txt` | `bench/bench_blocks`, 4 KB and 8 KB blocks, two runs (eight and two per node), on 2026-10-07 with the final code; the WZIP_S lines measured again the same day after its faster decoder, 9-bit literal limit and one-point four-stream layout (`CHANGELOG.md`): two runs on two nodes, eight per node, each against the previous WZIP_S code alongside |
 
@@ -30,7 +34,7 @@ Threads and pipes (not in the paper's tables; the README's "Threads" and "Pipes"
 | File | Contents |
 |---|---|
 | `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's; the faster of two runs per line (final code); then 1.1.0 at levels 9, 11 and 13 on Silesia, level 11 beside 1.0.1 and 1.1.0 without filters |
-| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB with the level's window beyond); then one 64 MiB block of enwik9 at level 11 without a dictionary, with its level's 32 MiB window and with 128 MiB, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10); all with the final code, the `wzip -b` and `block_dict` lines the faster of two runs |
+| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB with the level's window beyond); then one 64 MiB block of enwik9 at level 11 without a dictionary, with its level's 32 MiB window and with 128 MiB, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10); all with the final code, the `wzip -b` and `block_dict` lines the faster of two runs; last, the decoding speeds again, on frames written by 1.2.1, with 1.2.0's and 1.2.1's decoders interleaved (2026-10-26) |
 | `epyc_pipes.txt` | the `wzip` tool (1.2.0) on enwik9 from the file and from a pipe (`cat`): one thread, `-T2` at level 6, `-T8` at level 11, `-B30`, and linked blocks in one thread through the frame API (content size unknown); the runs of a level at once on one node, each pinned to a core complex of its own, two nodes; elapsed seconds and peak memory from GNU time, every output checked with `wzip -t` |
 
 ## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)

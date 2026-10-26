@@ -1,0 +1,13 @@
+== 2026-10-26, run beside the 1.2.1 WZIP lines of epyc_*: Zstandard as a control of the nodes' speed; first run (eight workers per node)
+S  zstd      1  ratio 2.8870  comp   519.85 MB/s  dec   1630.7 MB/s  encmem     0.9 MB  fails 0
+S  zstd     19  ratio 4.0045  comp     3.54 MB/s  dec   1370.0 MB/s  encmem    81.6 MB  fails 0
+S  zstd     22  ratio 4.0450  comp     2.52 MB/s  dec   1288.0 MB/s  encmem   641.5 MB  fails 0
+C  zstd     19  ratio 4.2093  comp     4.71 MB/s  dec   1154.6 MB/s  encmem    17.5 MB  fails 0
+e9  zstd     22  ratio 4.6756  comp     1.40 MB/s  dec    924.7 MB/s  encmem   649.3 MB  fails 0
+== second run (two workers per node)
+S  zstd      1  ratio 2.8870  comp   519.57 MB/s  dec   1631.0 MB/s  encmem     0.9 MB  fails 0
+S  zstd     19  ratio 4.0045  comp     3.52 MB/s  dec   1375.4 MB/s  encmem    81.6 MB  fails 0
+S  zstd     22  ratio 4.0450  comp     2.51 MB/s  dec   1294.7 MB/s  encmem   641.5 MB  fails 0
+C  zstd     19  ratio 4.2093  comp     4.69 MB/s  dec   1155.4 MB/s  encmem    17.5 MB  fails 0
+e9  zstd     22  ratio 4.6756  comp     1.41 MB/s  dec    945.1 MB/s  encmem   649.4 MB  fails 0
+== the same configurations on 2026-10-07 (epyc_*, epyc_control_*), best of both runs: S zstd 1 dec 1629.1, S zstd 19 1392.7, S zstd 22 1311.5, C zstd 19 1161.0, e9 zstd 22 966.5 MB/s
