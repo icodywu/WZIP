@@ -4338,9 +4338,10 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 	return (int)(destPtr - dest);
 }
 
-#define SEQ_BODY_CALL(body, fine)   (hufWtSet->slotJoint                                                                                                    \
-    ? body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, T, farCount, pipelined, fine, 1)             \
-    : body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, T, farCount, pipelined, fine, 0))
+#define SEQ_BODY_CALL_D(body, fine, dsz)   (hufWtSet->slotJoint                                                                                                    \
+    ? body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dsz, hufWtSet, offsetLast, T, farCount, pipelined, fine, 1)             \
+    : body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dsz, hufWtSet, offsetLast, T, farCount, pipelined, fine, 0))
+#define SEQ_BODY_CALL(body, fine)   (dictSize ? SEQ_BODY_CALL_D(body, fine, dictSize) : SEQ_BODY_CALL_D(body, fine, 0))
 
 #define SEQ_DEC_PARAMS  WZL_Sched* const S_, Uint8** wzipSeqStart, Lit_Reader* const lits, Uint8* dest, int decPos, Uint8* const destEnd, Uint8* const dictEnd, const int dictSize,  \
     WLZ_HufWt_Set* hufWtSet, Uint32 offsetLast[OffCasheSize], const Seq_DecTables* const T, Uint32* const farCount, const int pipelined
@@ -4669,9 +4670,11 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 }
 
 
-#define SEQ_TRUSTED_CALL(body, fine, lazy)   (hufWtSet->slotJoint                                                                                      \
-    ? body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, T, farCount, pipelined, fine, 1, lazy)          \
-    : body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dictSize, hufWtSet, offsetLast, T, farCount, pipelined, fine, 0, lazy))
+#define SEQ_TRUSTED_CALL_D(body, fine, lazy, dsz)   (hufWtSet->slotJoint                                                                                      \
+    ? body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dsz, hufWtSet, offsetLast, T, farCount, pipelined, fine, 1, lazy)          \
+    : body(S_, wzipSeqStart, lits, dest, decPos, destEnd, dictEnd, dsz, hufWtSet, offsetLast, T, farCount, pipelined, fine, 0, lazy))
+/* an instance without a dictionary, the common case, where its checks fold away */
+#define SEQ_TRUSTED_CALL(body, fine, lazy)   (dictSize ? SEQ_TRUSTED_CALL_D(body, fine, lazy, dictSize) : SEQ_TRUSTED_CALL_D(body, fine, lazy, 0))
 #define SEQ_TRUSTED_CALLS(body)  (lits->lazy                                                                                                         \
     ? (OffGroupsFine ? SEQ_TRUSTED_CALL(body, 1, 1) : SEQ_TRUSTED_CALL(body, 0, 1))                                                              \
     : (OffGroupsFine ? SEQ_TRUSTED_CALL(body, 1, 0) : SEQ_TRUSTED_CALL(body, 0, 0)))
