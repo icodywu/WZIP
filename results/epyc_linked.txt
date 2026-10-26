@@ -58,8 +58,8 @@ e8.L11.one.wz                                25639855 ->    100000000     673.3 
 e8.L11.ind.wz                                26046830 ->    100000000     732.2 MB/s
 e8.L11.lnk.wz                                25653164 ->    100000000     673.4 MB/s
 
-== 1.2.1 (2026-10-26): bench/frame_dec as above, on frames written by the 1.2.1 tool (XXH64 checksums), with the
-   1.2.0 and the 1.2.1 decoders, interleaved, three passes each (core 4, best of 10 per pass); the best pass of each
+== 1.3.0 (2026-10-26): bench/frame_dec as above, on frames written by the 1.3.0 tool (XXH64 checksums), with the
+   1.2.0 and the 1.3.0 decoders, interleaved, three passes each (core 4, best of 10 per pass); the best pass of each
 -- 1.2.0
 e9.L5.one.wz                                244305342 ->   1000000000     996.6 MB/s
 e9.L5.ind.wz                                250580177 ->   1000000000    1035.1 MB/s
@@ -67,7 +67,7 @@ e9.L5.lnk.wz                                244309481 ->   1000000000     942.3 
 e8.L11.one.wz                                25635671 ->    100000000     978.1 MB/s
 e8.L11.ind.wz                                26045550 ->    100000000     985.4 MB/s
 e8.L11.lnk.wz                                25652302 ->    100000000     950.2 MB/s
--- 1.2.1
+-- 1.3.0
 e9.L5.one.wz                                244305342 ->   1000000000    1034.4 MB/s
 e9.L5.ind.wz                                250580177 ->   1000000000    1082.0 MB/s
 e9.L5.lnk.wz                                244309481 ->   1000000000     982.9 MB/s

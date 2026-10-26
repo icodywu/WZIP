@@ -58,7 +58,7 @@ twice, on identical nodes; speeds are the best of both runs (of 3 compressions f
 20 decompressions in each). Ratio is total input over total output; speeds in MB/s. Full tables, the harness and the
 raw outputs are in [`bench/`](bench) and [`results/`](results) (`epyc_*`); [`bench/cluster/`](bench/cluster) runs
 them on a Slurm cluster. A laptop (Intel Core i7-8850H, 9 MB L3, Windows 11), measured earlier (the other files in
-`results/`), gave the same ratios at lower speeds. WZIP's lines are 1.2.1's, measured again the same way on
+`results/`), gave the same ratios at lower speeds. WZIP's lines are 1.3.0's, measured again the same way on
 2026-10-26 (`results/README.md`). WZIP and WLZ4 decode in their trusted mode here, as in the paper (see Usage);
 their default, bounds-checked decoders are 5-6% (WZIP) and at most 9% (WLZ4) slower on Silesia.
 
@@ -309,7 +309,7 @@ runs these on Linux (x86-64 and arm64, GCC and clang), macOS (arm64) and Windows
 with CMake.
 Big-endian support is not yet verified: a job on an emulated s390x runs the tests for information only. On x86 the
 decoders pick BMI2 code paths at run time. The library's version
-(1.2.1) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
+(1.3.0) is in `WZIP.h`; [`CHANGELOG.md`](CHANGELOG.md) lists the changes.
 
 The default decoders validate their input, as LZ4's safe decoder does: whatever the stream, a decoder reads nothing
 outside the compressed buffer (and the dictionary) and writes nothing outside the output buffer; a corrupt or truncated

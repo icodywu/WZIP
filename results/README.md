@@ -13,7 +13,7 @@ WZIP_L's two sequence streams). The paper's tables are `gen_tables.py` applied t
 together. On 2026-10-09 every WZIP line (and its log lines) was measured again with the final 1.1.0 (format 2: sized
 sequence blocks, 12-bit joint codes and, from level 7, filters), in both runs the same way; the paper's WZIP numbers
 are these (the files at tag v1.1.0). On 2026-10-26 every WZIP line (and its log lines) was measured again the same
-way with 1.2.1, whose decoders are faster and whose streams are those of 1.1.0 (the same ratios and memory); the
+way with 1.3.0, whose decoders are faster and whose streams are those of 1.1.0 (the same ratios and memory); the
 README's WZIP numbers are these. Zstandard, run beside them as a control, decoded 0.1% faster to 2.2% slower than on
 2026-10-07 (`epyc_recheck_zstd.txt`); the README keeps its earlier, faster speeds.
 
@@ -34,7 +34,7 @@ Threads and pipes (not in the paper's tables; the README's "Threads" and "Pipes"
 | File | Contents |
 |---|---|
 | `epyc_threads.txt` | `bench/mt_find.c`: WZIP_L at levels 7, 9, 11 (also with an 8 MiB prefix dictionary) and 13 on Silesia file by file, and level 11 on enwik8, with 1 to 7 threads each, every run on one 8-core complex; every output identical to one thread's; the faster of two runs per line (final code); then 1.1.0 at levels 9, 11 and 13 on Silesia, level 11 beside 1.0.1 and 1.1.0 without filters |
-| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB with the level's window beyond); then one 64 MiB block of enwik9 at level 11 without a dictionary, with its level's 32 MiB window and with 128 MiB, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10); all with the final code, the `wzip -b` and `block_dict` lines the faster of two runs; last, the decoding speeds again, on frames written by 1.2.1, with 1.2.0's and 1.2.1's decoders interleaved (2026-10-26) |
+| `epyc_linked.txt` | `wzip -b` (frames in memory, best of the runs in a second) on whole nodes, threads unpinned: enwik9 at levels 1, 5, 11 and 13 and Silesia concatenated (`silesia.cat`, 211,938,580 bytes) at level 11, with 1 to 105 threads (one stream up to the threads one block uses, linked blocks of 64 MiB with the level's window beyond); then one 64 MiB block of enwik9 at level 11 without a dictionary, with its level's 32 MiB window and with 128 MiB, 1 to 7 threads on one complex (`bench/block_dict.c`); then decoding speed of one stream, independent and linked 64 MiB blocks (`bench/frame_dec.c`, core 4, best of 10); all with the final code, the `wzip -b` and `block_dict` lines the faster of two runs; last, the decoding speeds again, on frames written by 1.3.0, with 1.2.0's and 1.3.0's decoders interleaved (2026-10-26) |
 | `epyc_pipes.txt` | the `wzip` tool (1.2.0) on enwik9 from the file and from a pipe (`cat`): one thread, `-T2` at level 6, `-T8` at level 11, `-B30`, and linked blocks in one thread through the frame API (content size unknown); the runs of a level at once on one node, each pinned to a core complex of its own, two nodes; elapsed seconds and peak memory from GNU time, every output checked with `wzip -t` |
 
 ## Intel Core i7-8850H laptop (Windows 11, MSYS2 GCC 14.2)

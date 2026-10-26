@@ -3,7 +3,7 @@
 Versions follow [semantic versioning](https://semver.org/) for the library interface. Format versions are separate:
 a WZ frame records its frame format version and its codec's format version (`doc/frame_format.md`).
 
-## 1.2.1 (2026-10-26)
+## 1.3.0 (2026-10-26)
 
 - **Faster WZIP_L decoding.** The sequence decoders keep each bit container shifted so that its next bit is the top
   one (a lookup is a shift and a load), copy the offset cache into a local array that the match copies cannot reach,
