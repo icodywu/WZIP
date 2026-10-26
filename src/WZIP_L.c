@@ -4209,10 +4209,12 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Body(WZL_Sched* const S_, Uint8*
 		}
 		else {                                           /* a hit moves to the front of the cache */
 			matchOffset = oc[n];
-			if (n) {
-				oc[3] = n >= 3 ? oc[2] : oc[3];
-				oc[2] = n >= 2 ? oc[1] : oc[2];
-				oc[1] = oc[0];
+			{   /* entries 0 to n - 1 move back one, with masks: no branch */
+				const Uint32 m1 = 0u - (Uint32)(n >= 1), m2 = 0u - (Uint32)(n >= 2), m3 = 0u - (Uint32)(n >= 3);
+				const Uint32 c0 = oc[0], c1 = oc[1], c2 = oc[2], c3 = oc[3];
+				oc[3] = (c2 & m3) | (c3 & ~m3);
+				oc[2] = (c1 & m2) | (c2 & ~m2);
+				oc[1] = (c0 & m1) | (c1 & ~m1);
 				oc[0] = matchOffset;
 			}
 		}
@@ -4541,10 +4543,12 @@ ForceInlineTemplate int Decompress_WLZ_Sequence_Trusted_Body(WZL_Sched* const S_
 		}
 		else {                                           /* a hit moves to the front of the cache */
 			matchOffset = oc[n];
-			if (n) {
-				oc[3] = n >= 3 ? oc[2] : oc[3];
-				oc[2] = n >= 2 ? oc[1] : oc[2];
-				oc[1] = oc[0];
+			{   /* entries 0 to n - 1 move back one, with masks: no branch */
+				const Uint32 m1 = 0u - (Uint32)(n >= 1), m2 = 0u - (Uint32)(n >= 2), m3 = 0u - (Uint32)(n >= 3);
+				const Uint32 c0 = oc[0], c1 = oc[1], c2 = oc[2], c3 = oc[3];
+				oc[3] = (c2 & m3) | (c3 & ~m3);
+				oc[2] = (c1 & m2) | (c2 & ~m2);
+				oc[1] = (c0 & m1) | (c1 & ~m1);
 				oc[0] = matchOffset;
 			}
 		}
