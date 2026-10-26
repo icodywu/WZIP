@@ -3237,6 +3237,86 @@ static int Low_Byte64(Uint64 m)
 /* x + y bytewise, without carries between the bytes */
 static Uint64 Add_Bytes8(const Uint64 x, const Uint64 y) { return ((x & SWAR_LO7) + (y & SWAR_LO7)) ^ ((x ^ y) & SWAR_HI); }
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#  include <emmintrin.h>
+#  define FLT_SIMD 1
+/* b[i] += b[i - s] for s in {1, 2, 4, 8}, over [i, to) in steps of sixteen bytes; i >= 16; returns where it stopped */
+static int Flt_Delta16(Uint8* const b, int i, const int to, const int s)
+{
+	__m128i prev = _mm_loadu_si128((const __m128i*)(b + i - 16));    /* restored: its last s bytes carry on */
+	for (; i + 16 <= to; i += 16) {
+		__m128i v = _mm_loadu_si128((const __m128i*)(b + i)), c;
+		switch (s) {                                   /* a prefix sum of stride s within the 16 bytes, then the carry */
+		case 1:
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 1));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 2));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 4));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
+			c = _mm_srli_si128(prev, 15);
+			c = _mm_unpacklo_epi8(c, c);
+			c = _mm_shuffle_epi32(_mm_unpacklo_epi16(c, c), 0);
+			break;
+		case 2:
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 2));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 4));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
+			c = _mm_shufflehi_epi16(prev, 0xFF);
+			c = _mm_shuffle_epi32(c, 0xFF);
+			break;
+		case 4:
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 4));
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
+			c = _mm_shuffle_epi32(prev, 0xFF);
+			break;
+		default:                                       /* 8 */
+			v = _mm_add_epi8(v, _mm_slli_si128(v, 8));
+			c = _mm_unpackhi_epi64(prev, prev);
+			break;
+		}
+		prev = _mm_add_epi8(v, c);
+		_mm_storeu_si128((__m128i*)(b + i), prev);
+	}
+	return i;
+}
+#elif defined(__aarch64__)
+#  define FLT_SIMD 1
+static int Flt_Delta16(Uint8* const b, int i, const int to, const int s)
+{
+	const uint8x16_t z = vdupq_n_u8(0);
+	uint8x16_t prev = vld1q_u8(b + i - 16);
+	for (; i + 16 <= to; i += 16) {
+		uint8x16_t v = vld1q_u8(b + i), c;
+		switch (s) {
+		case 1:
+			v = vaddq_u8(v, vextq_u8(z, v, 15));
+			v = vaddq_u8(v, vextq_u8(z, v, 14));
+			v = vaddq_u8(v, vextq_u8(z, v, 12));
+			v = vaddq_u8(v, vextq_u8(z, v, 8));
+			c = vdupq_laneq_u8(prev, 15);
+			break;
+		case 2:
+			v = vaddq_u8(v, vextq_u8(z, v, 14));
+			v = vaddq_u8(v, vextq_u8(z, v, 12));
+			v = vaddq_u8(v, vextq_u8(z, v, 8));
+			c = vreinterpretq_u8_u16(vdupq_laneq_u16(vreinterpretq_u16_u8(prev), 7));
+			break;
+		case 4:
+			v = vaddq_u8(v, vextq_u8(z, v, 12));
+			v = vaddq_u8(v, vextq_u8(z, v, 8));
+			c = vreinterpretq_u8_u32(vdupq_laneq_u32(vreinterpretq_u32_u8(prev), 3));
+			break;
+		default:
+			v = vaddq_u8(v, vextq_u8(z, v, 8));
+			c = vreinterpretq_u8_u64(vdupq_laneq_u64(vreinterpretq_u64_u8(prev), 1));
+			break;
+		}
+		prev = vaddq_u8(v, c);
+		vst1q_u8(b + i, prev);
+	}
+	return i;
+}
+#endif
+
 /* undoes the filter of region [from, to) of the decoded input b, whose regions before it are restored */
 static void Flt_Decode(Uint8* const b, const int from, const int to, const int id, const int stride)
 {
@@ -3259,6 +3339,10 @@ static void Flt_Decode(Uint8* const b, const int from, const int to, const int i
 	else if (id >= FLT_Delta) {                            /* b[i] += b[i - s], going up */
 		const int s = stride;
 		int i = max(from, s);
+#ifdef FLT_SIMD
+		if ((s == 1 || s == 2 || s == 4 || s == 8) && i >= 16)   /* sixteen bytes a step */
+			i = Flt_Delta16(b, i, to, s);
+#endif
 		if (s >= 8)                                        /* 8 bytes at a time, from bytes before them */
 			for (; i + 8 <= to; i += 8) MemWrite8(b + i, Add_Bytes8(MemRead8(b + i), MemRead8(b + i - s)));
 		else if (s == 4) {                                 /* 4 at a time, from the 4 just restored */
